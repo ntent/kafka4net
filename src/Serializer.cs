@@ -1,0 +1,501 @@
+﻿using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Text;
+using kafka4net.Metadata;
+using kafka4net.Protocol.Requests;
+using kafka4net.Protocol.Responses;
+using kafka4net.Utils;
+
+namespace kafka4net
+{
+    // TODO: move functions into business objects
+    static class Serializer
+    {
+        static readonly byte[] _minusOne32 = { 0xff, 0xff, 0xff, 0xff };
+        static readonly byte[] _one32 = { 0x00, 0x00, 0x00, 0x01 };
+        static readonly byte[] _two32 = { 0x00, 0x00, 0x00, 0x02 };
+        static readonly byte[] _minusOne16 = { 0xff, 0xff };
+        static readonly byte[] _apiVersion = { 0x00, 0x00 };
+        static readonly byte[] _zero64 = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+        static readonly byte[] _zero32 = { 0x00, 0x00, 0x00, 0x00 };
+        // TODO: make it configurable
+        static byte[] _clientId;
+
+        static Serializer()
+        {
+            var ms = new MemoryStream();
+            //Write(ms, "kafka-sharp");
+            Write(ms, "Kafka-Net");
+            _clientId = ms.ToArray();
+        }
+
+        enum ApiKey : short
+        {
+            ProduceRequest = 0,
+            FetchRequest = 1,
+            OffsetRequest = 2,
+            MetadataRequest = 3,
+            // Non-user facing control APIs 4-7
+            OffsetCommitRequest = 8,
+            OffsetFetchRequest = 9,
+            ConsumerMetadataRequest	= 10
+        }
+
+        public static MetadataResponse DeserializeMetadataResponse(byte[] body)
+        {
+            var stream = new MemoryStream(body);
+            stream.Position += 4; // skip body
+            var ret = new MetadataResponse();
+            
+            var count = ReadInt32(stream);
+            ret.Brokers = new BrokerMeta[count];
+            for (int i = 0; i < count; i++)
+                ret.Brokers[i] = DeserializeBrokerMeta(stream);
+
+            count = ReadInt32(stream);
+            ret.Topics = new TopicMeta[count];
+            for (int i = 0; i < count; i++)
+                ret.Topics[i] = DeserializeTopicMeta(stream);
+
+            return ret;
+        }
+
+        private static TopicMeta DeserializeTopicMeta(MemoryStream stream)
+        {
+            var ret = new TopicMeta();
+            ret.TopicErrorCode = (ErrorCode)ReadInt16(stream);
+            ret.TopicName = ReadString(stream);
+
+            var count = ReadInt32(stream);
+            ret.Partitions = new PartitionMeta[count];
+            for (int i = 0; i < count; i++)
+                ret.Partitions[i] = DeserializePartitionMeta(stream);
+
+            return ret;
+        }
+
+        private static PartitionMeta DeserializePartitionMeta(MemoryStream stream)
+        {
+            var ret = new PartitionMeta();
+            ret.ErrorCode = (ErrorCode)ReadInt16(stream);
+            ret.Id = ReadInt32(stream);
+            ret.Leader = ReadInt32(stream);
+
+            var count = ReadInt32(stream);
+            ret.Replicas = new int[count];
+            for (int i = 0; i < count; i++)
+                ret.Replicas[i] = ReadInt32(stream);
+
+            count = ReadInt32(stream);
+            ret.Isr = new int[count];
+            for (int i = 0; i < count; i++)
+                ret.Isr[i] = ReadInt32(stream);
+
+            return ret;
+        }
+
+        private static BrokerMeta DeserializeBrokerMeta(MemoryStream stream)
+        {
+            return new BrokerMeta {
+                NodeId = ReadInt32(stream), 
+                Host = ReadString(stream), 
+                Port = ReadInt32(stream)
+            };
+        }
+
+        public static byte[] Serialize(TopicRequest request, int correlationId)
+        {
+            var stream = new MemoryStream();
+            WriteRequestHeader(stream, correlationId, ApiKey.MetadataRequest);
+            if (request.Topics == null || request.Topics.Length == 0)
+            {
+                stream.Write(_zero32, 0, 4);
+            }
+            else
+            {
+                Write(stream, request.Topics.Length);
+                foreach (var t in request.Topics)
+                    Write(stream, t);
+            }
+
+            stream.Close();
+
+            return WriteMessageLength(stream);
+        }
+
+        private static byte[] WriteMessageLength(MemoryStream stream)
+        {
+            var buff = stream.ToArray();
+            var len = buff.Length - 4; // -4 because do not count size flag itself
+            // write message length to the head
+            // TODO: use seek?
+            Write(buff, len);
+            return buff;
+        }
+
+        public static byte[] Serialize(ProduceRequest request, int correlationId)
+        {
+            var stream = new MemoryStream();
+            WriteRequestHeader(stream, correlationId, ApiKey.ProduceRequest);
+            Write(stream, request.RequiredAcks);
+            Write(stream, request.Timeout);
+            WriteArray(stream, request.TopicData, t => Write(stream, t));
+            return WriteMessageLength(stream);
+        }
+
+        private static void Write(MemoryStream stream, TopicData topic)
+        {
+            Write(stream, topic.TopicName);
+            WriteArray(stream, topic.PartitionsData, p => Write(stream, p));
+        }
+
+        private static void Write(MemoryStream stream, PartitionData partition)
+        {
+            Write(stream, partition.Partition);
+            Write(stream, partition.Messages);
+        }
+
+        private static void Write(MemoryStream stream, IEnumerable<MessageData> messages)
+        {
+            // MessageSetInBytes
+            WriteSizeInBytes(stream, () =>
+            {
+                foreach (var message in messages)
+                {
+                    stream.Write(_zero64, 0, 8); // producer does fake offset
+                    var m = message;
+                    WriteSizeInBytes(stream, () => Write(stream, m));
+                }
+            });
+        }
+
+        private static void Write(MemoryStream stream, MessageData message)
+        {
+            var crcPos = stream.Position;
+            stream.Write(_minusOne32, 0, 4); // crc placeholder
+            var bodyPos = stream.Position;
+            
+            stream.WriteByte(0); // magic byte
+            stream.WriteByte(0); // attributes
+            if(message.Key == null)
+                stream.Write(_minusOne32, 0, 4);
+            else
+                stream.Write(message.Key, 0, message.Key.Length);
+            Write(stream, message.Value.Length);
+            stream.Write(message.Value, 0, message.Value.Length);
+
+            // update crc
+            var crc = Crc32.Compute(stream, bodyPos, stream.Position - bodyPos);
+            Update(stream, crcPos, crc);
+        }
+
+
+        static void WriteArray<T>(MemoryStream stream, IEnumerable<T> items, Action<T> write)
+        {
+            var sizePosition = stream.Position;
+            stream.Write(_minusOne32, 0, 4); // placeholder for count field
+            var count = 0;
+            foreach (var item in items)
+            {
+                write(item);
+                count++;
+            }
+            var pos = stream.Position; // update count field
+            stream.Position = sizePosition;
+            Write(stream, count);
+            stream.Position = pos;
+        }
+
+        static void WriteSizeInBytes(MemoryStream stream, Action write)
+        {
+            stream.Write(_zero32, 0, 4);
+            var initPos = stream.Position;
+            write();
+            var pos = stream.Position;
+            var size = pos - initPos;
+            stream.Position = initPos - 4;
+            Write(stream, (int)size);
+            stream.Position = pos;
+        }
+
+        static void Update(MemoryStream stream, long pos, byte[] buff)
+        {
+            var currPos = stream.Position;
+            stream.Position = pos;
+            stream.Write(buff, 0, buff.Length);
+            stream.Position = currPos;
+        }
+
+        private static void Write(MemoryStream stream, string s)
+        {
+            if(s == null) {
+                stream.Write(_minusOne16, 0, 2);
+                return;
+            }
+            
+            Write(stream, (short)s.Length);
+            var b = Encoding.UTF8.GetBytes(s);
+            stream.Write(b, 0, b.Length);
+        }
+
+        private static void Write(MemoryStream stream, int i)
+        {
+            WriteByte(stream, i >> 8 * 3);
+            WriteByte(stream, i >> 8 * 2);
+            WriteByte(stream, i >> 8);
+            WriteByte(stream, i);
+        }
+
+        private static void Write(MemoryStream stream, short i)
+        {
+            WriteByte(stream, i >> 8);
+            WriteByte(stream, i);
+        }
+
+        private static void WriteRequestHeader(MemoryStream stream, int correlationId, ApiKey requestType)
+        {
+            stream.Write(_minusOne32, 0, 4); // reserve space for message size
+            Write(stream, (short)requestType);
+            stream.Write(_apiVersion, 0, 2);
+             Write(stream, correlationId);
+            stream.Write(_clientId, 0, _clientId.Length);
+        }
+
+        static void WriteByte(MemoryStream stream, int i)
+        {
+            stream.WriteByte((byte)(i & 0xff));
+        }
+
+        static void Write(byte[] buff, int i)
+        {
+            buff[0] = (byte)(i >> 8 * 3);
+            buff[1] = (byte)((i & 0xff0000) >> 8 * 2);
+            buff[2] = (byte)((i & 0xff00) >> 8);
+            buff[3] = (byte)(i & 0xff);
+        }
+
+        public static int ToInt32(byte[] buff)
+        {
+            return (buff[0] << 8 * 3) | (buff[1] << 8 * 2) | (buff[2] << 8) | buff[3];
+        }
+
+        public static ProducerResponse GetProducerResponse(byte[] buff)
+        {
+            var resp = new ProducerResponse();
+            var stream = new MemoryStream(buff);
+            stream.Position += 4; // skip message size
+
+            var count = ReadInt32(stream);
+            resp.Topics = new ProducerResponse.TopicResponse[count];
+            for (int i = 0; i < count; i++)
+                resp.Topics[i] = DeserializeTopicResponse(stream);
+
+            return resp;
+        }
+
+        private static ProducerResponse.TopicResponse DeserializeTopicResponse(MemoryStream stream)
+        {
+            var resp = new ProducerResponse.TopicResponse();
+            resp.TopicName = ReadString(stream);
+            var count = ReadInt32(stream);
+            resp.Partitions = new ProducerResponse.PartitionResponse[count];
+            for (int i = 0; i < count; i++)
+                resp.Partitions[i] = DeserializePartitionResponse(stream);
+            return resp;
+        }
+
+        private static ProducerResponse.PartitionResponse DeserializePartitionResponse(MemoryStream stream)
+        {
+            return new ProducerResponse.PartitionResponse
+            {
+                Partition = ReadInt32(stream),
+                ErrorCode = (ErrorCode)ReadInt16(stream),
+                Offset = ReadInt64(stream)
+            };
+        }
+
+        private static long ReadInt64(MemoryStream stream)
+        {
+            var res = 0L;
+            for (int i = 0; i < 8; i++)
+                res = res << 8 | stream.ReadByte();
+            return res;
+        }
+
+        static void Write(MemoryStream stream, long i)
+        {
+            ulong ui = (ulong)i;
+            for(int j=7; j>=0; j--)
+                stream.WriteByte( (byte)(ui >> j*8 & 0xff) );
+        }
+
+        private static string ReadString(MemoryStream stream)
+        {
+            var len = ReadInt16(stream);
+            var buffer = new byte[len];
+            stream.Read(buffer, 0, len);
+            return Encoding.UTF8.GetString(buffer);
+        }
+
+        private static short ReadInt16(MemoryStream s)
+        {
+            return (short)((s.ReadByte() << 8) | s.ReadByte());
+        }
+
+        static int ReadInt32(MemoryStream s)
+        {
+            return s.ReadByte() << 3*8 | s.ReadByte() << 2*8 | s.ReadByte() << 8 | s.ReadByte();
+        }
+
+        internal static byte[] Serialize(OffsetRequest req, int correlationId)
+        {
+            var stream = new MemoryStream();
+
+            WriteRequestHeader(stream, correlationId, ApiKey.OffsetRequest);
+            stream.Write(_minusOne32, 0, 4);    // ReplicaId
+            stream.Write(_one32, 0, 4);         // array of size 1: we send request for one topic
+            Write(stream, req.TopicName);
+            WriteArray(stream, req.Partitions, p =>
+            {
+                Write(stream, p);
+                Write(stream, req.Time);
+                stream.Write(_two32, 0, 4);     // request 2 offsets: start and end
+            });
+
+            return WriteMessageLength(stream);
+        }
+
+        internal static OffsetResponse DeserializeOffsetResponse(byte[] buff)
+        {
+            var stream = new MemoryStream(buff);
+            stream.Position += 4; // skip body
+
+            var response = new OffsetResponse();
+
+            var len = ReadInt32(stream);
+            // TODO: make sure connection is closed
+            if(len != 1)
+                throw new BrokerException("Invalid message format");
+
+            response.TopicName = ReadString(stream);
+
+            len = ReadInt32(stream);
+            response.Partitions = new OffsetResponse.PartitionOffsetData[len];
+            for (int i = 0; i < len; i++)
+            {
+                var part = response.Partitions[i] = new OffsetResponse.PartitionOffsetData();
+                part.Partition = ReadInt32(stream);
+                part.ErrorCode = (ErrorCode)ReadInt16(stream);
+                var len2 = ReadInt32(stream);
+                part.Offsets = new long[len2];
+                for (int j = 0; j < len2; j++)
+                    part.Offsets[j] = ReadInt64(stream);
+            }
+
+            return response;
+        }
+
+        public static byte[] Serialize(FetchRequest req, int correlationId)
+        {
+            var stream = new MemoryStream();
+            WriteRequestHeader(stream, correlationId, ApiKey.FetchRequest);
+            stream.Write(_minusOne32, 0, 4);    // ReplicaId
+            Write(stream, req.MaxWaitTime);
+            Write(stream, req.MinBytes);
+
+            WriteArray(stream, req.Topics, t => {
+                Write(stream, t.Topic);
+                WriteArray(stream, t.Partitions, p =>
+                {
+                    Write(stream, p.Partition);
+                    Write(stream, p.FetchOffset);
+                    Write(stream, p.MaxBytes);
+                });
+            });
+
+            return WriteMessageLength(stream);
+        }
+
+        public static FetchResponse DeserializeFetchResponse(byte[] buff)
+        {
+            var stream = new MemoryStream(buff);
+            stream.Position += 4; // skip body
+            var response = new FetchResponse();
+
+            var len = ReadInt32(stream);
+            
+            response.Topics = new FetchResponse.TopicFetchData[len];
+            for (int t = 0; t < len; t++)
+            {
+                var topic = new FetchResponse.TopicFetchData();
+                response.Topics[t] = topic;
+                topic.Topic = ReadString(stream);
+                len = ReadInt32(stream);
+                topic.Partitions = new FetchResponse.PartitionFetchData[len];
+                for (int i = 0; i < len; i++)
+                    topic.Partitions[i] = new FetchResponse.PartitionFetchData
+                    {
+                        Partition = ReadInt32(stream),
+                        ErrorCode = (ErrorCode)ReadInt16(stream),
+                        HighWatermarkOffset = ReadInt64(stream),
+                        Messages = ReadMessageSet(stream).ToArray()
+                    };
+            }
+
+            return response;
+        }
+
+        private static IEnumerable<Message> ReadMessageSet(MemoryStream stream)
+        {
+            // "As an optimization the server is allowed to return a partial message at the end of the message set. 
+            // Clients should handle this case"
+
+            var messageSetSize = ReadInt32(stream);
+            
+            while (messageSetSize > 0)
+            {
+                // we need at least be able to read offset and messageSize
+                if(stream.Position + 8 + 4 > stream.Length)
+                    yield break;
+
+                var offset = ReadInt64(stream);
+                var messageSize = ReadInt32(stream);
+                
+                // we need to be ale to read message body
+                if(stream.Position + messageSize > stream.Length)
+                    yield break;
+
+                // Message
+                var crc = ReadInt32(stream);
+                var crcPos = stream.Position;
+                var magic = stream.ReadByte();
+                var attributes = stream.ReadByte();
+                var msg = new Message();
+                msg.Key = ReadByteArray(stream);
+                msg.Value = ReadByteArray(stream);
+                msg.Offset = offset;
+                var pos = stream.Position;
+                var computedCrcArray = Crc32.Compute(stream, crcPos, pos - crcPos);
+                var computedCrc = ToInt32(computedCrcArray);
+                if (computedCrc != crc)
+                    throw new BrokerException("Corrupt message: Crc does not match");
+                yield return msg;
+
+                // 12 bytes for offset and messageSize flags
+                messageSetSize -= 12 + messageSize;
+            }
+        }
+
+        private static byte[] ReadByteArray(MemoryStream stream)
+        {
+            var len = ReadInt32(stream);
+            if (len == -1)
+                return null;
+            var buff = new byte[len];
+            stream.Read(buff, 0, len);
+            return buff;
+        }
+    }
+}

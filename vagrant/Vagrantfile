@@ -1,0 +1,40 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+VAGRANTFILE_API_VERSION = "2"
+
+Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
+  k_count=3
+
+  config.vm.box = "ubuntu/trusty64"
+  
+  # zookeeper
+  config.vm.define "zookeeper1" do |s|
+	  s.vm.hostname = "zookeeper1"
+
+	  s.vm.network :private_network, ip: "192.168.56.2"
+	  # zookeeper1 is cache for packages
+	  s.vm.provision "shell", inline: "apt-get install -y squid-deb-proxy avahi-utils"
+	  s.vm.provision "shell", inline: "apt-get install -y squid-deb-proxy-client"
+	  s.vm.provision "shell", path: "scripts/init.sh"
+	  s.vm.provision "shell", path: "scripts/zookeeper.sh"
+	end
+
+  # configure brokers
+  (1..k_count).each do |i|
+    config.vm.define "broker#{i}" do |s|
+      s.vm.hostname = "broker#{i}"
+      #s.vm.network "private_network", ip: "10.30.3.#{4-i}0", netmask: "255.255.255.0", virtualbox__intnet: "servidors", drop_nat_interface_default_route: true
+      s.vm.network :private_network, ip: "192.168.56.#{i}0"
+	  s.vm.provision "shell", inline: "apt-get install -y squid-deb-proxy-client"
+      s.vm.provision "shell", path: "scripts/init.sh"
+      s.vm.provision "shell", path: "scripts/broker.sh", args:"#{i}"
+    end
+  end
+
+  config.vm.provider "virtualbox" do |v|
+    #v.gui = true
+    v.customize ["modifyvm", :id, "--cpuexecutioncap", "50", "--memory", "1024"]
+  end
+end
+
