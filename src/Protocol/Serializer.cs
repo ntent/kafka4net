@@ -49,12 +49,12 @@ namespace kafka4net.Protocol
             stream.Position += 4; // skip body
             var ret = new MetadataResponse();
             
-            var count = ReadInt32(stream);
+            var count = BigEndianConverter.ReadInt32(stream);
             ret.Brokers = new BrokerMeta[count];
             for (int i = 0; i < count; i++)
                 ret.Brokers[i] = DeserializeBrokerMeta(stream);
 
-            count = ReadInt32(stream);
+            count = BigEndianConverter.ReadInt32(stream);
             ret.Topics = new TopicMeta[count];
             for (int i = 0; i < count; i++)
                 ret.Topics[i] = DeserializeTopicMeta(stream);
@@ -65,10 +65,10 @@ namespace kafka4net.Protocol
         private static TopicMeta DeserializeTopicMeta(MemoryStream stream)
         {
             var ret = new TopicMeta();
-            ret.TopicErrorCode = (ErrorCode)ReadInt16(stream);
+            ret.TopicErrorCode = (ErrorCode)BigEndianConverter.ReadInt16(stream);
             ret.TopicName = ReadString(stream);
 
-            var count = ReadInt32(stream);
+            var count = BigEndianConverter.ReadInt32(stream);
             ret.Partitions = new PartitionMeta[count];
             for (int i = 0; i < count; i++)
                 ret.Partitions[i] = DeserializePartitionMeta(stream);
@@ -79,19 +79,19 @@ namespace kafka4net.Protocol
         private static PartitionMeta DeserializePartitionMeta(MemoryStream stream)
         {
             var ret = new PartitionMeta();
-            ret.ErrorCode = (ErrorCode)ReadInt16(stream);
-            ret.Id = ReadInt32(stream);
-            ret.Leader = ReadInt32(stream);
+            ret.ErrorCode = (ErrorCode)BigEndianConverter.ReadInt16(stream);
+            ret.Id = BigEndianConverter.ReadInt32(stream);
+            ret.Leader = BigEndianConverter.ReadInt32(stream);
 
-            var count = ReadInt32(stream);
+            var count = BigEndianConverter.ReadInt32(stream);
             ret.Replicas = new int[count];
             for (int i = 0; i < count; i++)
-                ret.Replicas[i] = ReadInt32(stream);
+                ret.Replicas[i] = BigEndianConverter.ReadInt32(stream);
 
-            count = ReadInt32(stream);
+            count = BigEndianConverter.ReadInt32(stream);
             ret.Isr = new int[count];
             for (int i = 0; i < count; i++)
-                ret.Isr[i] = ReadInt32(stream);
+                ret.Isr[i] = BigEndianConverter.ReadInt32(stream);
 
             return ret;
         }
@@ -99,9 +99,9 @@ namespace kafka4net.Protocol
         private static BrokerMeta DeserializeBrokerMeta(MemoryStream stream)
         {
             return new BrokerMeta {
-                NodeId = ReadInt32(stream), 
+                NodeId = BigEndianConverter.ReadInt32(stream), 
                 Host = ReadString(stream), 
-                Port = ReadInt32(stream)
+                Port = BigEndianConverter.ReadInt32(stream)
             };
         }
 
@@ -115,7 +115,7 @@ namespace kafka4net.Protocol
             }
             else
             {
-                Write(stream, request.Topics.Length);
+                BigEndianConverter.Write(stream, request.Topics.Length);
                 foreach (var t in request.Topics)
                     Write(stream, t);
             }
@@ -131,7 +131,7 @@ namespace kafka4net.Protocol
             var len = buff.Length - 4; // -4 because do not count size flag itself
             // write message length to the head
             // TODO: use seek?
-            Write(buff, len);
+            BigEndianConverter.Write(buff, len);
             return buff;
         }
 
@@ -139,8 +139,8 @@ namespace kafka4net.Protocol
         {
             var stream = new MemoryStream();
             WriteRequestHeader(stream, correlationId, ApiKey.ProduceRequest);
-            Write(stream, request.RequiredAcks);
-            Write(stream, request.Timeout);
+            BigEndianConverter.Write(stream, request.RequiredAcks);
+            BigEndianConverter.Write(stream, request.Timeout);
             WriteArray(stream, request.TopicData, t => Write(stream, t));
             return WriteMessageLength(stream);
         }
@@ -153,7 +153,7 @@ namespace kafka4net.Protocol
 
         private static void Write(MemoryStream stream, PartitionData partition)
         {
-            Write(stream, partition.Partition);
+            BigEndianConverter.Write(stream, partition.Partition);
             Write(stream, partition.Messages);
         }
 
@@ -183,14 +183,13 @@ namespace kafka4net.Protocol
                 stream.Write(_minusOne32, 0, 4);
             else
                 stream.Write(message.Key, 0, message.Key.Length);
-            Write(stream, message.Value.Length);
+            BigEndianConverter.Write(stream, message.Value.Length);
             stream.Write(message.Value, 0, message.Value.Length);
 
             // update crc
             var crc = Crc32.Compute(stream, bodyPos, stream.Position - bodyPos);
             Update(stream, crcPos, crc);
         }
-
 
         static void WriteArray<T>(MemoryStream stream, IEnumerable<T> items, Action<T> write)
         {
@@ -204,7 +203,7 @@ namespace kafka4net.Protocol
             }
             var pos = stream.Position; // update count field
             stream.Position = sizePosition;
-            Write(stream, count);
+            BigEndianConverter.Write(stream, count);
             stream.Position = pos;
         }
 
@@ -216,7 +215,7 @@ namespace kafka4net.Protocol
             var pos = stream.Position;
             var size = pos - initPos;
             stream.Position = initPos - 4;
-            Write(stream, (int)size);
+            BigEndianConverter.Write(stream, (int)size);
             stream.Position = pos;
         }
 
@@ -234,51 +233,19 @@ namespace kafka4net.Protocol
                 stream.Write(_minusOne16, 0, 2);
                 return;
             }
-            
-            Write(stream, (short)s.Length);
+
+            BigEndianConverter.Write(stream, (short)s.Length);
             var b = Encoding.UTF8.GetBytes(s);
             stream.Write(b, 0, b.Length);
-        }
-
-        private static void Write(MemoryStream stream, int i)
-        {
-            WriteByte(stream, i >> 8 * 3);
-            WriteByte(stream, i >> 8 * 2);
-            WriteByte(stream, i >> 8);
-            WriteByte(stream, i);
-        }
-
-        private static void Write(MemoryStream stream, short i)
-        {
-            WriteByte(stream, i >> 8);
-            WriteByte(stream, i);
         }
 
         private static void WriteRequestHeader(MemoryStream stream, int correlationId, ApiKey requestType)
         {
             stream.Write(_minusOne32, 0, 4); // reserve space for message size
-            Write(stream, (short)requestType);
+            BigEndianConverter.Write(stream, (short)requestType);
             stream.Write(_apiVersion, 0, 2);
-             Write(stream, correlationId);
+            BigEndianConverter.Write(stream, correlationId);
             stream.Write(_clientId, 0, _clientId.Length);
-        }
-
-        static void WriteByte(MemoryStream stream, int i)
-        {
-            stream.WriteByte((byte)(i & 0xff));
-        }
-
-        static void Write(byte[] buff, int i)
-        {
-            buff[0] = (byte)(i >> 8 * 3);
-            buff[1] = (byte)((i & 0xff0000) >> 8 * 2);
-            buff[2] = (byte)((i & 0xff00) >> 8);
-            buff[3] = (byte)(i & 0xff);
-        }
-
-        public static int ToInt32(byte[] buff)
-        {
-            return (buff[0] << 8 * 3) | (buff[1] << 8 * 2) | (buff[2] << 8) | buff[3];
         }
 
         public static ProducerResponse GetProducerResponse(byte[] buff)
@@ -287,7 +254,7 @@ namespace kafka4net.Protocol
             var stream = new MemoryStream(buff);
             stream.Position += 4; // skip message size
 
-            var count = ReadInt32(stream);
+            var count = BigEndianConverter.ReadInt32(stream);
             resp.Topics = new ProducerResponse.TopicResponse[count];
             for (int i = 0; i < count; i++)
                 resp.Topics[i] = DeserializeTopicResponse(stream);
@@ -299,7 +266,7 @@ namespace kafka4net.Protocol
         {
             var resp = new ProducerResponse.TopicResponse();
             resp.TopicName = ReadString(stream);
-            var count = ReadInt32(stream);
+            var count = BigEndianConverter.ReadInt32(stream);
             resp.Partitions = new ProducerResponse.PartitionResponse[count];
             for (int i = 0; i < count; i++)
                 resp.Partitions[i] = DeserializePartitionResponse(stream);
@@ -310,43 +277,18 @@ namespace kafka4net.Protocol
         {
             return new ProducerResponse.PartitionResponse
             {
-                Partition = ReadInt32(stream),
-                ErrorCode = (ErrorCode)ReadInt16(stream),
-                Offset = ReadInt64(stream)
+                Partition = BigEndianConverter.ReadInt32(stream),
+                ErrorCode = (ErrorCode)BigEndianConverter.ReadInt16(stream),
+                Offset = BigEndianConverter.ReadInt64(stream)
             };
-        }
-
-        private static long ReadInt64(MemoryStream stream)
-        {
-            var res = 0L;
-            for (int i = 0; i < 8; i++)
-                res = res << 8 | stream.ReadByte();
-            return res;
-        }
-
-        static void Write(MemoryStream stream, long i)
-        {
-            ulong ui = (ulong)i;
-            for(int j=7; j>=0; j--)
-                stream.WriteByte( (byte)(ui >> j*8 & 0xff) );
         }
 
         private static string ReadString(MemoryStream stream)
         {
-            var len = ReadInt16(stream);
+            var len = BigEndianConverter.ReadInt16(stream);
             var buffer = new byte[len];
             stream.Read(buffer, 0, len);
             return Encoding.UTF8.GetString(buffer);
-        }
-
-        private static short ReadInt16(MemoryStream s)
-        {
-            return (short)((s.ReadByte() << 8) | s.ReadByte());
-        }
-
-        static int ReadInt32(MemoryStream s)
-        {
-            return s.ReadByte() << 3*8 | s.ReadByte() << 2*8 | s.ReadByte() << 8 | s.ReadByte();
         }
 
         internal static byte[] Serialize(OffsetRequest req, int correlationId)
@@ -359,8 +301,8 @@ namespace kafka4net.Protocol
             Write(stream, req.TopicName);
             WriteArray(stream, req.Partitions, p =>
             {
-                Write(stream, p);
-                Write(stream, req.Time);
+                BigEndianConverter.Write(stream, p);
+                BigEndianConverter.Write(stream, req.Time);
                 stream.Write(_two32, 0, 4);     // request 2 offsets: start and end
             });
 
@@ -374,24 +316,24 @@ namespace kafka4net.Protocol
 
             var response = new OffsetResponse();
 
-            var len = ReadInt32(stream);
+            var len = BigEndianConverter.ReadInt32(stream);
             // TODO: make sure connection is closed
             if(len != 1)
                 throw new BrokerException("Invalid message format");
 
             response.TopicName = ReadString(stream);
 
-            len = ReadInt32(stream);
+            len = BigEndianConverter.ReadInt32(stream);
             response.Partitions = new OffsetResponse.PartitionOffsetData[len];
             for (int i = 0; i < len; i++)
             {
                 var part = response.Partitions[i] = new OffsetResponse.PartitionOffsetData();
-                part.Partition = ReadInt32(stream);
-                part.ErrorCode = (ErrorCode)ReadInt16(stream);
-                var len2 = ReadInt32(stream);
+                part.Partition = BigEndianConverter.ReadInt32(stream);
+                part.ErrorCode = (ErrorCode)BigEndianConverter.ReadInt16(stream);
+                var len2 = BigEndianConverter.ReadInt32(stream);
                 part.Offsets = new long[len2];
                 for (int j = 0; j < len2; j++)
-                    part.Offsets[j] = ReadInt64(stream);
+                    part.Offsets[j] = BigEndianConverter.ReadInt64(stream);
             }
 
             return response;
@@ -402,16 +344,16 @@ namespace kafka4net.Protocol
             var stream = new MemoryStream();
             WriteRequestHeader(stream, correlationId, ApiKey.FetchRequest);
             stream.Write(_minusOne32, 0, 4);    // ReplicaId
-            Write(stream, req.MaxWaitTime);
-            Write(stream, req.MinBytes);
+            BigEndianConverter.Write(stream, req.MaxWaitTime);
+            BigEndianConverter.Write(stream, req.MinBytes);
 
             WriteArray(stream, req.Topics, t => {
                 Write(stream, t.Topic);
                 WriteArray(stream, t.Partitions, p =>
                 {
-                    Write(stream, p.Partition);
-                    Write(stream, p.FetchOffset);
-                    Write(stream, p.MaxBytes);
+                    BigEndianConverter.Write(stream, p.Partition);
+                    BigEndianConverter.Write(stream, p.FetchOffset);
+                    BigEndianConverter.Write(stream, p.MaxBytes);
                 });
             });
 
@@ -424,7 +366,7 @@ namespace kafka4net.Protocol
             stream.Position += 4; // skip body
             var response = new FetchResponse();
 
-            var len = ReadInt32(stream);
+            var len = BigEndianConverter.ReadInt32(stream);
             
             response.Topics = new FetchResponse.TopicFetchData[len];
             for (int t = 0; t < len; t++)
@@ -432,14 +374,14 @@ namespace kafka4net.Protocol
                 var topic = new FetchResponse.TopicFetchData();
                 response.Topics[t] = topic;
                 topic.Topic = ReadString(stream);
-                len = ReadInt32(stream);
+                len = BigEndianConverter.ReadInt32(stream);
                 topic.Partitions = new FetchResponse.PartitionFetchData[len];
                 for (int i = 0; i < len; i++)
                     topic.Partitions[i] = new FetchResponse.PartitionFetchData
                     {
-                        Partition = ReadInt32(stream),
-                        ErrorCode = (ErrorCode)ReadInt16(stream),
-                        HighWatermarkOffset = ReadInt64(stream),
+                        Partition = BigEndianConverter.ReadInt32(stream),
+                        ErrorCode = (ErrorCode)BigEndianConverter.ReadInt16(stream),
+                        HighWatermarkOffset = BigEndianConverter.ReadInt64(stream),
                         Messages = ReadMessageSet(stream).ToArray()
                     };
             }
@@ -452,7 +394,7 @@ namespace kafka4net.Protocol
             // "As an optimization the server is allowed to return a partial message at the end of the message set. 
             // Clients should handle this case"
 
-            var messageSetSize = ReadInt32(stream);
+            var messageSetSize = BigEndianConverter.ReadInt32(stream);
             
             while (messageSetSize > 0)
             {
@@ -460,15 +402,15 @@ namespace kafka4net.Protocol
                 if(stream.Position + 8 + 4 > stream.Length)
                     yield break;
 
-                var offset = ReadInt64(stream);
-                var messageSize = ReadInt32(stream);
+                var offset = BigEndianConverter.ReadInt64(stream);
+                var messageSize = BigEndianConverter.ReadInt32(stream);
                 
                 // we need to be ale to read message body
                 if(stream.Position + messageSize > stream.Length)
                     yield break;
 
                 // Message
-                var crc = ReadInt32(stream);
+                var crc = BigEndianConverter.ReadInt32(stream);
                 var crcPos = stream.Position;
                 var magic = stream.ReadByte();
                 var attributes = stream.ReadByte();
@@ -478,7 +420,7 @@ namespace kafka4net.Protocol
                 msg.Offset = offset;
                 var pos = stream.Position;
                 var computedCrcArray = Crc32.Compute(stream, crcPos, pos - crcPos);
-                var computedCrc = ToInt32(computedCrcArray);
+                var computedCrc = BigEndianConverter.ToInt32(computedCrcArray);
                 if (computedCrc != crc)
                     throw new BrokerException("Corrupt message: Crc does not match");
                 yield return msg;
@@ -490,7 +432,7 @@ namespace kafka4net.Protocol
 
         private static byte[] ReadByteArray(MemoryStream stream)
         {
-            var len = ReadInt32(stream);
+            var len = BigEndianConverter.ReadInt32(stream);
             if (len == -1)
                 return null;
             var buff = new byte[len];

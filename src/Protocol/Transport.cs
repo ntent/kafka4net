@@ -91,7 +91,7 @@ namespace kafka4net.Protocol
                         client.Close();
                         return;
                     }
-                    var size = Serializer.ToInt32(buff);
+                    var size = BigEndianConverter.ToInt32(buff);
                     // read message body
                     var body = new byte[size];
                     var pos = 0;
@@ -113,7 +113,7 @@ namespace kafka4net.Protocol
                         _log.Debug("Still available {0} bytes", client.Available);
 
                     // TODO: check read==size && read > 4
-                    var correlationId = Serializer.ToInt32(body);
+                    var correlationId = BigEndianConverter.ToInt32(body);
                     //_log.Debug("<-{0}\n {1}", correlationId, FormatBytes(body));
                     //_log.Debug("<-{0}", correlationId);
 

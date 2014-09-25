@@ -85,6 +85,7 @@
     <Compile Include="Router.cs" />
     <Compile Include="Protocol\Serializer.cs" />
     <Compile Include="Utils\AskEx.cs" />
+    <Compile Include="Utils\BigEndianConverter.cs" />
     <Compile Include="Utils\Crc32.cs" />
     <Compile Include="Utils\EnumerableEx.cs" />
     <Compile Include="Utils\CountObservable.cs" />

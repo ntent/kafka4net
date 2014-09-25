@@ -21,7 +21,6 @@ namespace tests
     [TestFixture]
     class RecoveryTest
     {
-        //BrokerRouter _router;
         Random _rnd = new Random();
         //string _conn = "192.168.56.10,192.168.56.20";
         string _conn = "192.168.56.10";
@@ -64,7 +63,6 @@ namespace tests
             //var logger = log4net.LogManager.GetLogger("Main");
             //logger.Info("=============== Starting =================");
             //Logger.SetupLog4Net();
-
 
             TaskScheduler.UnobservedTaskException += (sender, args) => logger.Error("Unhandled task exception", (Exception)args.Exception);
             AppDomain.CurrentDomain.UnhandledException += (sender, args) => logger.Error("Unhandled exception", (Exception)args.ExceptionObject);
