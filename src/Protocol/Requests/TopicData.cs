@@ -6,5 +6,10 @@ namespace kafka4net.Protocol.Requests
     {
         public string TopicName;
         public IEnumerable<PartitionData> PartitionsData;
+
+        public override string ToString()
+        {
+            return string.Format("Topic: {0} Parts: [{1}]", TopicName, string.Join(", ", PartitionsData));
+        }
     }
 }

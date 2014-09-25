@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Net.Sockets;
 using System.Reactive.Linq;
+using System.Reactive.Subjects;
 using System.Reactive.Threading.Tasks;
 using System.Threading;
 using System.Threading.Tasks;
@@ -22,7 +23,6 @@ namespace kafka4net.Protocol
         // It is possible to have id per connection, but it's just simpler code and debug/tracing when it's global
         static int _correlationId;
         readonly ConcurrentDictionary<int,Action<byte[]>> _corelationTable = new ConcurrentDictionary<int, Action<byte[]>>();
-        //readonly EventLoopScheduler _scheduler = new EventLoopScheduler(ts => new Thread(ts) {Name = "Kafka-conn"});
 
         public Transport(Router router, string seedConnections)
         {
@@ -75,56 +75,66 @@ namespace kafka4net.Protocol
 
         internal async void CorrelateResponseLoop(TcpClient client)
         {
+            _log.Debug("Starting reading loop from socket {0}", client.Client.RemoteEndPoint);
             // TODO: if corrup message, dump bin log of 100 bytes for further investigation
-            while (true)
+            while (client.Connected)
             {
-                // read message size
-                var buff = new byte[4];
-                var read = await client.GetStream().ReadAsync(buff, 0, 4);
-                // TODO: what to do if read<4 ? Recycle connection?
-                if (read == 0)
+                try
                 {
-                    _log.Info("Server closed connection");
-                    client.Close();
-                    return;
-                }
-                var size = Serializer.ToInt32(buff);
-                // read message body
-                var body = new byte[size];
-                var pos = 0;
-                var left = size;
-                do {
-                    read = await client.GetStream().ReadAsync(body, pos, left);
+                    // read message size
+                    var buff = new byte[4];
+                    var read = await client.GetStream().ReadAsync(buff, 0, 4);
+                    // TODO: what to do if read<4 ? Recycle connection?
                     if (read == 0)
                     {
                         _log.Info("Server closed connection");
                         client.Close();
+                        return;
                     }
-                    //_log.Debug("Read/expected/total {0}/{1}/{2}", read, left, size);
-                    pos += read;
-                    left -= read;
-                } while(left > 0);
-                
-                if(client.Available>0)
-                    _log.Debug("Still available {0} bytes", client.Available);
+                    var size = Serializer.ToInt32(buff);
+                    // read message body
+                    var body = new byte[size];
+                    var pos = 0;
+                    var left = size;
+                    do
+                    {
+                        read = await client.GetStream().ReadAsync(body, pos, left);
+                        if (read == 0)
+                        {
+                            _log.Info("Server closed connection");
+                            client.Close();
+                        }
+                        //_log.Debug("Read/expected/total {0}/{1}/{2}", read, left, size);
+                        pos += read;
+                        left -= read;
+                    } while (left > 0);
 
-                // TODO: check read==size && read > 4
-                var correlationId = Serializer.ToInt32(body);
-                //_log.Debug("<-{0}\n {1}", correlationId, FormatBytes(body));
-                //_log.Debug("<-{0}", correlationId);
+                    if (client.Available > 0)
+                        _log.Debug("Still available {0} bytes", client.Available);
 
-                // find correlated action
-                Action<byte[]> handler;
-                // TODO: if correlation id is not found, there is a chance of corrupt 
-                // connection. Maybe recycle the connection?
-                if (!_corelationTable.TryGetValue(correlationId, out handler))
-                {
-                    _log.Error("Unknown correlationId: " + correlationId);
-                    continue;
+                    // TODO: check read==size && read > 4
+                    var correlationId = Serializer.ToInt32(body);
+                    //_log.Debug("<-{0}\n {1}", correlationId, FormatBytes(body));
+                    //_log.Debug("<-{0}", correlationId);
+
+                    // find correlated action
+                    Action<byte[]> handler;
+                    // TODO: if correlation id is not found, there is a chance of corrupt 
+                    // connection. Maybe recycle the connection?
+                    if (!_corelationTable.TryGetValue(correlationId, out handler))
+                    {
+                        _log.Error("Unknown correlationId: " + correlationId);
+                        continue;
+                    }
+                    handler(body);
+                    // TODO: remove id from correlation table
                 }
-                handler(body);
-                // TODO: remove id from correlation table
+                catch (Exception e)
+                {
+                    _log.Error("CorrelateResponseLoop error", e);
+                }
             }
+            _log.Debug("Finished reading loop from socket {0}", client.Client.RemoteEndPoint);
         }
 
         async Task<T> SendAndCorrelate<T>(Func<int, byte[]> serialize, Func<byte[], T> deserialize, TcpClient tcp, CancellationToken cancel)
@@ -182,13 +192,14 @@ namespace kafka4net.Protocol
                 {
                     var conn = request.Broker.Conn;
                     var client = await conn.GetClient();
-                    _log.Debug("Sending ProduceRequest to {0}", conn);
+                    _log.Debug("Sending ProduceRequest to {0}, Request: {1}", conn, request);
                     response = await SendAndCorrelate(
                         id => Serializer.Serialize(request, id),
                         Serializer.GetProducerResponse,
                         client,
                         CancellationToken.None
                     );
+                    _log.Debug("Got ProduceResponse: {0}", response);
                 }
                 catch (SocketException e)
                 {
@@ -245,9 +256,10 @@ namespace kafka4net.Protocol
 
         internal async Task<OffsetResponse> GetOffsets(OffsetRequest req, Connection conn)
         {
-           var tcp = await conn.GetClient();
-           _log.Debug("Sending OffsetRequest to {0}", tcp.Client.RemoteEndPoint);
-           return await SendAndCorrelate(
+            var tcp = await conn.GetClient();
+            if(_log.IsDebugEnabled)
+                _log.Debug("Sending OffsetRequest to {0}. request: {1}", tcp.Client.RemoteEndPoint, req);
+            return await SendAndCorrelate(
                 id => Serializer.Serialize(req, id),
                 Serializer.DeserializeOffsetResponse,
                 tcp, CancellationToken.None);
@@ -255,7 +267,7 @@ namespace kafka4net.Protocol
 
         internal async Task<FetchResponse> Fetch(FetchRequest req, Connection conn)
         {
-            //_log.Debug("Sending FetchRequest...");
+            _log.Debug("Sending FetchRequest {0}", req);
             
             // Detect disconnected server. Wait no less than 5sec. 
             // If wait time exceed wait time + 3sec, consider it a timeout too
@@ -263,10 +275,15 @@ namespace kafka4net.Protocol
             var cancel = new CancellationTokenSource(timeout);
 
             var tcp = await conn.GetClient();
-            return await SendAndCorrelate(
+            var response = await SendAndCorrelate(
                 id => Serializer.Serialize(req, id),
                 Serializer.DeserializeFetchResponse,
                 tcp, cancel.Token);
+
+            if(response.Topics.Length > 0 && _log.IsDebugEnabled)
+                _log.Debug("Got fetch response from {0} Response: {1}", conn, response);
+
+            return response;
         }
 
         // TODO: move to router

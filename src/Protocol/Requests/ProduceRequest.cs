@@ -32,5 +32,10 @@ namespace kafka4net.Protocol.Requests
         /// <summary>This propert is not serialized and is used only to carry connection info from grouping
         /// by broker to sending phase</summary>
         public BrokerMeta Broker;
+
+        public override string ToString()
+        {
+            return string.Format("Broker: {0} Acks: {1} Timeout: {2} Topics: [{3}]", Broker, RequiredAcks, Timeout, string.Join(", ", TopicData));
+        }
     }
 }

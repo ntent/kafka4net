@@ -19,7 +19,7 @@ using Logger = kafka4net.Logger;
 namespace tests
 {
     [TestFixture]
-    class IntermittentRecoveryTest
+    class RecoveryTest
     {
         //BrokerRouter _router;
         Random _rnd = new Random();
@@ -30,11 +30,7 @@ namespace tests
         [SetUp]
         public void Setup()
         {
-            //var options = new KafkaOptions(new Uri(ConfigurationManager.AppSettings["IntegrationKafkaServerUrl"]));
-            //_router = new BrokerRouter(options);
-            TaskScheduler.UnobservedTaskException += (sender, args) => Console.WriteLine("Unhandled task exception '{0}'", args.Exception.Message);
-            
-            // logging
+            // NLog
             var config = new LoggingConfiguration();
             var consoleTarget = new ColoredConsoleTarget();
             config.AddTarget("console", consoleTarget);
@@ -43,7 +39,10 @@ namespace tests
 
             consoleTarget.Layout = "${level} [${threadname}:${threadid}] ${logger} ${message} ${exception:format=tostring}";
             fileTarget.FileName = "${basedir}../../../../log.txt";
-            fileTarget.Layout = "${longdate} ${level} [${threadname}:${threadid}] ${logger} ${message} ${exception:format=tostring,stacktrace:innerFormat=tostring,stacktrace}";
+            fileTarget.Layout = "${longdate} ${level} [${threadname}:${threadid}] ${logger:shortName=true} ${message} ${exception:format=tostring,stacktrace:innerFormat=tostring,stacktrace}";
+
+            // disable Transport noise
+            //config.LoggingRules.Add(new LoggingRule("kafka4net.Protocol.Transport", LogLevel.Info, fileTarget) { Final = true});
 
             var rule1 = new LoggingRule("*", LogLevel.Info, consoleTarget);
             config.LoggingRules.Add(rule1);
@@ -56,6 +55,19 @@ namespace tests
 
             // set nlog logger in kafka
             Logger.SetupNLog();
+
+            //
+            // log4net
+            //
+            //var app1 = new log4net.Appender.FileAppender() { File = @"C:\projects\kafka4net\log2.txt" };
+            //var coll = log4net.Config.BasicConfigurator.Configure();
+            //var logger = log4net.LogManager.GetLogger("Main");
+            //logger.Info("=============== Starting =================");
+            //Logger.SetupLog4Net();
+
+
+            TaskScheduler.UnobservedTaskException += (sender, args) => logger.Error("Unhandled task exception", (Exception)args.Exception);
+            AppDomain.CurrentDomain.UnhandledException += (sender, args) => logger.Error("Unhandled exception", (Exception)args.ExceptionObject);
         }
 
         [TearDown]
@@ -254,7 +266,9 @@ namespace tests
         public async Task CleanShutdownTest()
         {
             var broker = new Router(_conn);
+            var fetchBroker = new Router(_conn);
             await broker.ConnectAsync();
+            await fetchBroker.ConnectAsync();
             const string topic = "shutdown.test";
 
             var producer = new Publisher(topic) {
@@ -271,15 +285,15 @@ namespace tests
             producer.BatchSize = int.MaxValue;
 
             // start listener at the end of queue and accumulate received messages
-            var received = new List<string>();
-            var consumer = broker.Consumer(topic);
-            consumer.AsObservable.Select(msg => Encoding.UTF8.GetString(msg.Value)).Subscribe(received.Add);
+            var received = new HashSet<string>();
+            var consumer = fetchBroker.Consumer(topic, maxWaitTimeMs: 30*1000);
+            consumer.AsObservable.Select(msg => Encoding.UTF8.GetString(msg.Value)).Subscribe(m => received.Add(m));
 
             // send data, 5 msg/sec
-            var sent = new List<string>();
+            var sent = new HashSet<string>();
             var producerSubscription = Observable.Interval(TimeSpan.FromSeconds(1.0 / 5)).
                 Select(i => string.Format("msg {0} {1}", i, Guid.NewGuid())).
-                Do(sent.Add).
+                Do(m => sent.Add(m)).
                 Select(msg => new Message
                 {
                     Value = Encoding.UTF8.GetBytes(msg)
@@ -294,7 +308,8 @@ namespace tests
             // await for producer for 2 sec
             Assert.IsTrue(t1.Wait(2000), "Timed out waiting for consumer");
 
-            var t2 = broker.Close();
+            await broker.Close(TimeSpan.FromSeconds(4));
+            fetchBroker.Close(TimeSpan.FromSeconds(20));    // fetch may timeout due to long pooling, dont wait for it
 
             // how to make sure nothing is sent after shutdown? listen to logger?  have connection events?
 
@@ -305,7 +320,8 @@ namespace tests
             //consumer.Close();
 
             Assert.AreEqual(sent.Count, received.Count, string.Format("Sent and Receved size differs. Sent: {0} Recevied: {1}", sent.Count, received.Count));
-            Assert.True(received.SequenceEqual(sent), "Sent and Received set differs");
+            // compare sets and not lists, because of 2 partitions, send order and receive orser are not the same
+            Assert.True(received.SetEquals(sent), "Sent and Received set differs");
         }
 
         [Test]

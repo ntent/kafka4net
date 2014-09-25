@@ -1,4 +1,5 @@
 ﻿using System.Collections.Generic;
+using System.Linq;
 
 namespace kafka4net.Protocol.Requests
 {
@@ -19,5 +20,10 @@ namespace kafka4net.Protocol.Requests
         /// and driver notifys app that those messages have failed.
         /// </summary>
         public Message[] OriginalMessages;
+
+        public override string ToString()
+        {
+            return string.Format("Part: {0} Messages: {1}", Partition, Messages.Count());
+        }
     }
 }

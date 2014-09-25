@@ -25,30 +25,38 @@ namespace kafka4net.ConsumerImpl
         public readonly Tuple<int, int, int> Key;
 
         private readonly BrokerMeta _broker;
-        private readonly Transport _connectionActor;
+        private readonly Transport _connection;
         private readonly CancellationToken _cancel;
         private readonly Dictionary<Consumer,List<PartitionFetchState>> _consumerToPartitionsMap = new Dictionary<Consumer, List<PartitionFetchState>>();
         private Dictionary<string,List<PartitionFetchState>> _topicToPartitionsMap = new Dictionary<string, List<PartitionFetchState>>();
         static readonly ILogger _log = Logger.GetLogger();
-        private readonly IObservable<FetchResponse> _messagesEvent;
+        private IObservable<FetchResponse> _messagesEvent;
+        readonly int _id = Interlocked.Increment(ref _nextId);
+        static int _nextId;
 
-        public Fetcher(BrokerMeta broker, Transport connectionActor, Consumer consumer, CancellationToken cancel)
+        /// <summary>This constructor does not have partitions and must be followed with ResolveTime() call</summary>
+        public Fetcher(BrokerMeta broker, Transport connection, Consumer consumer, CancellationToken cancel)
         {
             _broker = broker;
-            _connectionActor = connectionActor;
+            _connection = connection;
             _cancel = cancel;
             Key = Tuple.Create(broker.NodeId, consumer.MaxWaitTimeMs, consumer.MinBytes);
-            _messagesEvent = FetchLoop();
+
+            if (_log.IsDebugEnabled)
+                _log.Debug("Create new fetcher #{0} for consumer: {1}", _id, consumer);
         }
 
         public Fetcher(BrokerMeta broker, Transport connection, Consumer consumer, List<PartitionFetchState> partitions, CancellationToken cancel)
         {
             _broker = broker;
-            _connectionActor = connection;
+            _connection = connection;
             _cancel = cancel;
             _consumerToPartitionsMap.Add(consumer, partitions);
             Key = Tuple.Create(broker.NodeId, consumer.MaxWaitTimeMs, consumer.MinBytes);
             _messagesEvent = FetchLoop();
+
+            if(_log.IsDebugEnabled)
+                _log.Debug("Created new fetcher #{0} for consumer: {1} with explicit partitions: {1}", _id, consumer, string.Join(",", partitions));
         }
 
         public override string ToString()
@@ -70,10 +78,12 @@ namespace kafka4net.ConsumerImpl
         /// Initial start of partition fetching. ListeningGroup contains time and Fetch() needs to be called
         /// to convert Time into Offset.
         /// </summary>
-        public async void AddWithTime(Consumer consumer, int[] partitions)
+        public async Task ResolveTime(Consumer consumer, int[] partitions)
         {
             // TODO: if fetcher is complete due to partition changing leader, while offset operation
             // in progress, what do we do?
+
+            _log.Debug("Fetcher #{0} adding partitions to be time->offset resolved: parts: [{1}]", _id, string.Join(",", partitions));
             
             var req = new OffsetRequest
             {
@@ -85,7 +95,7 @@ namespace kafka4net.ConsumerImpl
             // issue request 
             // TODO: relaiability. If offset failed, try to recover
             // TODO: check offset return code
-            var offset = await _connectionActor.GetOffsets(req, _broker.Conn);
+            var offset = await _connection.GetOffsets(req, _broker.Conn);
 
             lock(_consumerToPartitionsMap)
             {
@@ -107,7 +117,13 @@ namespace kafka4net.ConsumerImpl
                     ToArray();
 
                 state.AddRange(newStates);
+
+                _messagesEvent = FetchLoop();
+
+                if (_log.IsDebugEnabled)
+                    _log.Debug("Fetcher #{0} resolved time->offset. New fetch states: [{1}]", _id, string.Join(", ", newStates.AsEnumerable()));
             }
+            
         }
 
         public void AdToListeningPartitions(Consumer consumer, List<PartitionFetchState> parts)
@@ -152,7 +168,13 @@ namespace kafka4net.ConsumerImpl
                     FetchResponse fetch;
                     try
                     {
-                        fetch = await _connectionActor.Fetch(fetchRequest, _broker.Conn);
+                        if(_log.IsDebugEnabled) 
+                            _log.Debug("#{0}: sending FetchRequest: {1}", _id, fetchRequest);
+                        
+                        fetch = await _connection.Fetch(fetchRequest, _broker.Conn);
+                        
+                        if (_log.IsDebugEnabled)
+                            _log.Debug("#{0}: got FetchResponse: {1}", _id, fetch);
                     }
                     catch (TaskCanceledException)
                     {

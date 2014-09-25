@@ -5,6 +5,7 @@ using System.Net.Sockets;
 using System.Reactive.Concurrency;
 using System.Reactive.Linq;
 using System.Reactive.Subjects;
+using System.Reactive.Threading.Tasks;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Threading.Tasks.Dataflow;
@@ -23,7 +24,7 @@ namespace kafka4net
     /// </summary>
     public class Router
     {
-        readonly Transport _connectionActor;
+        readonly Transport _connection;
         BrokerState _state = BrokerState.Disconnected;
         static readonly Random _rnd = new Random();
         static readonly ILogger _log = Logger.GetLogger();
@@ -34,6 +35,9 @@ namespace kafka4net
         Dictionary<string,PartitionMeta[]> _topicPartitionMap = new Dictionary<string, PartitionMeta[]>();
         Dictionary<PartitionMeta, BrokerMeta> _partitionBrokerMap = new Dictionary<PartitionMeta, BrokerMeta>();
         readonly EventLoopScheduler _scheduler = new EventLoopScheduler(ts => new Thread(ts) { Name = "Kafka-route" });
+        CountObservable _inBatchCount = new CountObservable();
+        static int _idCount;
+        readonly int _id = Interlocked.Increment(ref _idCount);
 
         //
         // message waiting structures
@@ -71,25 +75,42 @@ namespace kafka4net
             _partitionRecoveryTask = Task.Factory.StartNew(() => StartPartitionRecovery(), TaskCreationOptions.LongRunning);
 
             _partitionReadyEvents = BuildPartitionReadyEvent();
+
+            _inBatchCount.Subscribe(c => _log.Debug("#{0} InBatchCount: {1}", _id, c));
         }
 
-        public async Task Close()
+        public async Task Close(TimeSpan timeout)
         {
-            _log.Debug("Closing...");
+            _log.Debug("#{0} Closing...", _id);
             _cancel.Cancel();
             _topicResolutionQueue.Complete();
             
-            await Task.WhenAll(new[] { 
+            var success = await Task.WhenAll(new[] { 
                 _partitionRecoveryMonitor.Completion, 
-                _topicResolutionQueue.Completion
-            });
-            
-            _log.Debug("Closed");
+                _topicResolutionQueue.Completion,
+                _inBatchCount.FirstAsync(c => c == 0).ToTask()
+            }).TimeoutAfter(timeout);
+
+            if (!success)
+            {
+                _log.Error("Timed out");
+                if(!_partitionRecoveryMonitor.Completion.IsCompleted)
+                    _log.Error("_partitionRecoveryMonitor timed out");
+                if(!_topicResolutionQueue.Completion.IsCompleted)
+                    _log.Error("_topicResolutionQueue timed out");
+                var batchesInProgress = _inBatchCount.FirstAsync().ToTask().Result;
+                if(batchesInProgress != 0)
+                    _log.Error("There are {0} batches in progress. Timed out", batchesInProgress);
+            }
+            else
+            {
+                _log.Debug("#{0} Closed", _id);
+            }
         }
 
         private void StartPartitionMonitor()
         {
-            _partitionRecoveryMonitor = new PartitionRecoveryMonitor(_metadata.Brokers, _connectionActor, _cancel.Token);
+            _partitionRecoveryMonitor = new PartitionRecoveryMonitor(_metadata.Brokers, _connection, _cancel.Token);
             // Merge metadata that recovery monitor discovers
             _partitionRecoveryMonitor.NewMetadataEvents.Subscribe(meta => _scheduler.Schedule(() => MergeTopicMeta(meta)));
             _partitionRecoveryMonitor.RecoveryEvents.Subscribe(
@@ -115,7 +136,7 @@ namespace kafka4net
         /// </param>
         public Router(string seedBrokers) : this()
         {
-            _connectionActor = new Transport(this, seedBrokers);
+            _connection = new Transport(this, seedBrokers);
             _state = BrokerState.Disconnected;
         }
 
@@ -138,7 +159,7 @@ namespace kafka4net
                 // TODO: use messages to manipulate state
                 _state = BrokerState.Connecting;
                 // TODO: connector is connected but it sends message to broker, so _meta will be set later!
-                var initMeta = await _connectionActor.ConnectAsync();
+                var initMeta = await _connection.ConnectAsync();
                 MergeTopicMeta(initMeta);
                 _state = BrokerState.Connected;
                 StartPartitionMonitor();
@@ -181,26 +202,25 @@ namespace kafka4net
                 select brokerGrp
                 // issue request 
                 // TODO: relaiability. If offset failed, try to recover N times
-                //select new { Task = _connectionActor.GetOffsets(req, brokerGrp.Key.Conn), brokerGrp.Key.Conn }
-            ).Select(listeningPartitions =>
+            ).Select(async listeningPartitions =>
             {
                 var consumerKey = Tuple.Create(listeningPartitions.Key.NodeId, consumer.MaxWaitTimeMs, consumer.MinBytes);
                 var fetcher = _activeFetchers.Concat(_deadFetchers).
                     FirstOrDefault(f => f.Key.Equals(consumerKey));
                 if (fetcher == null)
                 {
-                    fetcher = new Fetcher(listeningPartitions.Key, _connectionActor, consumer, _cancel.Token);
+                    fetcher = new Fetcher(listeningPartitions.Key, _connection, consumer, _cancel.Token);
                     _activeFetchers.Add(fetcher);
                 }
                 
-                fetcher.AddWithTime(consumer, listeningPartitions.ToArray());
+                await fetcher.ResolveTime(consumer, listeningPartitions.ToArray());
                 
                 return fetcher.AsObservable().
                     SelectMany(msg => msg.Topics).
                     Where(t => t.Topic == consumer.Topic).
                     Do(_ => {}, e => AddFetcherMonitoring(fetcher, e)).
                     SelectMany(topic => {
-                        _log.Debug("Received fetch message");
+                        _log.Debug("#{0} Received fetch message", _id);
                         return (
                             from part in topic.Partitions
                             from msg in part.Messages
@@ -212,7 +232,9 @@ namespace kafka4net
                                 Value = msg.Value
                             });
                     });
-            }).Merge();
+            }).
+            // TODO: could this be avoided by rewriting the body somehow???
+            ToObservable().Merge().Merge();
         }
 
         void AddFetcherMonitoring(Fetcher fetcher, Exception e)
@@ -260,7 +282,7 @@ namespace kafka4net
                     {
                         // no fetcher for this partition group
                         var broker = _metadata.Brokers.Single(b => b.NodeId == brokerGroup.BrokerId);
-                        var fetcher2 = new Fetcher(broker, _connectionActor, consumer, brokerGroup.Parts, _cancel.Token);
+                        var fetcher2 = new Fetcher(broker, _connection, consumer, brokerGroup.Parts, _cancel.Token);
                         fetcher2.AsObservable().Subscribe(_ => { }, e => AddFetcherMonitoring(fetcher2, e));
                         fetcher = fetcher2;
                         needSubscription = true;
@@ -296,7 +318,7 @@ namespace kafka4net
             {
                 try
                 {
-                    var meta = await _connectionActor.MetadataRequest(new TopicRequest { Topics = new[] { topic } });
+                    var meta = await _connection.MetadataRequest(new TopicRequest { Topics = new[] { topic } });
                     var errorCode = meta.Topics.Single().TopicErrorCode;
                     switch (errorCode)
                     {
@@ -330,15 +352,20 @@ namespace kafka4net
 
         internal async Task SendBatch(Publisher publisher, IList<Message> batch)
         {
-            if(_cancel.IsCancellationRequested)
-                throw new BrokerException("Can not send, router is closed");
-
-            if (_state == BrokerState.Connecting || _state == BrokerState.Disconnected)
+            _inBatchCount.Incr();
+            try
             {
-                // group by publisher to send errors in batches
-                //foreach (var pubGroup in batch.GroupBy(_ => _.Item1))
-                //{
-                //    var publisher = pubGroup.Key;
+                _log.Debug("#{0} SendBatch messages: {1}", _id, batch.Count);
+
+                if (_cancel.IsCancellationRequested)
+                    throw new BrokerException("Can not send, router is closed");
+
+                if (_state == BrokerState.Connecting || _state == BrokerState.Disconnected)
+                {
+                    // group by publisher to send errors in batches
+                    //foreach (var pubGroup in batch.GroupBy(_ => _.Item1))
+                    //{
+                    //    var publisher = pubGroup.Key;
                     switch (_state)
                     {
                         case BrokerState.Disconnected:
@@ -350,37 +377,40 @@ namespace kafka4net
                             //pubGroup.ToList().ForEach(_delayedMessages.Enqueue);
                             break;
                     }
-                //}
-                return;
-            }
-            
-            if (_state == BrokerState.Connected)
-            {
-                // BNF:
-                // ProduceRequest => RequiredAcks Timeout [TopicName [Partition MessageSetSize MessageSet]]
-                //      RequiredAcks => int16
-                //      Timeout => int32
-                //      Partition => int32
-                //      MessageSetSize => int32
-                var waitingList = new List<Tuple<Publisher,PartitionMeta,Message>>();
-                var requests = (
-                    from msg in (
-                        // extend message with broker and partition info
-                        from msg in batch
-                        let brokerPart = FindBrokerAndPartition(msg, publisher, waitingList)
-                        // Messages without known partition are sent to retry by FindBrokerAndPartition()
-                        // so just skip them here
-                        where brokerPart != null
-                        select new { Msg = msg, Broker = brokerPart.Item1, Part = brokerPart.Item2}
-                    )
-                    // Group by broker to send one batch per physical connection
-                    group msg by msg.Broker
-                    into routeGrp
-                    select new ProduceRequest {
-                        Broker = routeGrp.Key,
-                        RequiredAcks = publisher.Acks,
-                        Timeout = publisher.TimeoutMs,
-                        TopicData = new[] 
+                    //}
+                    _log.Debug("SendBatch complete");
+                    return;
+                }
+
+                if (_state == BrokerState.Connected)
+                {
+                    // BNF:
+                    // ProduceRequest => RequiredAcks Timeout [TopicName [Partition MessageSetSize MessageSet]]
+                    //      RequiredAcks => int16
+                    //      Timeout => int32
+                    //      Partition => int32
+                    //      MessageSetSize => int32
+                    var waitingList = new List<Tuple<Publisher, PartitionMeta, Message>>();
+                    var requests = (
+                        from msg in
+                            (
+                                // extend message with broker and partition info
+                                from msg in batch
+                                let brokerPart = FindBrokerAndPartition(msg, publisher, waitingList)
+                                // Messages without known partition are sent to retry by FindBrokerAndPartition()
+                                // so just skip them here
+                                where brokerPart != null
+                                select new { Msg = msg, Broker = brokerPart.Item1, Part = brokerPart.Item2 }
+                                )
+                        // Group by broker to send one batch per physical connection
+                        group msg by msg.Broker
+                            into routeGrp
+                            select new ProduceRequest
+                            {
+                                Broker = routeGrp.Key,
+                                RequiredAcks = publisher.Acks,
+                                Timeout = publisher.TimeoutMs,
+                                TopicData = new[] 
                         {
                             new TopicData {
                                 TopicName = publisher.Topic,
@@ -404,16 +434,21 @@ namespace kafka4net
                                 )
                             }
                         }
-                    }
-                ).ToArray(); // materialize to fill out waitingList
+                            }
+                    ).ToArray(); // materialize to fill out waitingList
 
-                PutMessagesIntoWaitingQueue(waitingList);
+                    PutMessagesIntoWaitingQueue(waitingList);
 
-                await _connectionActor.Produce(requests);
-                return;
+                    await _connection.Produce(requests);
+                    _log.Debug("#{0} SendBatch complete", _id);
+                    return;
+                }
+
+                throw new Exception("Unknown state: " + _state);
             }
-            
-            throw new Exception("Unknown state: " + _state);
+            finally {
+                _inBatchCount.Decr();
+            }
         }
 
         /// <summary>Find partition and connection for given message key/topic.
@@ -467,7 +502,7 @@ namespace kafka4net
                 join brokerConn in
                 (
                     from broker in clusterMeta.Brokers
-                    select new {broker, conn = new Connection(broker.Host, broker.Port, _connectionActor)}
+                    select new {broker, conn = new Connection(broker.Host, broker.Port, _connection)}
                 ) on leaderGrp.Key equals brokerConn.broker.NodeId
                 // flatten broker->partition[] into partition->broker
                 from partition in leaderGrp
@@ -523,7 +558,7 @@ namespace kafka4net
             try 
             {
 resend:
-                var topicMeta = await _connectionActor.MetadataRequest(req);
+                var topicMeta = await _connection.MetadataRequest(req);
                 switch (topicMeta.Topics[0].TopicErrorCode)
                 {
                     case ErrorCode.NoError:
@@ -722,7 +757,7 @@ resend:
 
                         _log.Info("Starting partition recovery. Broker: {0}", broker);
 
-                        var metaNew = await _connectionActor.MetadataRequest(new TopicRequest { Topics = topics }, broker);
+                        var metaNew = await _connection.MetadataRequest(new TopicRequest { Topics = topics }, broker);
                         // if no exception, broker is back online. TODO: this is not thread-safe
                         if(broker.Conn.State == ConnState.Connecting)
                             broker.Conn.State = ConnState.Connected;
@@ -801,7 +836,7 @@ resend:
                             } 
                         }
                     };
-                    var response = await _connectionActor.ProduceRaw(new ProduceRequest {Broker = broker, RequiredAcks = recovered.Pub.Acks, Timeout = recovered.Pub.TimeoutMs, TopicData = new[] {topicData}}, CancellationToken.None);
+                    var response = await _connection.ProduceRaw(new ProduceRequest {Broker = broker, RequiredAcks = recovered.Pub.Acks, Timeout = recovered.Pub.TimeoutMs, TopicData = new[] {topicData}}, CancellationToken.None);
 
                     var errorCode = response.Topics.Single().Partitions.Single().ErrorCode;
                     if (errorCode == ErrorCode.NoError)

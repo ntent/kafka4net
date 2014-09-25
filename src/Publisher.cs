@@ -15,6 +15,7 @@ namespace kafka4net
         public int BatchSize = 1000;
         //public MessageCodec Codec = MessageCodec.CodecNone;
         static readonly ILogger _log = Logger.GetLogger();
+        readonly TaskCompletionSource<bool> _completion = new TaskCompletionSource<bool>();
 
         public Action<Message[]> OnTempError;
         public Action<Exception, Message[]> OnPermError;
@@ -32,11 +33,26 @@ namespace kafka4net
             _sendBuffer.AsObservable().
                 Buffer(BatchTime, BatchSize).
                 Where(b => b.Count > 0). // apparently, Buffer will trigger empty batches too, skip them
-            Subscribe(batch => router.SendBatch(this, batch), // TODO: how to check result? Make it failsafe?
+                //Select(async batch => await router.SendBatch(this, batch)). // TODO: how to check result? Make it failsafe?
+                //Subscribe(_ => _log.Debug("send batch status:", (Exception)_.Exception),
+                //// How to prevent overlap?
+                //// Make sure publisher.OnError are fired
+                //e => _log.Fatal("Unexpected error in send buffer: {0}", e.Message),
+                //() => _log.Info("Send buffer complete"));
+                // TODO: how to check result? Make it failsafe?
+                Subscribe(batch => router.SendBatch(this, batch), // TODO: how to check result? Make it failsafe?
                 // How to prevent overlap?
                 // Make sure publisher.OnError are fired
-                e => _log.Fatal("Unexpected error in send buffer: {0}", e.Message),
-                () => _log.Info("Send buffer complete"));
+                    e =>
+                    {
+                        _log.Fatal("Unexpected error in send buffer: {0}", e.Message);
+                        _completion.TrySetResult(false);
+                    },
+                    () =>
+                    {
+                        _log.Info("Send buffer complete");
+                        _completion.TrySetResult(true);
+                    });
         }
 
         public void Send(Message msg)
@@ -46,9 +62,12 @@ namespace kafka4net
 
         public async Task Close()
         {
-            _log.Debug("Completing buffer");
+            _log.Debug("Closing...");
             _sendBuffer.Complete();
-            await _sendBuffer.Completion;
+            
+            //await _sendBuffer.Completion; // apparently it wont wait till sequence is complete
+            await _completion.Task;
+            
             _log.Info("Close complete");
         }
 

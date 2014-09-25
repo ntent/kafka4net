@@ -52,7 +52,10 @@ namespace kafka4net
         public async Task<TcpClient> GetClient()
         {
             if (_client != null && !_client.Connected)
+            {
+                _log.Debug("Replacing closed connection {0} with a new one", _client.Client.RemoteEndPoint);
                 _client = null;
+            }
 
             if (_client == null)
             {

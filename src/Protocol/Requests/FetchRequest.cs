@@ -1,4 +1,6 @@
-﻿namespace kafka4net.Protocol.Requests
+﻿using System.Linq;
+
+namespace kafka4net.Protocol.Requests
 {
     class FetchRequest
     {
@@ -27,6 +29,11 @@
         {
             public string Topic;
             public PartitionData[] Partitions;
+
+            public override string ToString()
+            {
+                return string.Format("Topic: {0} Parts: [{1}]", Topic, string.Join(", ", Partitions.AsEnumerable()));
+            }
         }
 
         public class PartitionData
@@ -34,6 +41,16 @@
             public int Partition;
             public long FetchOffset;
             public int MaxBytes;
+
+            public override string ToString()
+            {
+                return string.Format("Partition: {0} Offset: {1} MaxBytes: {2}", Partition, FetchOffset, MaxBytes);
+            }
+        }
+
+        public override string ToString()
+        {
+            return string.Format("MaxTime: {0} MinBytes: {1} [{2}]", MaxWaitTime, MinBytes, string.Join(",", Topics.AsEnumerable()));
         }
     }
 }

@@ -83,10 +83,12 @@
     <Compile Include="Protocol\Responses\OffsetResponse.cs" />
     <Compile Include="Protocol\Responses\ProducerResponse.cs" />
     <Compile Include="Router.cs" />
-    <Compile Include="Serializer.cs" />
+    <Compile Include="Protocol\Serializer.cs" />
     <Compile Include="Utils\AskEx.cs" />
     <Compile Include="Utils\Crc32.cs" />
     <Compile Include="Utils\EnumerableEx.cs" />
+    <Compile Include="Utils\CountObservable.cs" />
+    <Compile Include="Utils\TaskEx.cs" />
   </ItemGroup>
   <ItemGroup>
     <None Include="packages.config" />

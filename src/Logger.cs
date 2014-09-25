@@ -22,6 +22,19 @@ namespace kafka4net
             LoggerFactory = t => new NLogAdaprter(func(t.FullName));
         }
 
+        public static void SetupLog4Net()
+        {
+            var logManagerType = Type.GetType("log4net.LogManager, log4net");
+            var method = logManagerType.GetMethod("GetLogger", BindingFlags.InvokeMethod | BindingFlags.Public | BindingFlags.Static, null, CallingConventions.Standard, new[] { typeof(string) }, null);
+
+            var retType = method.ReturnType;
+            var delegateTypeGeneric = typeof(Func<,>);
+            var delegateType = delegateTypeGeneric.MakeGenericType(new[] { typeof(string), retType });
+            var del = Delegate.CreateDelegate(delegateType, method);
+            var func = (Func<string, object>)del;
+            LoggerFactory = t => new Log4NetAdaprter(func(t.FullName));
+        }
+
         [MethodImpl(MethodImplOptions.NoInlining)]
         internal static ILogger GetLogger()
         {
@@ -111,6 +124,78 @@ namespace kafka4net
             public void Fatal(string msg, params object[] args)
             {
                 _actualLogger.Fatal(msg, args);
+            }
+
+            public void Fatal(Exception e, string msg, params object[] args)
+            {
+                _actualLogger.Fatal(string.Format(msg, args), e);
+            }
+        }
+        
+        class Log4NetAdaprter : ILogger
+        {
+            readonly dynamic _actualLogger;
+
+            public Log4NetAdaprter(object actualLogger)
+            {
+                _actualLogger = actualLogger;
+            }
+
+            public void Debug(string msg)
+            {
+                _actualLogger.Debug(msg);
+            }
+
+            public void Debug(string msg, params object[] args)
+            {
+                _actualLogger.DebugFormat(msg, args);
+            }
+
+            public void Debug(Exception e, string msg, params object[] args)
+            {
+                _actualLogger.Debug(string.Format(msg, args), e);
+            }
+
+            public bool IsDebugEnabled { get { return _actualLogger.IsDebugEnabled; } }
+
+            public void Info(string msg)
+            {
+                _actualLogger.Info(msg);
+            }
+
+            public void Info(string msg, params object[] args)
+            {
+                _actualLogger.InfoFormat(msg, args);
+            }
+
+            public void Info(Exception e, string msg, params object[] args)
+            {
+                _actualLogger.Info(string.Format(msg, args), e);
+            }
+
+            public void Error(string msg)
+            {
+                _actualLogger.Error(msg);
+            }
+
+            public void Error(string msg, params object[] args)
+            {
+                _actualLogger.ErrorFormat(msg, args);
+            }
+
+            public void Error(Exception e, string msg, params object[] args)
+            {
+                _actualLogger.Error(string.Format(msg, args), e);
+            }
+
+            public void Fatal(string msg)
+            {
+                _actualLogger.Fatal(msg);
+            }
+
+            public void Fatal(string msg, params object[] args)
+            {
+                _actualLogger.FatalFormat(msg, args);
             }
 
             public void Fatal(Exception e, string msg, params object[] args)

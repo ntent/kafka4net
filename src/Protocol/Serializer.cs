@@ -8,7 +8,7 @@ using kafka4net.Protocol.Requests;
 using kafka4net.Protocol.Responses;
 using kafka4net.Utils;
 
-namespace kafka4net
+namespace kafka4net.Protocol
 {
     // TODO: move functions into business objects
     static class Serializer
@@ -27,7 +27,7 @@ namespace kafka4net
         {
             var ms = new MemoryStream();
             //Write(ms, "kafka-sharp");
-            Write(ms, "Kafka-Net");
+            Write(ms, "kafka4net");
             _clientId = ms.ToArray();
         }
 
