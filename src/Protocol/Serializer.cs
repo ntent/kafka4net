@@ -179,10 +179,15 @@ namespace kafka4net.Protocol
             
             stream.WriteByte(0); // magic byte
             stream.WriteByte(0); // attributes
-            if(message.Key == null)
+            if (message.Key == null)
+            {
                 stream.Write(_minusOne32, 0, 4);
+            }
             else
+            {
+                BigEndianConverter.Write(stream, message.Key.Length);
                 stream.Write(message.Key, 0, message.Key.Length);
+            }
             BigEndianConverter.Write(stream, message.Value.Length);
             stream.Write(message.Value, 0, message.Value.Length);
 
@@ -422,7 +427,7 @@ namespace kafka4net.Protocol
                 var computedCrcArray = Crc32.Compute(stream, crcPos, pos - crcPos);
                 var computedCrc = BigEndianConverter.ToInt32(computedCrcArray);
                 if (computedCrc != crc)
-                    throw new BrokerException("Corrupt message: Crc does not match");
+                    throw new BrokerException(string.Format("Corrupt message: Crc does not match. Caclulated {0} but got {1}", computedCrc, crc));
                 yield return msg;
 
                 // 12 bytes for offset and messageSize flags
