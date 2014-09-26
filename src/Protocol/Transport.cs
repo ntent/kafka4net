@@ -131,7 +131,7 @@ namespace kafka4net.Protocol
                 }
                 catch (Exception e)
                 {
-                    _log.Error("CorrelateResponseLoop error", e);
+                    _log.Error(e, "CorrelateResponseLoop error");
                 }
             }
             _log.Debug("Finished reading loop from socket {0}", client.Client.RemoteEndPoint);

@@ -1,4 +1,5 @@
 ﻿using System.Collections;
+using System.Linq;
 
 namespace kafka4net.Protocol.Responses
 {
@@ -13,7 +14,7 @@ namespace kafka4net.Protocol.Responses
 
             public override string ToString()
             {
-                return string.Format("Topic: {0} [{1}]", TopicName, string.Join(", ", (IEnumerable)Partitions));
+                return string.Format("Topic: {0} [{1}]", TopicName, string.Join(", ", Partitions.AsEnumerable()));
             }
         }
 
@@ -31,7 +32,7 @@ namespace kafka4net.Protocol.Responses
 
         public override string ToString()
         {
-            return string.Format("[{0}]", string.Join(", ", (IEnumerable)Topics));
+            return string.Format("[{0}]", string.Join(", ", Topics.AsEnumerable()));
         }
     }
 }

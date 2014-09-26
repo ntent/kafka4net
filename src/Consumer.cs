@@ -19,7 +19,8 @@ namespace kafka4net
         public IObservable<ReceivedMessage> AsObservable { get { return _events; } }
         static readonly ILogger _log = Logger.GetLogger();
 
-        public Consumer(string topic, Router router, int maxWaitTimeMs, int minBytes, long offset, int maxBytes)
+        // TODO: API for [part,offset]
+        public Consumer(string topic, Router router, int maxWaitTimeMs=500, int minBytes=1, long offset=-1L, int maxBytes=256*1024)
         {
             _router = router;
             Time = offset;

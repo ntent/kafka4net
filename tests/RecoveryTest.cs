@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Reactive.Concurrency;
 using System.Reactive.Linq;
 using System.Reactive.Subjects;
 using System.Reactive.Threading.Tasks;
@@ -10,10 +11,12 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using kafka4net;
+using kafka4net.Utils;
 using NLog;
 using NLog.Config;
 using NLog.Targets;
 using NUnit.Framework;
+using NUnit.Framework.Constraints;
 using Logger = kafka4net.Logger;
 
 namespace tests
@@ -22,9 +25,10 @@ namespace tests
     class RecoveryTest
     {
         Random _rnd = new Random();
-        //string _conn = "192.168.56.10,192.168.56.20";
-        string _conn = "192.168.56.10";
+        //string _seedAddresses = "192.168.56.10,192.168.56.20";
+        string _seedAddresses = "192.168.56.10";
         readonly List<string> _stoppedBrokers = new List<string>();
+        static readonly NLog.Logger _log = NLog.LogManager.GetCurrentClassLogger();
 
         [SetUp]
         public void Setup()
@@ -85,7 +89,7 @@ namespace tests
         //public void ConnectionActorTest()
         //{
         //    var topic = "autocreate.test." + _rnd.Next();
-        //    var conn = new Transport(_conn);
+        //    var conn = new Transport(_seedAddresses);
         //    var cmd = new GetMetaForTopicCmd { Topic = topic};
         //    conn.Post(cmd);
         //    Thread.Sleep(1000);
@@ -101,7 +105,7 @@ namespace tests
                 //"part1";
                 //"autocreate.test.230719751"; 
                 "autocreate.test." + _rnd.Next();
-            var broker = new Router(_conn);
+            var broker = new Router(_seedAddresses);
             broker.ConnectAsync().Wait();
             var lala = Encoding.UTF8.GetBytes("la-la-la");
             // TODO: set wait to 5sec
@@ -126,7 +130,7 @@ namespace tests
             //Thread.Sleep(100*1000);
             
             // start listening
-            var consumer = broker.Consumer(topic, maxWaitTimeMs: 8000, minBytes: 1);
+            var consumer = new Consumer(topic, broker, maxWaitTimeMs: 8000, minBytes: 1);
             var received = new Subject<ReceivedMessage>();
             var received2 = new List<ReceivedMessage>();
             var listener = consumer.AsObservable.Subscribe(received.OnNext);
@@ -174,7 +178,7 @@ namespace tests
         {
             //var script = "./kafka-topics.sh  --create --topic part3 --partitions 1 --replication-factor 3 --zookeeper 192.168.56.2";
             //Vagrant(script);
-            var broker = new Router(_conn);
+            var broker = new Router(_seedAddresses);
             broker.ConnectAsync().Wait();
             var publisher = new Publisher("part3") { 
                 OnTempError = messages => Console.WriteLine("Publisher temporary error. Meesages: {0}", messages.Length),
@@ -183,7 +187,7 @@ namespace tests
                 OnSuccess = messages => { }
             };
             publisher.Connect(broker);
-            var consumer = broker.Consumer("part3");
+            var consumer = new Consumer("part3", broker);
 
             var postCount = 500;
             Observable.Interval(TimeSpan.FromMilliseconds(200)).
@@ -234,9 +238,9 @@ namespace tests
         [Test]
         public void ListenerRecoveryTest()
         {
-            var broker = new Router(_conn);
+            var broker = new Router(_seedAddresses);
             broker.ConnectAsync().Wait();
-            var consumer = broker.Consumer("part3", offset: -2L, maxBytes: 256);
+            var consumer = new Consumer("part3", broker, offset: -2L, maxBytes: 256);
             var current =0;
             var received = new ReplaySubject<ReceivedMessage>();
             consumer.AsObservable.
@@ -263,8 +267,8 @@ namespace tests
         [Test]
         public async Task CleanShutdownTest()
         {
-            var broker = new Router(_conn);
-            var fetchBroker = new Router(_conn);
+            var broker = new Router(_seedAddresses);
+            var fetchBroker = new Router(_seedAddresses);
             await broker.ConnectAsync();
             await fetchBroker.ConnectAsync();
             const string topic = "shutdown.test";
@@ -284,7 +288,7 @@ namespace tests
 
             // start listener at the end of queue and accumulate received messages
             var received = new HashSet<string>();
-            var consumer = fetchBroker.Consumer(topic, maxWaitTimeMs: 30*1000);
+            var consumer = new Consumer(topic, fetchBroker, maxWaitTimeMs: 30 * 1000);
             consumer.AsObservable.Select(msg => Encoding.UTF8.GetString(msg.Value)).Subscribe(m => received.Add(m));
 
             // send data, 5 msg/sec
@@ -326,6 +330,106 @@ namespace tests
         public void DirtyShutdownTest()
         {
 
+        }
+
+        [Test]
+        public void KeyedMessagesPreserveOrder()
+        {
+            var routerProducer = new Router(_seedAddresses);
+            var routerListener = new Router(_seedAddresses);
+            Task.WaitAll(routerProducer.ConnectAsync(), routerListener.ConnectAsync());
+            
+            // create a topic with 3 partitions
+            // TODO: how to skip initialization if topic already exists? Add router.GetAllTopics().Any(...)??? Or make it part of provisioning script?
+            if(!routerProducer.GetAllTopics().Any(t => t == "part33"))
+            {
+                var script = "ssh -c '/opt/kafka_2.10-0.8.1.1/bin/kafka-topics.sh --create --topic part33 --partitions 3 --replication-factor 2 --zookeeper 192.168.56.2' broker1";
+                Vagrant(script);
+            }
+            
+            // create listener in a separate connection/broker
+            var receivedMsgs = new List<ReceivedMessage>();
+            var consumer = new Consumer("part33", routerListener);
+            consumer.AsObservable.Subscribe(msg =>
+            {
+                lock (receivedMsgs)
+                {
+                    receivedMsgs.Add(msg);
+                }
+            });
+
+            // sender is configured with 50ms batch period
+            var producer = new Publisher("part33") { BatchTime = TimeSpan.FromMilliseconds(50)};
+            producer.Connect(routerProducer);
+
+            //
+            // generate messages with 100ms interval in 10 threads
+            //
+            var sentMsgs = new List<Message>();
+            var senders = Enumerable.Range(1, 10).
+                Select(thread => Observable.
+                    Interval(TimeSpan.FromMilliseconds(10)).
+                    Select(i => {
+                        var str = "msg " + i + " " + Guid.NewGuid();
+                        var bin = Encoding.UTF8.GetBytes(str);
+                        var msg = new Message
+                        {
+                            Key = BitConverter.GetBytes((int)i % 10),
+                            Value = bin
+                        };
+                        lock (sentMsgs)
+                        {
+                            sentMsgs.Add(msg);
+                        }
+                        return msg;
+                    }).
+                    Subscribe(producer.Send)
+                ).
+                ToArray();
+
+            // wait for around 10K messages (10K/(10*10) = 100sec) and close producer
+            Thread.Sleep(100*1000);
+            senders.ForEach(s => s.Dispose());
+            producer.Close().Wait();
+
+            // wait for 3 sec for listener to catch up
+            Thread.Sleep(3*1000);
+
+            // compare sent and received messages
+            // TODO: for some reason preformance is not what I'd expect it to be and only 6K is generated.
+            Assert.GreaterOrEqual(sentMsgs.Count, 4000, "Expected around 10K messages to be sent");
+
+            if (sentMsgs.Count != receivedMsgs.Count)
+            {
+                var sentStr = sentMsgs.Select(m => Encoding.UTF8.GetString(m.Value)).ToArray();
+                var receivedStr = receivedMsgs.Select(m => Encoding.UTF8.GetString(m.Value)).ToArray();
+                sentStr.Except(receivedStr).
+                    ForEach(m => _log.Error("Not received: '{0}'", m));
+                receivedStr.Except(sentStr).
+                    ForEach(m => _log.Error("Not sent but received: '{0}'", m));
+            }
+            Assert.AreEqual(sentMsgs.Count, receivedMsgs.Count, "Sent and received messages count differs");
+            
+            //
+            // group messages by partition and compare lists in each partition to be the same (order should be preserved within partition)
+            //
+            var keysSent = sentMsgs.GroupBy(m => BitConverter.ToInt32(m.Key, 0), m => Encoding.UTF8.GetString(m.Value), (i, mm) => new { Key = i, Msgs = mm.ToArray() }).ToArray();
+            var keysReceived = receivedMsgs.GroupBy(m => BitConverter.ToInt32(m.Key, 0), m => Encoding.UTF8.GetString(m.Value), (i, mm) => new { Key = i, Msgs = mm.ToArray() }).ToArray();
+            Assert.AreEqual(10, keysSent.Count(), "Expected 10 unique keys 0-9");
+            Assert.AreEqual(keysSent.Count(), keysReceived.Count(), "Keys count does not match");
+            // compare order within each key
+            var notInOrder = Enumerable.Zip(
+                keysSent.OrderBy(k => k.Key),
+                keysReceived.OrderBy(k => k.Key),
+                (s, r) => new { s, r, ok = s.Msgs.SequenceEqual(r.Msgs) }
+            ).Where(_ => !_.ok).ToArray();
+
+            if (notInOrder.Any())
+            {
+                _log.Error("{0} keys are out of order", notInOrder.Count());
+                notInOrder.ForEach(_ => _log.Error("Failed order in:\n{0}\n{1}", string.Join("|", _.s.Msgs.Take(5)), string.Join("|", _.r.Msgs.Take(5))));
+            }
+            Assert.IsTrue(!notInOrder.Any(), "Detected out of order messages");
         }
 
         // if last leader is down, all in-buffer messages are errored and the new ones
@@ -406,7 +510,7 @@ namespace tests
         {
             // TODO: implement vagrant-control 
             var dir = AppDomain.CurrentDomain.BaseDirectory;
-            dir = Path.Combine(dir, @"..\..\..\..\..\vagrant-kafka");
+            dir = Path.Combine(dir, @"..\..\..\vagrant");
             dir = Path.GetFullPath(dir);
             var pi = new ProcessStartInfo(@"C:\HashiCorp\Vagrant\bin\vagrant.exe", script)
             {

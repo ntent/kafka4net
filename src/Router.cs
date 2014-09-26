@@ -141,13 +141,6 @@ namespace kafka4net
         }
 
         #region External callable
-        public Consumer Consumer(string topic, int maxWaitTimeMs = 500, int minBytes = 1, long offset = -1L, int maxBytes = 256 * 1024)
-        {
-            var consumer = new Consumer(topic, this, maxWaitTimeMs, minBytes, offset, maxBytes);
-            _consumers.Add(consumer);
-            return consumer;
-            // TODO: implement consumer removal when unsubscribed
-        }
 
         public async Task ConnectAsync()
         {
@@ -179,10 +172,13 @@ namespace kafka4net
             return _scheduler.Ask(() => _metadata.Topics);
         }
 
-        /// <summary>Get initial offsets of partitions and start fetching loop</summary>
+        /// <summary>Resolve initial offsets of partitions and start fetching loop</summary>
         internal async Task<IObservable<ReceivedMessage>> InitFetching(Consumer consumer)
         {
             // TODO: synchronization!
+
+            // TODO: implement consumer removal when unsubscribed
+            _consumers.Add(consumer);
 
             // If topic meta is missing, try to get it. It could be created externally since the last check
             // or topic autocreate feature is ON and new topic will appear shortly.
@@ -411,29 +407,29 @@ namespace kafka4net
                                 RequiredAcks = publisher.Acks,
                                 Timeout = publisher.TimeoutMs,
                                 TopicData = new[] 
-                        {
-                            new TopicData {
-                                TopicName = publisher.Topic,
-                                PartitionsData = (
-                                    from msg in routeGrp
-                                    // group messages belonging to the same partition
-                                    group msg by msg.Part
-                                    into partitionGrp
-                                    select new PartitionData {
-                                        Pub = publisher,
-                                        OriginalMessages = partitionGrp.Select(m => m.Msg).ToArray(),
-                                        Partition = partitionGrp.Key.Id,
-                                        Messages = (
-                                            from msg in partitionGrp
-                                            select new MessageData {
-                                                Key = msg.Msg.Key,
-                                                Value = msg.Msg.Value
+                                {
+                                    new TopicData {
+                                        TopicName = publisher.Topic,
+                                        PartitionsData = (
+                                            from msg in routeGrp
+                                            // group messages belonging to the same partition
+                                            group msg by msg.Part
+                                            into partitionGrp
+                                            select new PartitionData {
+                                                Pub = publisher,
+                                                OriginalMessages = partitionGrp.Select(m => m.Msg).ToArray(),
+                                                Partition = partitionGrp.Key.Id,
+                                                Messages = (
+                                                    from msg in partitionGrp
+                                                    select new MessageData {
+                                                        Key = msg.Msg.Key,
+                                                        Value = msg.Msg.Value
+                                                    }
+                                                )
                                             }
                                         )
                                     }
-                                )
-                            }
-                        }
+                                }
                             }
                     ).ToArray(); // materialize to fill out waitingList
 
@@ -454,6 +450,7 @@ namespace kafka4net
         /// <summary>Find partition and connection for given message key/topic.
         /// If topic meta does not exist, send message to the topic resolution queue
         /// </summary>
+        /// <param name="waitingList">If partition is not found, null will be returned but message is enqueued onto this list for further resolution.</param>
         /// <returns>Null if metadata for this topic not found</returns>
         private Tuple<BrokerMeta,PartitionMeta> FindBrokerAndPartition(Message msg, Publisher pub, List<Tuple<Publisher,PartitionMeta,Message>> waitingList)
         {
@@ -462,14 +459,13 @@ namespace kafka4net
 
             if (!_topicPartitionMap.TryGetValue(topic, out parts))
             {
-                OnNotopicRequest(msg, pub, topic);
+                EnqueueToTopicResolutionQueue(msg, pub, topic);
                 return null;
             }
 
             var index = msg.Key == null ?
                 _rnd.Next(parts.Length) :
-                // TODO: FIXME: must be getHash(msg.Key) and not topic!
-                topic.GetHashCode() % parts.Length;
+                Fletcher32HashOptimized(msg.Value) % parts.Length;
 
             var part = parts[index];
             var broker = _partitionBrokerMap[part];
@@ -481,6 +477,33 @@ namespace kafka4net
             }
 
             return Tuple.Create(broker, part);
+        }
+
+        /// <summary>Optimized Fletcher32 checksum implementation.
+        /// <see cref="http://en.wikipedia.org/wiki/Fletcher%27s_checksum#Fletcher-32"/></summary>
+        private uint Fletcher32HashOptimized(byte[] msg)
+        {
+            if (msg == null)
+                return 0;
+            var words = msg.Length;
+            int i = 0;
+            uint sum1 = 0xffff, sum2 = 0xffff;
+
+            while(words != 0)
+            {
+                var tlen = words > 359 ? 359 : words;
+                words -= tlen;
+                do
+                {
+                    sum2 += sum1 += msg[i++];
+                } while (--tlen != 0);
+                sum1 = (sum1 & 0xffff) + (sum1 >> 16);
+                sum2 = (sum2 & 0xffff) + (sum2 >> 16);
+            }
+            /* Second reduction step to reduce sums to 16 bits */
+            sum1 = (sum1 & 0xffff) + (sum1 >> 16);
+            sum2 = (sum2 & 0xffff) + (sum2 >> 16);
+            return (sum2 << 16 | sum1);
         }
 
         void RebuildBrokerIndexes(MetadataResponse clusterMeta = null)
@@ -601,7 +624,7 @@ resend:
             }
         }
 
-        internal void OnNotopicRequest(Message msg, Publisher pub, string topic)
+        internal void EnqueueToTopicResolutionQueue(Message msg, Publisher pub, string topic)
         {
             _scheduler.Schedule(() =>
             {
@@ -881,5 +904,12 @@ resend:
             return brokerMeta;
         }
         #endif
+
+        public string[] GetAllTopics()
+        {
+            if(_metadata == null)
+                return new string[0];
+            return _scheduler.Ask(() => _metadata.Topics.Select(t => t.TopicName).ToArray()).Result;
+        }
     }
 }
