@@ -9,7 +9,7 @@ Features:
 * Automatic following changes of Leader Partition in case of broker failure
 * Connection sharing: one connection per kafka broker is used
 * Integration tests are part of the codebase. Use Vagrant to provision 1 zookeeper and 3 kafka virtual servers
-* Use RxExtentions library to expose API and for internal implementation
+* Use RxExtensions library to expose API and for internal implementation
 
 Not impleented:
 * Offset Fetch/Commit API
