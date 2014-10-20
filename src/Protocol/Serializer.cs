@@ -379,9 +379,9 @@ namespace kafka4net.Protocol
                 var topic = new FetchResponse.TopicFetchData();
                 response.Topics[t] = topic;
                 topic.Topic = ReadString(stream);
-                len = BigEndianConverter.ReadInt32(stream);
-                topic.Partitions = new FetchResponse.PartitionFetchData[len];
-                for (int i = 0; i < len; i++)
+                var len2 = BigEndianConverter.ReadInt32(stream);
+                topic.Partitions = new FetchResponse.PartitionFetchData[len2];
+                for (int i = 0; i < len2; i++)
                     topic.Partitions[i] = new FetchResponse.PartitionFetchData
                     {
                         Partition = BigEndianConverter.ReadInt32(stream),
