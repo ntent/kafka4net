@@ -135,7 +135,13 @@ namespace kafka4net.Protocol
                     _log.Error(e, "CorrelateResponseLoop error");
                 }
             }
-            _log.Debug("Finished reading loop from socket {0}", client.Client.RemoteEndPoint);
+            try
+            {
+                _log.Debug("Finished reading loop from socket {0}", client.Client.RemoteEndPoint);
+            }
+            catch (ObjectDisposedException)
+            {
+            }
         }
 
         async Task<T> SendAndCorrelate<T>(Func<int, byte[]> serialize, Func<byte[], T> deserialize, TcpClient tcp, CancellationToken cancel)
