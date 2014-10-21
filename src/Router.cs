@@ -149,9 +149,7 @@ namespace kafka4net
                 if (_state != BrokerState.Disconnected)
                     return;
 
-                // TODO: use messages to manipulate state
                 _state = BrokerState.Connecting;
-                // TODO: connector is connected but it sends message to broker, so _meta will be set later!
                 var initMeta = await _connection.ConnectAsync();
                 MergeTopicMeta(initMeta);
                 _state = BrokerState.Connected;
@@ -159,11 +157,7 @@ namespace kafka4net
             });
         }
 
-        //public void Send(Publisher publisher, Message msg)
-        //{
-        //    _sendBuffer.Post(Tuple.Create(publisher, msg));
-        //}
-
+        /// <summary>Get topics which are already cached. Does not issue metadata request.</summary>
         public Task<TopicMeta[]> GetTopics()
         {
             if(_state != BrokerState.Connected)
@@ -465,7 +459,7 @@ namespace kafka4net
 
             var index = msg.Key == null ?
                 _rnd.Next(parts.Length) :
-                Fletcher32HashOptimized(msg.Value) % parts.Length;
+                Fletcher32HashOptimized(msg.Key) % parts.Length;
 
             var part = parts[index];
             var broker = _partitionBrokerMap[part];
