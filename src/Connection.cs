@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Linq;
 using System.Net.Sockets;
+using System.Threading;
 using System.Threading.Tasks;
 using kafka4net.Protocol;
 
@@ -64,7 +65,8 @@ namespace kafka4net
                 State = ConnState.Connecting;
                 _client = new TcpClient();
                 await _client.ConnectAsync(_host, _port);
-                _connMgr.CorrelateResponseLoop(_client);
+                // TODO: Who and when is going to cancell reading?
+                _connMgr.CorrelateResponseLoop(_client, CancellationToken.None);
                 State = ConnState.Connected;
                 return _client;
             }

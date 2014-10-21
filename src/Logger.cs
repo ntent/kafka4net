@@ -5,6 +5,10 @@ using System.Runtime.CompilerServices;
 
 namespace kafka4net
 {
+    /// <summary>
+    /// Dynamic logging binder. Allows to log to log4net and NLog without linking kafka4net with those libraries.
+    /// If you want to enable kafka4net logs, configure your logger as usual and call Logger.SetupLog4Net() or Logger.SetupNLog().
+    /// </summary>
     public class Logger
     {
         static Func<Type, ILogger> LoggerFactory = t => new NullLogger();

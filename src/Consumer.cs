@@ -1,6 +1,10 @@
 ﻿using System;
 using System.Linq;
+using System.Reactive.Concurrency;
+using System.Reactive.Linq;
 using System.Reactive.Subjects;
+using System.Threading;
+using System.Threading.Tasks;
 using kafka4net.Protocol.Responses;
 using kafka4net.Utils;
 
@@ -36,6 +40,8 @@ namespace kafka4net
 
         private async void Subscribe()
         {
+            // TODO: if caller sets SynchronizationContext and it is blocked, fetcher cretion is delayed until caller
+            // unblocks. For example, NUnit's async void test method.
             (await _router.InitFetching(this)).
                 Subscribe(msg => _events.OnNext(msg));
         }

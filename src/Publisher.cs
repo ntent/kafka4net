@@ -8,19 +8,20 @@ namespace kafka4net
     public class Publisher
     {
         internal readonly string Topic;
-        private BufferBlock<Message> _sendBuffer;
         public short Acks = 1;
         public int TimeoutMs = 1000;
         public TimeSpan BatchTime = TimeSpan.FromMilliseconds(500);
         public int BatchSize = 1000;
-        //public MessageCodec Codec = MessageCodec.CodecNone;
-        static readonly ILogger _log = Logger.GetLogger();
-        readonly TaskCompletionSource<bool> _completion = new TaskCompletionSource<bool>();
 
         public Action<Message[]> OnTempError;
         public Action<Exception, Message[]> OnPermError;
         public Action<Message[]> OnShutdownDirty;
         public Action<Message[]> OnSuccess;
+
+        //public MessageCodec Codec = MessageCodec.CodecNone;
+        readonly TaskCompletionSource<bool> _completion = new TaskCompletionSource<bool>();
+        private BufferBlock<Message> _sendBuffer;
+        static readonly ILogger _log = Logger.GetLogger();
 
         public Publisher(string topic)
         {
@@ -33,12 +34,6 @@ namespace kafka4net
             _sendBuffer.AsObservable().
                 Buffer(BatchTime, BatchSize).
                 Where(b => b.Count > 0). // apparently, Buffer will trigger empty batches too, skip them
-                //Select(async batch => await router.SendBatch(this, batch)). // TODO: how to check result? Make it failsafe?
-                //Subscribe(_ => _log.Debug("send batch status:", (Exception)_.Exception),
-                //// How to prevent overlap?
-                //// Make sure publisher.OnError are fired
-                //e => _log.Fatal("Unexpected error in send buffer: {0}", e.Message),
-                //() => _log.Info("Send buffer complete"));
                 // TODO: how to check result? Make it failsafe?
                 Subscribe(batch => router.SendBatch(this, batch), // TODO: how to check result? Make it failsafe?
                 // How to prevent overlap?

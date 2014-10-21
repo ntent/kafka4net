@@ -172,6 +172,9 @@ namespace kafka4net.ConsumerImpl
                             _log.Debug("#{0}: sending FetchRequest: {1}", _id, fetchRequest);
                         
                         fetch = await _connection.Fetch(fetchRequest, _broker.Conn);
+
+                        if (fetch.Topics.Any(t => t.Partitions.Any(p => p.ErrorCode != ErrorCode.NoError)))
+                            _log.Debug("_");
                         
                         if (_log.IsDebugEnabled)
                             _log.Debug("#{0}: got FetchResponse: {1}", _id, fetch);

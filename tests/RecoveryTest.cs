@@ -40,17 +40,17 @@ namespace tests
             var fileTarget = new FileTarget();
             config.AddTarget("file", fileTarget);
 
-            consoleTarget.Layout = "${level} [${threadname}:${threadid}] ${logger} ${message} ${exception:format=tostring}";
+            consoleTarget.Layout = "${date:format=HH\\:MM\\:ss} ${level} [${threadname}:${threadid}] ${logger} ${message} ${exception:format=tostring}";
             fileTarget.FileName = "${basedir}../../../../log.txt";
             fileTarget.Layout = "${longdate} ${level} [${threadname}:${threadid}] ${logger:shortName=true} ${message} ${exception:format=tostring,stacktrace:innerFormat=tostring,stacktrace}";
 
             // disable Transport noise
-            //config.LoggingRules.Add(new LoggingRule("kafka4net.Protocol.Transport", LogLevel.Info, fileTarget) { Final = true});
-
-            var rule1 = new LoggingRule("*", LogLevel.Info, consoleTarget);
-            config.LoggingRules.Add(rule1);
-            var rule2 = new LoggingRule("*", LogLevel.Debug, fileTarget);
-            config.LoggingRules.Add(rule2);
+            // config.LoggingRules.Add(new LoggingRule("kafka4net.Protocol.Transport", LogLevel.Info, fileTarget) { Final = true});
+            //
+            config.LoggingRules.Add(new LoggingRule("tests.*", LogLevel.Debug, consoleTarget) { Final = true, });
+            //
+            config.LoggingRules.Add(new LoggingRule("*", LogLevel.Info, consoleTarget));
+            config.LoggingRules.Add(new LoggingRule("*", LogLevel.Debug, fileTarget));
             LogManager.Configuration = config;
 
             var logger = LogManager.GetLogger("Main");
@@ -76,7 +76,7 @@ namespace tests
         public void RestartBrokers()
         {
             foreach(var broker in _stoppedBrokers)
-                Vagrant("ssh -c 'sudo services start kafka' "+broker);
+                Vagrant("ssh -c 'sudo service kafka start' " + broker);
             _stoppedBrokers.Clear();
         }
 
@@ -97,16 +97,14 @@ namespace tests
 
         // If failed to connect, messages are errored
 
-        // if topic does not exists, it is created within (1sec?)
+        // if topic does not exists, it is created and pub-sub works
         [Test]
-        public void TopicIsAutocreated()
+        public async Task TopicIsAutocreated()
         {
-            var topic = 
-                //"part1";
-                //"autocreate.test.230719751"; 
-                "autocreate.test." + _rnd.Next();
+            var topic = "autocreate.test." + _rnd.Next();
+            var publishedCount = 10;
             var broker = new Router(_seedAddresses);
-            broker.ConnectAsync().Wait();
+            broker.ConnectAsync().Wait(4000);
             var lala = Encoding.UTF8.GetBytes("la-la-la");
             // TODO: set wait to 5sec
             var requestTimeout = TimeSpan.FromSeconds(1000);
@@ -116,42 +114,44 @@ namespace tests
 
             var confirmedSent = new Subject<Message>();
             var publisher = new Publisher(topic) {
-                OnTempError = tmp => Console.WriteLine("Delayed {0} messages", tmp.Length),
-                OnPermError = (ex, err) => Console.WriteLine("Failed {0} messages: {1}", err.Length, ex.Message),
-                OnShutdownDirty = shutdown => Console.WriteLine("Failed {0} messages", shutdown.Length),
+                OnTempError = tmp => _log.Info("Delayed {0} messages", tmp.Length),
+                OnPermError = (ex, err) => _log.Info("Failed {0} messages: {1}", err.Length, ex.Message),
+                OnShutdownDirty = shutdown => _log.Info("Failed {0} messages", shutdown.Length),
                 OnSuccess = success => { 
                     success.ToList().ForEach(confirmedSent.OnNext);
-                    Console.WriteLine("Got message '{0}'", string.Join("; ",success.Select(m => Encoding.UTF8.GetString(m.Value)).ToArray()));
+                    _log.Info("Published message '{0}'", string.Join("; ", success.Select(m => Encoding.UTF8.GetString(m.Value)).ToArray()));
                 }
             };
             publisher.Connect(broker);
-            //var msg = new Message { Value = lala};
-            //publisher.Send(msg);
-            //Thread.Sleep(100*1000);
             
             // start listening
-            var consumer = new Consumer(topic, broker, maxWaitTimeMs: 8000, minBytes: 1);
+            var consumer = new Consumer(topic, broker, maxWaitTimeMs: 1000, minBytes: 1);
             var received = new Subject<ReceivedMessage>();
-            var received2 = new List<ReceivedMessage>();
-            var listener = consumer.AsObservable.Subscribe(received.OnNext);
+            var receivedTxt = new List<string>();
+            consumer.AsObservable.
+                Do(m => _log.Info("Got message")).
+                Subscribe(received.OnNext);
+            
+            received.
+                Select(m => Encoding.UTF8.GetString(m.Value)).
+                Do(m => _log.Info("Received {0}", m)).
+                Do(receivedTxt.Add).
+                Subscribe();
+
             // start publishing
-            var pubSub = Observable.Interval(TimeSpan.FromSeconds(1)).Take(10).
-                Subscribe(_ => publisher.Send(new Message { Value = lala }));
+            var pubTask = Observable.Interval(TimeSpan.FromSeconds(1)).Take(publishedCount).
+                Do(_ => publisher.Send(new Message { Value = lala }));
 
-            //var res = listener.Wait(requestTimeout);
-            var tt = confirmedSent.Take(10);
-            var tt2 = received.Do(received2.Add).Take(10);
-            Assert.IsTrue(tt.ToTask().Wait(requestTimeout), "Timeout waiting for 10 message to be sent");
-            Assert.IsTrue(tt2.ToTask().Wait(requestTimeout), "Timeout waiting for 10 message receive");
-            Assert.AreEqual(10, received2.Count, "Should receive at least one message");
-            Assert.IsTrue(received2.TrueForAll(m => m.Value.SequenceEqual(lala)), "Unexpected message content");
+            _log.Info("Waiting for publisher to complete...");
+            pubTask.ToTask().Wait(publishedCount * 1000 + 3000);
+            await publisher.Close();
+            // wait for 3sec for messages to propagate to subscriber
+            _log.Info("Waiting for subscriber to get all messages");
+            received.Take(publishedCount).ToTask().Wait(3000);
 
-            // TODO: confirm that exactly 10 messages an no more has been received
-
-            //consumer.Close();
+            Assert.AreEqual(publishedCount, receivedTxt.Count, "Did not received all messages");
+            Assert.IsTrue(receivedTxt.All(m => m == "la-la-la"), "Unexpected message content");
         }
-
-
 
         [Test]
         public void MultithreadingSend()
@@ -179,8 +179,10 @@ namespace tests
             //var script = "./kafka-topics.sh  --create --topic part3 --partitions 1 --replication-factor 3 --zookeeper 192.168.56.2";
             //Vagrant(script);
             var broker = new Router(_seedAddresses);
+            var topic = "part3";
+
             broker.ConnectAsync().Wait();
-            var publisher = new Publisher("part3") { 
+            var publisher = new Publisher(topic) { 
                 OnTempError = messages => Console.WriteLine("Publisher temporary error. Meesages: {0}", messages.Length),
                 OnPermError = (exception, messages) => Console.WriteLine("Perm error"),
                 OnShutdownDirty = messages => Console.WriteLine("Close dirty"),
@@ -189,49 +191,58 @@ namespace tests
             publisher.Connect(broker);
             var consumer = new Consumer("part3", broker);
 
-            var postCount = 500;
+            var postCount = 100;
+            var postCount2 = 50;
+
+            // read messages
+            var received = new List<ReceivedMessage>();
+            var receivedEvents = new ReplaySubject<ReceivedMessage>();
+            consumer.AsObservable.
+                Synchronize().
+                Subscribe(msg =>
+                {
+                    received.Add(msg);
+                    receivedEvents.OnNext(msg);
+                    _log.Debug("Received {0}/{1}", Encoding.UTF8.GetString(msg.Value), received.Count);
+                });
+
             Observable.Interval(TimeSpan.FromMilliseconds(200)).
                 Take(postCount).
                 Subscribe(
                     i => 
                     { 
                         publisher.Send(new Message { Value = Encoding.UTF8.GetBytes("msg " + i) }); 
-                        Debug.WriteLine("Sent msg {0}", i);
+                        _log.Debug("Sent msg {0}", i);
                     },
                     () => Console.WriteLine("Publisher complete")
                 );
-
-            // keep reading messages
-            var received = new List<ReceivedMessage>();
-            var receivedEvents = new ReplaySubject<ReceivedMessage>();
-            consumer.AsObservable.Subscribe(msg =>
-            {
-                received.Add(msg);
-                receivedEvents.OnNext(msg);
-                Debug.WriteLine(string.Format("Received {0}", Encoding.UTF8.GetString(msg.Value)));
-            });
 
             // wait for first 50 messages to arrive
             receivedEvents.Take(postCount).Count().ToTask().Wait();
             Assert.AreEqual(postCount, received.Count);
 
-            // stop broker1
-            // TODO:
-            Console.WriteLine("Stop server");
-            //Console.ReadLine();
+            // stop broker1. As messages have null-key, some of 50 of them have to end up on relocated broker1
+            Vagrant("ssh -c 'sudo service kafka stop' broker1");
+            _stoppedBrokers.Add("broker1");
+            _log.Info("Stopped broker1");
 
             // post another 50 messages
-            Observable.Interval(TimeSpan.FromMilliseconds(100)).
-                Take(50).
-                Subscribe(
-                    i => publisher.Send(new Message { Value = Encoding.UTF8.GetBytes("msg #2 " + i) }),
+            var sender2 = Observable.Interval(TimeSpan.FromMilliseconds(100)).
+                Take(postCount2);
+
+            sender2.Subscribe(
+                    i => {
+                        publisher.Send(new Message { Value = Encoding.UTF8.GetBytes("msg #2 " + i) });
+                        _log.Debug("Sent msg #2 {0}", i);
+                    },
                     () => Console.WriteLine("Publisher #2 complete")
                 );
 
-            // make sure that all 100 messages have been read within 10sec
-            receivedEvents.Take(100).Count().ToTask().Wait();
-            Thread.Sleep(4000); // if unexpected messages arrive, let them in
-            Assert.AreEqual(100, received.Count);
+            _log.Debug("Waiting for #2 sender to complete");
+            sender2.ToTask().Wait();
+            _log.Debug("Waiting 8sec for remaining messages");
+            Thread.Sleep(4000); // if unexpected messages arrive, let them in to detect failure
+            Assert.AreEqual(postCount + postCount2, received.Count);
         }
 
         #if DEBUG
@@ -250,16 +261,18 @@ namespace tests
                     {
                         var brokerMeta = broker.TestGetBrokerForPartition(consumer.Topic, msg.Partition);
                         var brokerName = GetBrokerNameFromIp(brokerMeta.Host);
-                        Console.WriteLine("Closing {0}", brokerName);
+                        _log.Info("Closing {0}", brokerName);
                         Vagrant("ssh -c 'sudo service kafka stop' "+brokerName);
                         _stoppedBrokers.Add(brokerName);
                     }
 
                     received.OnNext(msg);
-                    Console.WriteLine("Got: {0}", Encoding.UTF8.GetString(msg.Value));
+                    _log.Info("Got: {0}", Encoding.UTF8.GetString(msg.Value));
                 });
 
-            var count = received.Take(400).Count().ToTask().Result;
+            var countTask = received.Take(400).Count().ToTask();
+            countTask.Wait(TimeSpan.FromSeconds(60));
+            var count = countTask.Result;
             Assert.AreEqual(400, count);
         }
 #endif
@@ -350,11 +363,12 @@ namespace tests
             // create listener in a separate connection/broker
             var receivedMsgs = new List<ReceivedMessage>();
             var consumer = new Consumer("part33", routerListener);
-            consumer.AsObservable.Subscribe(msg =>
+            consumer.AsObservable.Synchronize().Subscribe(msg =>
             {
                 lock (receivedMsgs)
                 {
                     receivedMsgs.Add(msg);
+                    //_log.Info("Received '{0}'/{1}/{2}", Encoding.UTF8.GetString(msg.Value), msg.Partition, BitConverter.ToInt32(msg.Key, 0));
                 }
             });
 
@@ -366,24 +380,31 @@ namespace tests
             // generate messages with 100ms interval in 10 threads
             //
             var sentMsgs = new List<Message>();
-            var senders = Enumerable.Range(1, 10).
+            var senders = Enumerable.Range(1, 1).
                 Select(thread => Observable.
                     Interval(TimeSpan.FromMilliseconds(10)).
-                    Select(i => {
-                        var str = "msg " + i + " " + Guid.NewGuid();
+                    Synchronize(). // protect adding to sentMsgs
+                    Select(i =>
+                    {
+                        var str = "msg " + i + " thread " + thread + " " + Guid.NewGuid();
                         var bin = Encoding.UTF8.GetBytes(str);
                         var msg = new Message
                         {
-                            Key = BitConverter.GetBytes((int)i % 10),
+                            Key = BitConverter.GetBytes((int)(i + thread) % 10),
                             Value = bin
                         };
+                        return Tuple.Create(msg, i, str);
+                    }).
+                    Subscribe(msg =>
+                    {
                         lock (sentMsgs)
                         {
-                            sentMsgs.Add(msg);
+                            producer.Send(msg.Item1);
+                            sentMsgs.Add(msg.Item1);
+                            Assert.AreEqual(msg.Item2, sentMsgs.Count-1);
+                            //_log.Info("Sent '{0}'/{1}", msg.Item3, BitConverter.ToInt32(msg.Item1.Key, 0));
                         }
-                        return msg;
-                    }).
-                    Subscribe(producer.Send)
+                    })
                 ).
                 ToArray();
 
@@ -411,7 +432,7 @@ namespace tests
             Assert.AreEqual(sentMsgs.Count, receivedMsgs.Count, "Sent and received messages count differs");
             
             //
-            // group messages by partition and compare lists in each partition to be the same (order should be preserved within partition)
+            // group messages by key and compare lists in each key to be the same (order should be preserved within key)
             //
             var keysSent = sentMsgs.GroupBy(m => BitConverter.ToInt32(m.Key, 0), m => Encoding.UTF8.GetString(m.Value), (i, mm) => new { Key = i, Msgs = mm.ToArray() }).ToArray();
             var keysReceived = receivedMsgs.GroupBy(m => BitConverter.ToInt32(m.Key, 0), m => Encoding.UTF8.GetString(m.Value), (i, mm) => new { Key = i, Msgs = mm.ToArray() }).ToArray();
@@ -427,9 +448,18 @@ namespace tests
             if (notInOrder.Any())
             {
                 _log.Error("{0} keys are out of order", notInOrder.Count());
-                notInOrder.ForEach(_ => _log.Error("Failed order in:\n{0}\n{1}", string.Join("|", _.s.Msgs.Take(5)), string.Join("|", _.r.Msgs.Take(5))));
+                notInOrder.ForEach(_ => _log.Error("Failed order in:\n{0}", 
+                    string.Join(" \n", DumpOutOfOrder(_.s.Msgs, _.r.Msgs))));
             }
             Assert.IsTrue(!notInOrder.Any(), "Detected out of order messages");
+        }
+
+        // take 100 items starting from the ones which differ
+        static IEnumerable<Tuple<string, string>> DumpOutOfOrder(IEnumerable<string> l1, IEnumerable<string> l2)
+        {
+            return l1.Zip(l2, (l, r) => new {l, r}).
+                SkipWhile(_ => _.l == _.r).Take(100).
+                Select(_ => Tuple.Create(_.l, _.r));
         }
 
         // if last leader is down, all in-buffer messages are errored and the new ones

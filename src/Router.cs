@@ -178,7 +178,9 @@ namespace kafka4net
             // or topic autocreate feature is ON and new topic will appear shortly.
             if (!_topicPartitionMap.ContainsKey(consumer.Topic))
             {
+                _log.Info("Topic '{0}' does not exists. Starting pooling...", consumer.Topic);
                 var meta = await PoolMeta(consumer.Topic);
+                _log.Info("Got topic metadata");
                 MergeTopicMeta(meta);
             }
 
@@ -190,8 +192,6 @@ namespace kafka4net
                 // group partitions belonging to the same broker into single batch
                 group part.Id by broker into brokerGrp
                 select brokerGrp
-                // issue request 
-                // TODO: relaiability. If offset failed, try to recover N times
             ).Select(async listeningPartitions =>
             {
                 var consumerKey = Tuple.Create(listeningPartitions.Key.NodeId, consumer.MaxWaitTimeMs, consumer.MinBytes);
@@ -204,6 +204,7 @@ namespace kafka4net
                 }
                 
                 await fetcher.ResolveTime(consumer, listeningPartitions.ToArray());
+                _log.Debug("Fetcher {0} resolved time", fetcher);
                 
                 return fetcher.AsObservable().
                     SelectMany(msg => msg.Topics).
@@ -223,8 +224,9 @@ namespace kafka4net
                             });
                     });
             }).
-            // TODO: could this be avoided by rewriting the body somehow???
-            ToObservable().Merge().Merge();
+                // TODO: could this be avoided by rewriting the body somehow???
+                ToObservable().Merge().Merge().
+                ObserveOn(_scheduler);
         }
 
         void AddFetcherMonitoring(Fetcher fetcher, Exception e)
@@ -300,23 +302,30 @@ namespace kafka4net
         #endregion
 
         /// <summary>Will fetch topic metadata and check error status. If error
-        /// might be intermitten, will weep retrying.</summary>
+        /// might be intermitten, will keep retrying. If permanent error happen, BrokerException is thrown.</summary>
         async Task<MetadataResponse> PoolMeta(string topic)
         {
             // TODO: add timeout
+            _log.Debug("Start topic '{0}' pooling", topic);
+
             while (!_cancel.IsCancellationRequested)
             {
                 try
                 {
+                    _log.Debug("PoolMeta: sending MetadataRequest...");
                     var meta = await _connection.MetadataRequest(new TopicRequest { Topics = new[] { topic } });
+                    _log.Debug("PoolMeta: got MetadataResponse {0}", meta);
                     var errorCode = meta.Topics.Single().TopicErrorCode;
                     switch (errorCode)
                     {
                         case ErrorCode.NoError:
+                            _log.Debug("Discovered topic: '{0}'", topic);
                             return meta;
                         case ErrorCode.LeaderNotAvailable:
+                            _log.Debug("Topic: '{0}': LeaderNotAvailable", topic);
                             break;
                         default:
+                            _log.Error("Topic: '{0}': {1}", topic, errorCode);
                             throw new BrokerException(string.Format("Can not fetch metadata for topic '{0}'. {1}", topic, errorCode));
                     }
                 }
@@ -337,6 +346,7 @@ namespace kafka4net
             var leader = _topicPartitionMap[topic].
                 Single(p => p.Id == partition).Leader;
             var broker = _metadata.Brokers.Single(b => b.NodeId == leader);
+            _log.Debug("FindBrokerMetaForPartitionId '{0}'/{1} -> {2}", topic, partition, broker);
             return broker;
         }
 

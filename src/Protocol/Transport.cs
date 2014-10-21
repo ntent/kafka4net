@@ -50,30 +50,24 @@ namespace kafka4net.Protocol
         async Task<MetadataResponse> StartInitialConnect()
         {
             return await _seedAddresses.
-                ToObservable().
-                Select(addr => 
-                    Observable.Using(
-                        () => new TcpClient { NoDelay = true },
-                        client => Observable.Create<MetadataResponse>(async observer =>
-                        {
-                            await client.ConnectAsync(addr.Item1, addr.Item2);
-                            _log.Debug("Connected to {0}:{1}", addr.Item1, addr.Item2);
-                            CorrelateResponseLoop(client);
-                            var meta = await LoadAllTopicsMeta(client);
-                            observer.OnNext(meta);
-                        })
-                    )).Merge().
-                Catch<MetadataResponse, Exception>(e =>
-                { 
-                    _log.Error("Error connecting to seed Router: {0}", e.Message);
-                    return Observable.Empty<MetadataResponse>();
-                }).
-                // TODO: if there is ony one broker and it is down, meta=null is returned...
+                Select(addr => Observable.StartAsync(async cancel =>
+                {
+                    var client = new TcpClient { NoDelay = true };
+                    //cancel.Register(client.Close);
+                    await client.ConnectAsync(addr.Item1, addr.Item2);
+                    //if (cancel.IsCancellationRequested)
+                    //    return null;
+                    _log.Debug("Connected to {0}:{1}", addr.Item1, addr.Item2);
+                    CorrelateResponseLoop(client, cancel);
+                    var meta = await LoadAllTopicsMeta(client);
+                    return meta;
+                })).
+                Merge().
                 FirstOrDefaultAsync().
                 ToTask();
         }
 
-        internal async void CorrelateResponseLoop(TcpClient client)
+        internal async void CorrelateResponseLoop(TcpClient client, CancellationToken cancel)
         {
             _log.Debug("Starting reading loop from socket {0}", client.Client.RemoteEndPoint);
             // TODO: if corrup message, dump bin log of 100 bytes for further investigation
@@ -83,7 +77,13 @@ namespace kafka4net.Protocol
                 {
                     // read message size
                     var buff = new byte[4];
-                    var read = await client.GetStream().ReadAsync(buff, 0, 4);
+                    var read = await client.GetStream().ReadAsync(buff, 0, 4, cancel);
+                    if (cancel.IsCancellationRequested)
+                    {
+                        _log.Debug("Stopped reading from {0} because socket cancelled", client.Client.RemoteEndPoint);
+                        return;
+                    }
+
                     // TODO: what to do if read<4 ? Recycle connection?
                     if (read == 0)
                     {
@@ -131,6 +131,7 @@ namespace kafka4net.Protocol
                 }
                 catch (Exception e)
                 {
+                    // TODO: it seems exception here is not propagated all the way back to subscriber
                     _log.Error(e, "CorrelateResponseLoop error");
                 }
             }
@@ -176,6 +177,10 @@ namespace kafka4net.Protocol
                 id => Serializer.Serialize(request, id),
                 Serializer.GetProducerResponse,
                 client, cancel);
+            
+            if(response.Topics.Any(t => t.Partitions.Any(p => p.ErrorCode != ErrorCode.NoError)))
+                _log.Debug("_");
+
             return response;
         }
 
@@ -200,6 +205,8 @@ namespace kafka4net.Protocol
                         CancellationToken.None
                     );
                     _log.Debug("Got ProduceResponse: {0}", response);
+                    if (response.Topics.Any(t => t.Partitions.Any(p => p.ErrorCode != ErrorCode.NoError)))
+                        _log.Debug("_");
                 }
                 catch (SocketException e)
                 {
