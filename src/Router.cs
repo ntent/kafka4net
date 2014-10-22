@@ -34,7 +34,7 @@ namespace kafka4net
         // TODO: are kafka topics case-sensitive?
         Dictionary<string,PartitionMeta[]> _topicPartitionMap = new Dictionary<string, PartitionMeta[]>();
         Dictionary<PartitionMeta, BrokerMeta> _partitionBrokerMap = new Dictionary<PartitionMeta, BrokerMeta>();
-        readonly EventLoopScheduler _scheduler = new EventLoopScheduler(ts => new Thread(ts) { Name = "Kafka-route" });
+        readonly EventLoopScheduler _scheduler = new EventLoopScheduler(ts => new Thread(ts) { Name = "Kafka-route", IsBackground = true });
         CountObservable _inBatchCount = new CountObservable();
         static int _idCount;
         readonly int _id = Interlocked.Increment(ref _idCount);
