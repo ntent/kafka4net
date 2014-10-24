@@ -61,7 +61,7 @@ namespace kafka4net
             _sendBuffer.Complete();
             
             //await _sendBuffer.Completion; // apparently it wont wait till sequence is complete
-            await _completion.Task;
+            await _completion.Task.ConfigureAwait(false);
             
             _log.Info("Close complete");
         }
