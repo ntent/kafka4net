@@ -20,7 +20,7 @@ namespace kafka4net.Internal
     /// </summary>
     class PartitionRecoveryMonitor
     {
-        private readonly Transport _connection;
+        private readonly Transport _protocol;
         private readonly CancellationToken _cancel;
         readonly Dictionary<string,List<PartitionFetchState>> _failedList = new Dictionary<string, List<PartitionFetchState>>();
         readonly Subject<Tuple<string,PartitionFetchState[]>> _events = new Subject<Tuple<string, PartitionFetchState[]>>();
@@ -35,12 +35,12 @@ namespace kafka4net.Internal
 
         static readonly ILogger _log = Logger.GetLogger();
 
-        public PartitionRecoveryMonitor(IEnumerable<BrokerMeta> brokers, Transport _connection, CancellationToken cancel)
+        public PartitionRecoveryMonitor(IEnumerable<BrokerMeta> brokers, Transport protocol, CancellationToken cancel)
         {
             // TODO: if we change Broker to disover only needed topics upon connect, than brokers should be replaced with
             // IObservable<BrokerMeta>
 
-            this._connection = _connection;
+            this._protocol = protocol;
             _cancel = cancel;
             _cancel.Register(() => { 
                 if(_failedList.Count == 0)
@@ -104,7 +104,7 @@ namespace kafka4net.Internal
                     //
                     // Query metadata from given broker
                     //
-                    var responseTask = _connection.MetadataRequest(new TopicRequest { Topics = _failedList.Keys.ToArray() }, broker);
+                    var responseTask = _protocol.MetadataRequest(new TopicRequest { Topics = _failedList.Keys.ToArray() }, broker);
                     await responseTask;
                     if (responseTask.IsFaulted)
                     {
@@ -159,7 +159,7 @@ namespace kafka4net.Internal
                             MetadataResponse response2;
                             try
                             {
-                                response2 = await _connection.MetadataRequest(new TopicRequest { Topics = _failedList.Keys.ToArray() }, broker2);
+                                response2 = await _protocol.MetadataRequest(new TopicRequest { Topics = _failedList.Keys.ToArray() }, broker2);
                             }
                             catch (Exception e)
                             {

@@ -51,6 +51,9 @@ namespace kafka4net
             public void Info(string msg) {}
             public void Info(string msg, params object[] args) {}
             public void Info(Exception e, string msg, params object[] args) {}
+            public void Warn(string msg) {}
+            public void Warn(string msg, params object[] args) { }
+            public void Warn(Exception e, string msg, params object[] args) { }
             public void Error(string msg) {}
             public void Error(string msg, params object[] args) {}
             public void Error(Exception e, string msg, params object[] args) {}
@@ -99,6 +102,21 @@ namespace kafka4net
             public void Info(Exception e, string msg, params object[] args)
             {
                 _actualLogger.Info(string.Format(msg, args), e);
+            }
+
+            public void Warn(string msg)
+            {
+                _actualLogger.Warn(msg);
+            }
+
+            public void Warn(string msg, params object[] args)
+            {
+                _actualLogger.Warn(msg, args);
+            }
+
+            public void Warn(Exception e, string msg, params object[] args)
+            {
+                _actualLogger.Warn(string.Format(msg, args), e);
             }
 
             public void Error(string msg)
@@ -171,6 +189,21 @@ namespace kafka4net
             public void Info(Exception e, string msg, params object[] args)
             {
                 _actualLogger.Info(string.Format(msg, args), e);
+            }
+
+            public void Warn(string msg)
+            {
+                _actualLogger.Warn(msg);
+            }
+
+            public void Warn(string msg, params object[] args)
+            {
+                _actualLogger.WarnFormat(msg, args);
+            }
+
+            public void Warn(Exception e, string msg, params object[] args)
+            {
+                _actualLogger.Warn(string.Format(msg, args), e);
             }
 
             public void Error(string msg)

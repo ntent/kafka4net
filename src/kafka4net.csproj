@@ -52,6 +52,7 @@
     </Reference>
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="ConsumerImpl\TopicPartition.cs" />
     <Compile Include="Protocol\Transport.cs" />
     <Compile Include="BrokerException.cs" />
     <Compile Include="Connection.cs" />
@@ -89,6 +90,7 @@
     <Compile Include="Utils\Crc32.cs" />
     <Compile Include="Utils\EnumerableEx.cs" />
     <Compile Include="Utils\CountObservable.cs" />
+    <Compile Include="Utils\FlowControlState.cs" />
     <Compile Include="Utils\TaskEx.cs" />
   </ItemGroup>
   <ItemGroup>

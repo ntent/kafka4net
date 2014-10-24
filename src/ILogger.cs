@@ -10,6 +10,9 @@ namespace kafka4net
         void Info(string msg);
         void Info(string msg, params object[] args);
         void Info(Exception e, string msg, params object[] args);
+        void Warn(string msg);
+        void Warn(string msg, params object[] args);
+        void Warn(Exception e, string msg, params object[] args);
         void Error(string msg);
         void Error(string msg, params object[] args);
         void Error(Exception e, string msg, params object[] args);
