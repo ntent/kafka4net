@@ -52,6 +52,7 @@
     </Reference>
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="PartitionInfo.cs" />
     <Compile Include="Protocol\Transport.cs" />
     <Compile Include="BrokerException.cs" />
     <Compile Include="Connection.cs" />

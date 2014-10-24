@@ -306,8 +306,8 @@ namespace kafka4net.Protocol
             Write(stream, req.TopicName);
             WriteArray(stream, req.Partitions, p =>
             {
-                BigEndianConverter.Write(stream, p);
-                BigEndianConverter.Write(stream, req.Time);
+                BigEndianConverter.Write(stream, p.Id);
+                BigEndianConverter.Write(stream, p.Time);
                 stream.Write(_two32, 0, 4);     // request 2 offsets: start and end
             });
 

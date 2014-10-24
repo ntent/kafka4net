@@ -34,16 +34,16 @@ namespace kafka4net.ConsumerImpl
         readonly int _id = Interlocked.Increment(ref _nextId);
         static int _nextId;
 
-        /// <summary>This constructor does not have partitions and must be followed with ResolveTime() call</summary>
-        public Fetcher(BrokerMeta broker, Transport connection, Consumer consumer, CancellationToken cancel)
+        /// <summary>This constructor does not have partitions and must be followed with ResolveOffsets() call</summary>
+        public Fetcher(BrokerMeta broker, Transport connection, Tuple<int,int,int> consumerKey, CancellationToken cancel)
         {
             _broker = broker;
             _connection = connection;
             _cancel = cancel;
-            Key = Tuple.Create(broker.NodeId, consumer.MaxWaitTimeMs, consumer.MinBytes);
+            Key = consumerKey;
 
             if (_log.IsDebugEnabled)
-                _log.Debug("Create new fetcher #{0} for consumer: {1}", _id, consumer);
+                _log.Debug("Create new fetcher #{0} for Broker: {1}, MaxWaitTime: {2}, MinBytes: {1}", _id, consumerKey.Item1, consumerKey.Item2, consumerKey.Item3);
         }
 
         public Fetcher(BrokerMeta broker, Transport connection, Consumer consumer, List<PartitionFetchState> partitions, CancellationToken cancel)
@@ -75,27 +75,47 @@ namespace kafka4net.ConsumerImpl
         public int BrokerId { get { return _broker.NodeId; } }
 
         /// <summary>
-        /// Initial start of partition fetching. ListeningGroup contains time and Fetch() needs to be called
-        /// to convert Time into Offset.
+        /// Initial start of partition fetching.
+        /// // TODO: does this function belongs rather to Consumer?
         /// </summary>
-        public async Task ResolveTime(Consumer consumer, int[] partitions)
+        public async Task ResolveOffsets(Consumer consumer, int[] partitions)
         {
             // TODO: if fetcher is complete due to partition changing leader, while offset operation
             // in progress, what do we do?
 
-            _log.Debug("Fetcher #{0} adding partitions to be time->offset resolved: parts: [{1}]", _id, string.Join(",", partitions));
-            
-            var req = new OffsetRequest
-            {
-                Time = consumer.Time,
-                TopicName = consumer.Topic,
-                Partitions = partitions
-            };
+            if(_log.IsDebugEnabled)
+                _log.Debug("Fetcher #{0} adding partitions to be time->offset resolved: parts: [{1}]", _id, string.Join(",", partitions));
 
-            // issue request 
-            // TODO: relaiability. If offset failed, try to recover
-            // TODO: check offset return code
-            var offset = await _connection.GetOffsets(req, _broker.Conn);
+            IEnumerable<Tuple<int,long>> partOffsets;
+
+            if (consumer.PartitionOffsetProvider == null)
+            {
+                // if implicit, find out offsets
+                var req = new OffsetRequest
+                {
+                    TopicName = consumer.Topic,
+                    Partitions = partitions.Select(id => new OffsetRequest.PartitionData
+                    {
+                        Id = id,
+                        Time = consumer.StartFromQueueHead ? -2L : -1L
+                    }).ToArray()
+                };
+
+                // issue request 
+                // TODO: relaiability. If offset failed, try to recover
+                // TODO: check offset return code
+                var offsetResponse = await _connection.GetOffsets(req, _broker.Conn);
+                partOffsets = offsetResponse.Partitions.
+                    // p.Offsets.First(): if start from head, then Offsets will be [head], otherwise [tail,head],
+                    // thus First() will always get what we want.
+                    Select(p => Tuple.Create(p.Partition, p.Offsets.First()));
+            }
+            else
+            {
+                // if explicit offset provider exists
+                partOffsets = partitions.
+                    Select(p => Tuple.Create(p, consumer.PartitionOffsetProvider(p)));
+            }
 
             lock(_consumerToPartitionsMap)
             {
@@ -110,10 +130,10 @@ namespace kafka4net.ConsumerImpl
                 if (same.Any())
                     _log.Error("Detected partitions which are already listening to. Topic: {0} partitions: {1}", consumer.Topic, string.Join(",", same.Select(p=>p.ToString()).ToArray()));
 
-                var newStates = offset.Partitions.
-                    Where(p => !same.Contains(p.Partition)).
+                var newStates = partOffsets.
+                    Where(p => !same.Contains(p.Item1)).
                     // TODO: check offset.ErrorCode
-                    Select(p => new PartitionFetchState(p.Partition, 0L, p.Offsets.First())).
+                    Select(p => new PartitionFetchState(p.Item1, 0L, p.Item2)).
                     ToArray();
 
                 state.AddRange(newStates);
@@ -126,7 +146,7 @@ namespace kafka4net.ConsumerImpl
             
         }
 
-        public void AdToListeningPartitions(Consumer consumer, List<PartitionFetchState> parts)
+        public void AddToListeningPartitions(Consumer consumer, List<PartitionFetchState> parts)
         {
             List<PartitionFetchState> partsOld;
             if (!_consumerToPartitionsMap.TryGetValue(consumer, out partsOld))

@@ -28,6 +28,7 @@ namespace tests
         //string _seedAddresses = "192.168.56.10,192.168.56.20";
         string _seedAddresses = "192.168.56.10";
         readonly List<string> _stoppedBrokers = new List<string>();
+        readonly string _part33CreateScript = "ssh -c '/opt/kafka_2.10-0.8.1.1/bin/kafka-topics.sh --create --topic part33 --partitions 3 --replication-factor 2 --zookeeper 192.168.56.2' broker1";
         static readonly NLog.Logger _log = NLog.LogManager.GetCurrentClassLogger();
 
         [SetUp]
@@ -125,7 +126,8 @@ namespace tests
             publisher.Connect(broker);
             
             // start listening
-            var consumer = new Consumer(topic, broker, maxWaitTimeMs: 1000, minBytes: 1);
+            var consumer = new Consumer(topic, maxWaitTimeMs: 1000, minBytes: 1);
+            await consumer.Subscribe(broker);
             var received = new Subject<ReceivedMessage>();
             var receivedTxt = new List<string>();
             consumer.AsObservable.
@@ -174,7 +176,7 @@ namespace tests
         // and are committed (can be read) within (5sec?)
         // Also, order of messages is preserved
         [Test]
-        public void LeaderDownRecovery()
+        public async void LeaderDownRecovery()
         {
             //var script = "./kafka-topics.sh  --create --topic part3 --partitions 1 --replication-factor 3 --zookeeper 192.168.56.2";
             //Vagrant(script);
@@ -189,7 +191,8 @@ namespace tests
                 OnSuccess = messages => { }
             };
             publisher.Connect(broker);
-            var consumer = new Consumer("part3", broker);
+            var consumer = new Consumer("part3");
+            await consumer.Subscribe(broker);
 
             var postCount = 100;
             var postCount2 = 50;
@@ -247,11 +250,12 @@ namespace tests
 
         #if DEBUG
         [Test]
-        public void ListenerRecoveryTest()
+        public async void ListenerRecoveryTest()
         {
             var broker = new Router(_seedAddresses);
             broker.ConnectAsync().Wait();
-            var consumer = new Consumer("part3", broker, offset: -2L, maxBytes: 256);
+            var consumer = new Consumer("part3", partitionOffsetProvider: p=>-2L, maxBytes: 256);
+            await consumer.Subscribe(broker);
             var current =0;
             var received = new ReplaySubject<ReceivedMessage>();
             consumer.AsObservable.
@@ -301,7 +305,8 @@ namespace tests
 
             // start listener at the end of queue and accumulate received messages
             var received = new HashSet<string>();
-            var consumer = new Consumer(topic, fetchBroker, maxWaitTimeMs: 30 * 1000);
+            var consumer = new Consumer(topic, maxWaitTimeMs: 30 * 1000);
+            await consumer.Subscribe(fetchBroker);
             consumer.AsObservable.Select(msg => Encoding.UTF8.GetString(msg.Value)).Subscribe(m => received.Add(m));
 
             // send data, 5 msg/sec
@@ -346,7 +351,7 @@ namespace tests
         }
 
         [Test]
-        public void KeyedMessagesPreserveOrder()
+        public async void KeyedMessagesPreserveOrder()
         {
             var routerProducer = new Router(_seedAddresses);
             var routerListener = new Router(_seedAddresses);
@@ -356,13 +361,13 @@ namespace tests
             // TODO: how to skip initialization if topic already exists? Add router.GetAllTopics().Any(...)??? Or make it part of provisioning script?
             if(!routerProducer.GetAllTopics().Any(t => t == "part33"))
             {
-                var script = "ssh -c '/opt/kafka_2.10-0.8.1.1/bin/kafka-topics.sh --create --topic part33 --partitions 3 --replication-factor 2 --zookeeper 192.168.56.2' broker1";
-                Vagrant(script);
+                Vagrant(_part33CreateScript);
             }
             
             // create listener in a separate connection/broker
             var receivedMsgs = new List<ReceivedMessage>();
-            var consumer = new Consumer("part33", routerListener);
+            var consumer = new Consumer("part33");
+            await consumer.Subscribe(routerListener);
             consumer.AsObservable.Synchronize().Subscribe(msg =>
             {
                 lock (receivedMsgs)
@@ -460,6 +465,140 @@ namespace tests
             return l1.Zip(l2, (l, r) => new {l, r}).
                 SkipWhile(_ => _.l == _.r).Take(100).
                 Select(_ => Tuple.Create(_.l, _.r));
+        }
+
+        // explicit offset works
+        [Test]
+        public async Task ExplicitOffset()
+        {
+            var router = new Router(_seedAddresses);
+            await router.ConnectAsync();
+
+            // create new topic with 3 partitions
+            if(!router.GetAllTopics().Contains("part33"))
+                Vagrant(_part33CreateScript);
+
+            // fill it out with 10K messages
+            var producer = new Publisher("part33");
+            producer.Connect(router);
+            _log.Info("Sending data");
+            Enumerable.Range(1, 10 * 1000).
+                Select(i => new Message { Value = BitConverter.GetBytes(i) }).
+                ForEach(producer.Send);
+
+            _log.Debug("Closing producer");
+            await producer.Close();
+
+            // consume tail-300 for each partition
+            var offsets = (await router.GetPartitionsInfo("part33")).ToDictionary(p => p.Partition);
+            var consumer = new Consumer("part33", partitionOffsetProvider: p => offsets[p].Tail - 300);
+            var messages = consumer.AsObservable.
+                GroupBy(m => m.Partition).Replay();
+            messages.Connect();
+            await consumer.Subscribe(router);
+
+            messages.Subscribe(p => p.Take(10).Subscribe(
+                m => _log.Debug("Got message {0}/{1}", m.Partition, BitConverter.ToInt32(m.Value, 0)),
+                e => _log.Error("Error", e),
+                () => _log.Debug("Complete part {0}", p.Key)
+            ));
+
+            // wait for 3 partitions to arrrive and every partition to read at least 100 messages
+            await messages.Select(g => g.Take(100)).Take(3).ToTask();
+        }
+
+        // can read from the head of queue
+        [Test]
+        public async void ReadFromHead()
+        {
+            var router = new Router(_seedAddresses);
+            await router.ConnectAsync();
+            var count = 100;
+
+            var topic = "part32." + _rnd.Next();
+            await router.ConnectAsync();
+            _log.Info("Creating '{0}'", topic);
+            Vagrant("ssh -c '/opt/kafka_2.10-0.8.1.1/bin/kafka-topics.sh --create --topic " + topic + " --partitions 3 --replication-factor 2 --zookeeper 192.168.56.2' broker1");
+
+            // fill it out with 100 messages
+            var producer = new Publisher(topic);
+            producer.Connect(router);
+            _log.Info("Sending data");
+            Enumerable.Range(1, count).
+                Select(i => new Message { Value = BitConverter.GetBytes(i) }).
+                ForEach(producer.Send);
+
+            _log.Debug("Closing producer");
+            await producer.Close();
+
+            // read starting from the head
+            var consumer = new Consumer(topic, startFromQueueHead: true);
+            var count2 = consumer.AsObservable.TakeUntil(DateTimeOffset.Now.AddSeconds(5)).Count().ToTask();
+            await consumer.Subscribe(router);
+            Assert.AreEqual(count, await count2);
+        }
+
+        // if attempt to fetch from offset out of range, excption is thrown
+        [Test]
+        public void OutOfRangeOffsetThrows()
+        {
+
+        }
+
+        // implicit offset is defaulted to fetching from the end
+        [Test]
+        public void DefaultPositionToTheTail()
+        {
+
+        }
+
+        // positioning to the head of the queue picks up all existing messages
+        [Test]
+        public async void PositionToTheHead()
+        {
+            var router = new Router(_seedAddresses);
+            var consumer = new Consumer("part33", partitionOffsetProvider: p => -2L);
+            await consumer.Subscribe(router);
+        }
+
+        // Create a new 1-partition topic and sent 100 messages.
+        // Read offsets, they should be [0, 100]
+        [Test, Timeout(30*1000)]
+        public async Task ReadOffsets()
+        {
+            var router = new Router(_seedAddresses);
+            var sentEvents = new Subject<Message>();
+            var topic = "part12." + _rnd.Next();
+            await router.ConnectAsync();
+            _log.Info("Creating '{0}'", topic);
+            Vagrant("ssh -c '/opt/kafka_2.10-0.8.1.1/bin/kafka-topics.sh --create --topic "+topic+" --partitions 1 --replication-factor 2 --zookeeper 192.168.56.2' broker1");
+
+            // read offsets of empty queue
+            var parts = await router.GetPartitionsInfo(topic);
+            Assert.AreEqual(1, parts.Length, "Expected just one partition");
+            Assert.AreEqual(-1L, parts[0].Head, "Expected start at 0");
+            Assert.AreEqual(0L, parts[0].Tail, "Expected end at 100");
+
+            var publisher = new Publisher(topic) { OnSuccess = e => e.ForEach(sentEvents.OnNext)};
+            publisher.Connect(router);
+
+            // send 100 messages
+            Enumerable.Range(1, 100).
+                Select(i => new Message { Value = BitConverter.GetBytes(i) }).
+                ForEach(publisher.Send);
+            _log.Info("Waiting for 100 sent messages");
+            sentEvents.Subscribe(msg => _log.Debug("Sent {0}", BitConverter.ToInt32(msg.Value, 0)));
+            await sentEvents.Take(100).ToTask();
+            _log.Info("Closing publisher");
+            await publisher.Close();
+
+            // re-read offsets after messages published
+            parts = await router.GetPartitionsInfo(topic);
+
+            Assert.AreEqual(1, parts.Length, "Expected just one partition");
+            Assert.AreEqual(0, parts[0].Partition, "Expected the only partition with Id=0");
+            Assert.AreEqual(0L, parts[0].Head, "Expected start at 0");
+            Assert.AreEqual(100L, parts[0].Tail, "Expected end at 100");
         }
 
         // if last leader is down, all in-buffer messages are errored and the new ones

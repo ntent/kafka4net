@@ -150,11 +150,11 @@ namespace kafka4net
                     return;
 
                 _state = BrokerState.Connecting;
-                var initMeta = await _connection.ConnectAsync();
+                var initMeta = await _connection.ConnectAsync().ConfigureAwait(false);
                 MergeTopicMeta(initMeta);
                 _state = BrokerState.Connected;
                 StartPartitionMonitor();
-            });
+            }).ConfigureAwait(false);
         }
 
         /// <summary>Get topics which are already cached. Does not issue metadata request.</summary>
@@ -174,18 +174,10 @@ namespace kafka4net
             // TODO: implement consumer removal when unsubscribed
             _consumers.Add(consumer);
 
-            // If topic meta is missing, try to get it. It could be created externally since the last check
-            // or topic autocreate feature is ON and new topic will appear shortly.
-            if (!_topicPartitionMap.ContainsKey(consumer.Topic))
-            {
-                _log.Info("Topic '{0}' does not exists. Starting pooling...", consumer.Topic);
-                var meta = await PoolMeta(consumer.Topic);
-                _log.Info("Got topic metadata");
-                MergeTopicMeta(meta);
-            }
+            await GetOrFetchMetaForTopic(consumer.Topic);
 
-            // Got metadata, now calculate routungs of partition to broker, group by broker
-            // and add the goup of partitions to appropriate Fetcher
+            // Calculate routings of partition to broker, group by broker
+            // and add the group of partitions to appropriate Fetcher
             return (
                 from part in _topicPartitionMap[consumer.Topic]
                 let broker = FindBrokerMetaForPartitionId(consumer.Topic, part.Id)
@@ -199,17 +191,18 @@ namespace kafka4net
                     FirstOrDefault(f => f.Key.Equals(consumerKey));
                 if (fetcher == null)
                 {
-                    fetcher = new Fetcher(listeningPartitions.Key, _connection, consumer, _cancel.Token);
+                    fetcher = new Fetcher(listeningPartitions.Key, _connection, consumerKey, _cancel.Token);
                     _activeFetchers.Add(fetcher);
                 }
                 
-                await fetcher.ResolveTime(consumer, listeningPartitions.ToArray());
+                await fetcher.ResolveOffsets(consumer, listeningPartitions.ToArray());
                 _log.Debug("Fetcher {0} resolved time", fetcher);
                 
                 return fetcher.AsObservable().
                     SelectMany(msg => msg.Topics).
                     Where(t => t.Topic == consumer.Topic).
-                    Do(_ => {}, e => AddFetcherMonitoring(fetcher, e)).
+                    // in case of failure, start partition recovery process
+                    Do(_ => { }, e => StartPartitionRecovery(fetcher, e)).
                     SelectMany(topic => {
                         _log.Debug("#{0} Received fetch message", _id);
                         return (
@@ -229,9 +222,62 @@ namespace kafka4net
                 ObserveOn(_scheduler);
         }
 
-        void AddFetcherMonitoring(Fetcher fetcher, Exception e)
+        public async Task<PartitionInfo[]> GetPartitionsInfo(string topic)
         {
-            // in case of failure, start partition recovery process
+            var ret = await await _scheduler.Ask(async () => {
+                // get partition list
+                await GetOrFetchMetaForTopic(topic);
+                var parts = _topicPartitionMap[topic].
+                    Select(p => new OffsetRequest.PartitionData {
+                        Id = p.Id,
+                        Time = -1L
+                    }).ToArray();
+
+                // group parts by broker
+                var requests = (
+                    from part in parts
+                    let broker = FindBrokerMetaForPartitionId(topic, part.Id)
+                    group part by broker into brokerGrp
+                    let req = new OffsetRequest { TopicName = topic, Partitions = brokerGrp.ToArray() }
+                    select _connection.GetOffsets(req, brokerGrp.Key.Conn)
+                ).ToArray();
+
+                await Task.WhenAll(requests);
+
+                // TODO: handle recoverable errors, such as tcp transport exceptions (with limited retry)
+                // or partition relocation
+                // TODO: handler error codes
+                if(requests.Any(r => r.IsFaulted))
+                    throw new AggregateException("Failure when getting offsets info", requests.Where(r => r.IsFaulted).Select(r => r.Exception));
+
+                return (
+                    from r in requests
+                    from part in r.Result.Partitions
+                    select new PartitionInfo { 
+                        Partition = part.Partition, 
+                        Head = part.Offsets.Length == 1 ? -1 : part.Offsets[1], 
+                        Tail = part.Offsets[0] 
+                    }
+                ).ToArray();
+            });
+
+            return ret;
+        }
+
+        /// <summary>Get cached metadata for topic, or request, wait and cache it</summary>
+        async Task GetOrFetchMetaForTopic(string topic)
+        {
+            if (!_topicPartitionMap.ContainsKey(topic))
+            {
+                _log.Debug("Topic '{0}' does not exists. Starting pooling...", topic);
+                var meta = await PoolMeta(topic);
+                _log.Debug("Got topic metadata");
+                MergeTopicMeta(meta);
+            }
+        }
+
+        void StartPartitionRecovery(Fetcher fetcher, Exception e)
+        {
             _activeFetchers.Remove(fetcher);
             _partitionRecoveryMonitor.StartRecovery(fetcher.GetOffsetStates());
             _log.Info("Fetcher failed. Started recovery.", e);
@@ -275,7 +321,7 @@ namespace kafka4net
                         // no fetcher for this partition group
                         var broker = _metadata.Brokers.Single(b => b.NodeId == brokerGroup.BrokerId);
                         var fetcher2 = new Fetcher(broker, _connection, consumer, brokerGroup.Parts, _cancel.Token);
-                        fetcher2.AsObservable().Subscribe(_ => { }, e => AddFetcherMonitoring(fetcher2, e));
+                        fetcher2.AsObservable().Subscribe(_ => { }, e => StartPartitionRecovery(fetcher2, e));
                         fetcher = fetcher2;
                         needSubscription = true;
                         _log.Debug("No Fetcher exists. Fetcher is created on {0} and Consumer will subscribe", broker);
@@ -294,7 +340,7 @@ namespace kafka4net
                         _log.Debug("Subscribed Consumer to fetcher: {0} on topic {1}", fetcher, recoveryTopic);
                     }
 
-                    fetcher.AdToListeningPartitions(consumer, brokerGroup.Parts);
+                    fetcher.AddToListeningPartitions(consumer, brokerGroup.Parts);
                 }
             }
         }

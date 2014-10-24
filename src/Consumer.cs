@@ -1,4 +1,6 @@
 ﻿using System;
+using System.Collections;
+using System.Collections.Generic;
 using System.Linq;
 using System.Reactive.Concurrency;
 using System.Reactive.Linq;
@@ -17,31 +19,49 @@ namespace kafka4net
         internal int MinBytes { get; private set; }
         internal int MaxBytes { get; private set; }
         
-        readonly Router _router;
-        internal readonly long Time;
+        Router _router;
+        internal readonly Func<int, long> PartitionOffsetProvider;
+        internal readonly bool StartFromQueueHead;
         readonly Subject<ReceivedMessage> _events = new Subject<ReceivedMessage>();
         public IObservable<ReceivedMessage> AsObservable { get { return _events; } }
         static readonly ILogger _log = Logger.GetLogger();
 
-        // TODO: API for [part,offset]
-        public Consumer(string topic, Router router, int maxWaitTimeMs=500, int minBytes=1, long offset=-1L, int maxBytes=256*1024)
+
+        /// <summary>
+        /// Subscription is performed asynchronously.
+        /// </summary>
+        /// <param name="topic"></param>
+        /// <param name="router"></param>
+        /// <param name="maxWaitTimeMs"></param>
+        /// <param name="minBytes"></param>
+        /// <param name="partitionOffsetProvider">
+        ///     If not provided or null, all partitions are positioned at the end (only new messages will be picked up)
+        /// </param>
+        /// <param name="maxBytes"></param>
+        /// <param name="startFromQueueHead">Start reading messages from the head of the queue</param>
+        public Consumer(string topic, int maxWaitTimeMs=500, int minBytes=1, Func<int,long> partitionOffsetProvider = null, int maxBytes=256*1024, bool startFromQueueHead=false)
         {
-            _router = router;
-            Time = offset;
+            if(startFromQueueHead && partitionOffsetProvider != null)
+                throw new ArgumentException("partitionOffsetProvider and startFromQueueHead can not be both set");
+
+            PartitionOffsetProvider = partitionOffsetProvider;
+            StartFromQueueHead = startFromQueueHead;
             Topic = topic;
             MaxWaitTimeMs = maxWaitTimeMs;
             MinBytes = minBytes;
             MaxBytes = maxBytes;
-            
-            // TODO: bug: Consumer's subscriber is not subscribed yet and 
-            // may loss some messages. Subscribe explicitly.
-            Subscribe();
         }
 
-        private async void Subscribe()
+        public IEnumerable<Tuple<int,long,long>> GetPartitionsOfsets()
+        {
+            throw new NotImplementedException();
+        }
+
+        public async Task Subscribe(Router router)
         {
             // TODO: if caller sets SynchronizationContext and it is blocked, fetcher cretion is delayed until caller
             // unblocks. For example, NUnit's async void test method.
+            _router = router;
             (await _router.InitFetching(this)).
                 Subscribe(msg => _events.OnNext(msg));
         }
@@ -52,7 +72,7 @@ namespace kafka4net
 
         public override string ToString()
         {
-            return string.Format("Topic: '{0}', offset: {1}", Topic, Time);
+            return string.Format("Consumer: '{0}'", Topic);
         }
 
         internal void OnPartitionsRecovered(IObservable<FetchResponse.TopicFetchData> recoveredPartitions)
