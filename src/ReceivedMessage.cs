@@ -6,5 +6,6 @@
         public int Partition;
         public byte[] Key;
         public byte[] Value;
+        public long Offset;
     }
 }

@@ -19,26 +19,26 @@ namespace kafka4net.ConsumerImpl
     /// new fetcher will be created for each such a group.
     /// One fetcher can contain partitions from multiple topics as long as they share the same params.
     /// </summary>
-    class Fetcher
+    class Fetcher : IDisposable
     {
         /// <summary>BrokerId, MaxWaitTime, MinBytes</summary>
         public readonly Tuple<int, int, int> Key;
 
         private readonly BrokerMeta _broker;
-        private readonly Transport _connection;
+        private readonly Transport _protocol;
         private readonly CancellationToken _cancel;
         private readonly Dictionary<Consumer,List<PartitionFetchState>> _consumerToPartitionsMap = new Dictionary<Consumer, List<PartitionFetchState>>();
         private Dictionary<string,List<PartitionFetchState>> _topicToPartitionsMap = new Dictionary<string, List<PartitionFetchState>>();
         static readonly ILogger _log = Logger.GetLogger();
-        private IObservable<FetchResponse> _messagesEvent;
+        private IObservable<FetchResponse> _fetchResponses;
         readonly int _id = Interlocked.Increment(ref _nextId);
         static int _nextId;
 
         /// <summary>This constructor does not have partitions and must be followed with ResolveOffsets() call</summary>
-        public Fetcher(BrokerMeta broker, Transport connection, Tuple<int,int,int> consumerKey, CancellationToken cancel)
+        public Fetcher(BrokerMeta broker, Transport protocol, Tuple<int,int,int> consumerKey, CancellationToken cancel)
         {
             _broker = broker;
-            _connection = connection;
+            _protocol = protocol;
             _cancel = cancel;
             Key = consumerKey;
 
@@ -46,14 +46,14 @@ namespace kafka4net.ConsumerImpl
                 _log.Debug("Create new fetcher #{0} for Broker: {1}, MaxWaitTime: {2}, MinBytes: {1}", _id, consumerKey.Item1, consumerKey.Item2, consumerKey.Item3);
         }
 
-        public Fetcher(BrokerMeta broker, Transport connection, Consumer consumer, List<PartitionFetchState> partitions, CancellationToken cancel)
+        public Fetcher(BrokerMeta broker, Transport protocol, Consumer consumer, List<PartitionFetchState> partitions, CancellationToken cancel)
         {
             _broker = broker;
-            _connection = connection;
+            _protocol = protocol;
             _cancel = cancel;
             _consumerToPartitionsMap.Add(consumer, partitions);
             Key = Tuple.Create(broker.NodeId, consumer.MaxWaitTimeMs, consumer.MinBytes);
-            _messagesEvent = FetchLoop();
+            _fetchResponses = FetchLoop();
 
             if(_log.IsDebugEnabled)
                 _log.Debug("Created new fetcher #{0} for consumer: {1} with explicit partitions: {1}", _id, consumer, string.Join(",", partitions));
@@ -64,7 +64,49 @@ namespace kafka4net.ConsumerImpl
             return string.Format("{0}:{1}/{2}", _broker.Host, _broker.Port, _broker.NodeId);
         }
 
-        public IObservable<FetchResponse> AsObservable() { return _messagesEvent; }
+        public void Dispose()
+        {
+            // TODO: On Dispose, clean up and exit the fetch loop, cancel any subscriptions.
+            throw new NotImplementedException();
+        }
+
+        /// <summary>
+        /// Handles the subscription of a new TopicPartition to this fetcher.
+        /// Keeps track of the subscribed partitions in order to not fetch messages if the FlowControlState is Off.
+        /// </summary>
+        /// <param name="topicPartition"></param>
+        /// <returns></returns>
+        public IDisposable Subscribe(TopicPartition topicPartition)
+        {
+            // TODO: Add FlowControlState handling
+            return ReceivedMessages.Where(rm => rm.Topic == topicPartition.Topic && rm.Partition == topicPartition.PartitionId)
+                .Subscribe(topicPartition);
+
+        }
+
+        /// <summary>
+        /// Compose the FetchResponses into ReceivedMessages
+        /// </summary>
+        private IObservable<ReceivedMessage> ReceivedMessages { get { 
+            return _fetchResponses.SelectMany(response => {
+                _log.Debug("#{0} Received fetch message", _id);
+                
+                return (
+                    from topic in response.Topics
+                    from part in topic.Partitions
+                    from msg in part.Messages
+                    select new ReceivedMessage
+                    {
+                        Topic = topic.Topic,
+                        Partition = part.Partition,
+                        Key = msg.Key,
+                        Value = msg.Value,
+                        Offset = msg.Offset
+                    });
+            });
+        }}
+
+        public IObservable<FetchResponse> AsObservable() { return _fetchResponses; }
 
         public Dictionary<string, List<PartitionFetchState>> GetOffsetStates() { return _topicToPartitionsMap;  }
 
@@ -73,6 +115,8 @@ namespace kafka4net.ConsumerImpl
         public bool HasConsumer(Consumer consumer) { return _consumerToPartitionsMap.ContainsKey(consumer); }
 
         public int BrokerId { get { return _broker.NodeId; } }
+
+        public BrokerMeta Broker { get { return _broker; } }
 
         /// <summary>
         /// Initial start of partition fetching.
@@ -104,8 +148,8 @@ namespace kafka4net.ConsumerImpl
                 // issue request 
                 // TODO: relaiability. If offset failed, try to recover
                 // TODO: check offset return code
-                var offsetResponse = await _connection.GetOffsets(req, _broker.Conn);
-                partOffsets = offsetResponse.Partitions.
+            var offset = await _protocol.GetOffsets(req, _broker.Conn);
+                partOffsets = offset.Partitions.
                     // p.Offsets.First(): if start from head, then Offsets will be [head], otherwise [tail,head],
                     // thus First() will always get what we want.
                     Select(p => Tuple.Create(p.Partition, p.Offsets.First()));
@@ -138,7 +182,7 @@ namespace kafka4net.ConsumerImpl
 
                 state.AddRange(newStates);
 
-                _messagesEvent = FetchLoop();
+                _fetchResponses = FetchLoop();
 
                 if (_log.IsDebugEnabled)
                     _log.Debug("Fetcher #{0} resolved time->offset. New fetch states: [{1}]", _id, string.Join(", ", newStates.AsEnumerable()));
@@ -162,7 +206,7 @@ namespace kafka4net.ConsumerImpl
             _topicToPartitionsMap = _consumerToPartitionsMap.ToDictionary(kv => kv.Key.Topic, kv => kv.Value);
         }
 
-        IObservable<FetchResponse> FetchLoop()
+        private IObservable<FetchResponse> FetchLoop()
         {
             return Observable.Create<FetchResponse>(async observer =>
             {
@@ -191,7 +235,7 @@ namespace kafka4net.ConsumerImpl
                         if(_log.IsDebugEnabled) 
                             _log.Debug("#{0}: sending FetchRequest: {1}", _id, fetchRequest);
                         
-                        fetch = await _connection.Fetch(fetchRequest, _broker.Conn);
+                        fetch = await _protocol.Fetch(fetchRequest, _broker.Conn);
 
                         if (fetch.Topics.Any(t => t.Partitions.Any(p => p.ErrorCode != ErrorCode.NoError)))
                             _log.Debug("_");

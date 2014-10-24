@@ -11,16 +11,16 @@ namespace kafka4net
     {
         readonly string _host;
         readonly int _port;
-        private readonly Transport _connMgr;
+        private readonly Transport _protocol;
         TcpClient _client;
         public ConnState State;
         static readonly ILogger _log = Logger.GetLogger();
 
-        public Connection(string host, int port, Transport connMgr)
+        public Connection(string host, int port, Transport protocol)
         {
             _host = host;
             _port = port;
-            _connMgr = connMgr;
+            _protocol = protocol;
         }
 
 
@@ -66,7 +66,7 @@ namespace kafka4net
                 _client = new TcpClient();
                 await _client.ConnectAsync(_host, _port);
                 // TODO: Who and when is going to cancell reading?
-                _connMgr.CorrelateResponseLoop(_client, CancellationToken.None);
+                _protocol.CorrelateResponseLoop(_client, CancellationToken.None);
                 State = ConnState.Connected;
                 return _client;
             }
