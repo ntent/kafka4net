@@ -219,8 +219,6 @@ namespace kafka4net
         /// <summary>Resolve initial offsets of partitions and start fetching loop</summary>
         internal async Task<IObservable<ReceivedMessage>> InitFetching(Consumer consumer)
         {
-            // TODO: synchronization!
-
             // TODO: implement consumer removal when unsubscribed
             _consumers.Add(consumer);
 

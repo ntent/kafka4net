@@ -61,8 +61,10 @@ namespace kafka4net
             // TODO: if caller sets SynchronizationContext and it is blocked, fetcher cretion is delayed until caller
             // unblocks. For example, NUnit's async void test method.
             _router = router;
-            var fetch = await _router.InitFetching(this).ConfigureAwait(false);
-            await _router.Scheduler.Ask(() => fetch.Subscribe(msg => _events.OnNext(msg)));
+            await await _router.Scheduler.Ask(async () => {
+                var fetch = await _router.InitFetching(this);
+                fetch.Subscribe(msg => _events.OnNext(msg)); 
+            });
         }
 
         public void Unsubscribe() {
