@@ -11,13 +11,11 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using kafka4net;
-using kafka4net.Protocol.Requests;
 using kafka4net.Utils;
 using NLog;
 using NLog.Config;
 using NLog.Targets;
 using NUnit.Framework;
-using NUnit.Framework.Constraints;
 using Logger = kafka4net.Logger;
 
 namespace tests

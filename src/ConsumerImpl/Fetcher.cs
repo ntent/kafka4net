@@ -6,9 +6,9 @@ using System.Reactive.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using kafka4net.Metadata;
-using kafka4net.Protocol;
-using kafka4net.Protocol.Requests;
-using kafka4net.Protocol.Responses;
+using kafka4net.Protocols;
+using kafka4net.Protocols.Requests;
+using kafka4net.Protocols.Responses;
 using kafka4net.Utils;
 
 namespace kafka4net.ConsumerImpl
@@ -25,7 +25,7 @@ namespace kafka4net.ConsumerImpl
         public readonly Tuple<int, int, int> Key;
 
         private readonly BrokerMeta _broker;
-        private readonly Transport _protocol;
+        private readonly Protocol _protocol;
         private readonly CancellationToken _cancel;
         private readonly Dictionary<Consumer,List<PartitionFetchState>> _consumerToPartitionsMap = new Dictionary<Consumer, List<PartitionFetchState>>();
         private Dictionary<string,List<PartitionFetchState>> _topicToPartitionsMap = new Dictionary<string, List<PartitionFetchState>>();
@@ -35,7 +35,7 @@ namespace kafka4net.ConsumerImpl
         static int _nextId;
 
         /// <summary>This constructor does not have partitions and must be followed with ResolveOffsets() call</summary>
-        public Fetcher(BrokerMeta broker, Transport protocol, Tuple<int,int,int> consumerKey, CancellationToken cancel)
+        public Fetcher(BrokerMeta broker, Protocol protocol, Tuple<int,int,int> consumerKey, CancellationToken cancel)
         {
             _broker = broker;
             _protocol = protocol;
@@ -46,7 +46,7 @@ namespace kafka4net.ConsumerImpl
                 _log.Debug("Create new fetcher #{0} for Broker: {1}, MaxWaitTime: {2}, MinBytes: {1}", _id, consumerKey.Item1, consumerKey.Item2, consumerKey.Item3);
         }
 
-        public Fetcher(BrokerMeta broker, Transport protocol, Consumer consumer, List<PartitionFetchState> partitions, CancellationToken cancel)
+        public Fetcher(BrokerMeta broker, Protocol protocol, Consumer consumer, List<PartitionFetchState> partitions, CancellationToken cancel)
         {
             _broker = broker;
             _protocol = protocol;

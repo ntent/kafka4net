@@ -1,7 +1,7 @@
 ﻿using System.Collections.Generic;
 using System.Linq;
 
-namespace kafka4net.Protocol.Requests
+namespace kafka4net.Protocols.Requests
 {
     class PartitionData
     {

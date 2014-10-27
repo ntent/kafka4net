@@ -4,18 +4,17 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Net.Sockets;
 using System.Reactive.Linq;
-using System.Reactive.Subjects;
 using System.Reactive.Threading.Tasks;
 using System.Threading;
 using System.Threading.Tasks;
 using kafka4net.Metadata;
-using kafka4net.Protocol.Requests;
-using kafka4net.Protocol.Responses;
+using kafka4net.Protocols.Requests;
+using kafka4net.Protocols.Responses;
 using kafka4net.Utils;
 
-namespace kafka4net.Protocol
+namespace kafka4net.Protocols
 {
-    class Transport
+    class Protocol
     {
         private readonly Router _router;
         static readonly ILogger _log = Logger.GetLogger();
@@ -24,7 +23,7 @@ namespace kafka4net.Protocol
         static int _correlationId;
         readonly ConcurrentDictionary<int,Action<byte[]>> _corelationTable = new ConcurrentDictionary<int, Action<byte[]>>();
 
-        public Transport(Router router, string seedConnections)
+        public Protocol(Router router, string seedConnections)
         {
             _router = router;
             _seedAddresses = Connection.ParseAddress(seedConnections);
@@ -50,11 +49,11 @@ namespace kafka4net.Protocol
         async Task<MetadataResponse> StartInitialConnect()
         {
             return await _seedAddresses.
-                Select(addr => Observable.StartAsync(async cancel =>
+                Select(addr => Observable.StartAsync<MetadataResponse>(async cancel =>
                 {
                     var client = new TcpClient { NoDelay = true };
                     //cancel.Register(client.Close);
-                    await client.ConnectAsync(addr.Item1, addr.Item2);
+                    await client.ConnectAsync((string) addr.Item1, addr.Item2);
                     //if (cancel.IsCancellationRequested)
                     //    return null;
                     _log.Debug("Connected to {0}:{1}", addr.Item1, addr.Item2);

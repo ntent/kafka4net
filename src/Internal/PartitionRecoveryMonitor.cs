@@ -8,9 +8,9 @@ using System.Threading;
 using System.Threading.Tasks;
 using kafka4net.ConsumerImpl;
 using kafka4net.Metadata;
-using kafka4net.Protocol;
-using kafka4net.Protocol.Requests;
-using kafka4net.Protocol.Responses;
+using kafka4net.Protocols;
+using kafka4net.Protocols.Requests;
+using kafka4net.Protocols.Responses;
 using kafka4net.Utils;
 
 namespace kafka4net.Internal
@@ -20,7 +20,7 @@ namespace kafka4net.Internal
     /// </summary>
     class PartitionRecoveryMonitor
     {
-        private readonly Transport _protocol;
+        private readonly Protocol _protocol;
         private readonly CancellationToken _cancel;
         readonly Dictionary<string,List<PartitionFetchState>> _failedList = new Dictionary<string, List<PartitionFetchState>>();
         readonly Subject<Tuple<string,PartitionFetchState[]>> _events = new Subject<Tuple<string, PartitionFetchState[]>>();
@@ -35,7 +35,7 @@ namespace kafka4net.Internal
 
         static readonly ILogger _log = Logger.GetLogger();
 
-        public PartitionRecoveryMonitor(IEnumerable<BrokerMeta> brokers, Transport protocol, CancellationToken cancel)
+        public PartitionRecoveryMonitor(IEnumerable<BrokerMeta> brokers, Protocol protocol, CancellationToken cancel)
         {
             // TODO: if we change Broker to disover only needed topics upon connect, than brokers should be replaced with
             // IObservable<BrokerMeta>
