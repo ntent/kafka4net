@@ -17,7 +17,6 @@ using NLog;
 using NLog.Config;
 using NLog.Targets;
 using NUnit.Framework;
-using NUnit.Framework.Constraints;
 using Logger = kafka4net.Logger;
 
 namespace tests
@@ -182,21 +181,17 @@ namespace tests
         [Test]
         public async void LeaderDownRecovery()
         {
-            //var script = "./kafka-topics.sh  --create --topic part3 --partitions 1 --replication-factor 3 --zookeeper 192.168.56.2";
-            //Vagrant(script);
             var broker = new Router(_seedAddresses);
-            var topic = "part3";
+            await broker.ConnectAsync();
 
-            broker.ConnectAsync().Wait();
-            var publisher = new Publisher(topic) { 
-                OnTempError = messages => Console.WriteLine("Publisher temporary error. Meesages: {0}", messages.Length),
-                OnPermError = (exception, messages) => Console.WriteLine("Perm error"),
-                OnShutdownDirty = messages => Console.WriteLine("Close dirty"),
-                OnSuccess = messages => { }
-            };
+            var topic = "part33";
+            if(!broker.GetAllTopics().Contains(topic))
+                Vagrant(_part33CreateScript);
+
+            var publisher = new Publisher(topic) { OnSuccess = msgs => _log.Debug("Sent {0} messages", msgs.Length) };
             publisher.Connect(broker);
 
-            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, "part3"));
+            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic));
             await consumer.ConnectAsync();
 
             var postCount = 100;
@@ -214,19 +209,16 @@ namespace tests
                     _log.Debug("Received {0}/{1}", Encoding.UTF8.GetString(msg.Value), received.Count);
                 });
 
+            // send
             Observable.Interval(TimeSpan.FromMilliseconds(200)).
                 Take(postCount).
                 Subscribe(
-                    i => 
-                    { 
-                        publisher.Send(new Message { Value = Encoding.UTF8.GetBytes("msg " + i) }); 
-                        _log.Debug("Sent msg {0}", i);
-                    },
+                    i => publisher.Send(new Message { Value = Encoding.UTF8.GetBytes("msg " + i) }),
                     () => Console.WriteLine("Publisher complete")
                 );
 
             // wait for first 50 messages to arrive
-            receivedEvents.Take(postCount).Count().ToTask().Wait();
+            await receivedEvents.Take(postCount).Count().ToTask();
             Assert.AreEqual(postCount, received.Count);
 
             // stop broker1. As messages have null-key, some of 50 of them have to end up on relocated broker1
@@ -247,22 +239,37 @@ namespace tests
                 );
 
             _log.Debug("Waiting for #2 sender to complete");
-            sender2.ToTask().Wait();
-            _log.Debug("Waiting 8sec for remaining messages");
-            Thread.Sleep(4000); // if unexpected messages arrive, let them in to detect failure
+            await sender2.ToTask();
+            _log.Debug("Waiting 4sec for remaining messages");
+            // TODO: when test is marked as async void, this await cause nunit to hang!!!?
+            await Task.Delay(TimeSpan.FromSeconds(4)); // if unexpected messages arrive, let them in to detect failure
+            //await receivedEvents.Take(postCount + postCount2).ToTask();
             Assert.AreEqual(postCount + postCount2, received.Count);
-
             consumerSubscription.Dispose();
             await consumer.CloseAsync(TimeSpan.FromSeconds(5));
+
+            _log.Debug("Done");
         }
 
         #if DEBUG
         [Test]
         public async void ListenerRecoveryTest()
         {
+            var count = 400;
+            var topic = "part3";
             var broker = new Router(_seedAddresses);
-            broker.ConnectAsync().Wait();
-            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, "part3", ConsumerStartLocation.TopicHead, maxBytesPerFetch: 256));
+            _log.Debug("Connecting");
+            await broker.ConnectAsync();
+
+            _log.Debug("Filling out {0}", topic);
+            var producer = new Publisher(topic);
+            producer.Connect(broker);
+            Enumerable.Range(1, count).
+                Select(i => new Message() {Value = BitConverter.GetBytes(i)}).
+                ForEach(producer.Send);
+            await producer.Close();
+
+            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, ConsumerStartLocation.TopicHead, maxBytesPerFetch: 4*8));
             await consumer.ConnectAsync();
             var current =0;
             var received = new ReplaySubject<ReceivedMessage>();
@@ -279,13 +286,14 @@ namespace tests
                     }
 
                     received.OnNext(msg);
-                    _log.Info("Got: {0}", Encoding.UTF8.GetString(msg.Value));
+                    _log.Info("Got: {0}", BitConverter.ToInt32(msg.Value, 0));
                 });
 
-            var countTask = received.Take(400).Count().ToTask();
-            countTask.Wait(TimeSpan.FromSeconds(60));
-            var count = countTask.Result;
-            Assert.AreEqual(400, count);
+            await consumer.Subscribe(broker);
+
+            _log.Debug("Waiting for receiver complete");
+            var count2 = await received.Take(count).Count().ToTask();
+            Assert.AreEqual(count, count2);
 
             consumerSubscription.Dispose();
             await consumer.CloseAsync(TimeSpan.FromSeconds(5));
@@ -361,7 +369,7 @@ namespace tests
         }
 
         [Test]
-        public async void KeyedMessagesPreserveOrder()
+        public async Task KeyedMessagesPreserveOrder()
         {
             var routerProducer = new Router(_seedAddresses);
             await routerProducer.ConnectAsync();
@@ -562,14 +570,6 @@ namespace tests
         public void DefaultPositionToTheTail()
         {
 
-        }
-
-        // positioning to the head of the queue picks up all existing messages
-        [Test]
-        public async void PositionToTheHead()
-        {
-            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, "part33", ConsumerStartLocation.TopicHead));
-            await consumer.ConnectAsync();
         }
 
         // Create a new 1-partition topic and sent 100 messages.

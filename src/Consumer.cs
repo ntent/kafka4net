@@ -40,11 +40,6 @@ namespace kafka4net
             _router = new Router(consumerConfig.SeedBrokers);
         }
 
-        public IEnumerable<Tuple<int,long,long>> GetPartitionsOfsets()
-        {
-            throw new NotImplementedException();
-        }
-
         /// <summary>
         /// Pass connection method through from Router
         /// </summary>
