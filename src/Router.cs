@@ -68,7 +68,7 @@ namespace kafka4net
         /// Create broker in disconnected state. Requires ConnectAsync or ConnectAsync call.
         /// Attempt to send message in disconnected state will cause exception.
         /// </summary>
-        public Router() 
+        private Router() 
         {
             // Init synchronization context of scheduler thread
             Scheduler.Schedule(() => SynchronizationContext.SetSynchronizationContext(new RxSyncContextFromScheduler(Scheduler)));
@@ -192,6 +192,8 @@ namespace kafka4net
 
         #region External callable
 
+        internal BrokerState State { get { return _state; } }
+
         public async Task ConnectAsync()
         {
             await await Scheduler.Ask(async () =>
@@ -234,7 +236,7 @@ namespace kafka4net
                 select brokerGrp
             ).Select(async listeningPartitions =>
             {
-                var consumerKey = Tuple.Create(listeningPartitions.Key.NodeId, consumer.MaxWaitTimeMs, consumer.MinBytes);
+                var consumerKey = Tuple.Create(listeningPartitions.Key.NodeId, consumer.Configuration.MaxWaitTimeMs, consumer.Configuration.MinBytesPerFetch);
                 var fetcher = _activeFetchers.Values.FirstOrDefault(f => f.Key.Equals(consumerKey));
                 if (fetcher == null)
                 {
@@ -985,7 +987,7 @@ resend:
             });
         }
 
-        enum BrokerState
+        internal enum BrokerState
         {
             Disconnected,
             Connecting,
