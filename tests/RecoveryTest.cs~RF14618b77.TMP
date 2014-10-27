@@ -266,7 +266,7 @@ namespace tests
             await consumer.ConnectAsync();
             var current =0;
             var received = new ReplaySubject<ReceivedMessage>();
-            var consumerSubscription = consumer.
+            consumer.AsObservable.
                 Subscribe(msg => {
                     current++;
                     if (current == 10)
@@ -286,9 +286,6 @@ namespace tests
             countTask.Wait(TimeSpan.FromSeconds(60));
             var count = countTask.Result;
             Assert.AreEqual(400, count);
-
-            consumerSubscription.Dispose();
-            await consumer.CloseAsync(TimeSpan.FromSeconds(5));
         }
 #endif
 
@@ -364,7 +361,8 @@ namespace tests
         public async void KeyedMessagesPreserveOrder()
         {
             var routerProducer = new Router(_seedAddresses);
-            await routerProducer.ConnectAsync();
+            var routerListener = new Router(_seedAddresses);
+            Task.WaitAll(routerProducer.ConnectAsync(), routerListener.ConnectAsync());
             
             // create a topic with 3 partitions
             // TODO: how to skip initialization if topic already exists? Add router.GetAllTopics().Any(...)??? Or make it part of provisioning script?
@@ -375,9 +373,9 @@ namespace tests
             
             // create listener in a separate connection/broker
             var receivedMsgs = new List<ReceivedMessage>();
-            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, "part33"));
-            await consumer.ConnectAsync();
-            consumer.Synchronize().Subscribe(msg =>
+            var consumer = new Consumer("part33");
+            await consumer.Subscribe(routerListener);
+            consumer.AsObservable.Synchronize().Subscribe(msg =>
             {
                 lock (receivedMsgs)
                 {
@@ -500,13 +498,13 @@ namespace tests
 
             // consume tail-300 for each partition
             var offsets = (await router.GetPartitionsInfo("part33")).ToDictionary(p => p.Partition);
-            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, "part33", partitionOffsetProvider: p => offsets[p].Tail - 300));
-            var messages = consumer.
+            var consumer = new Consumer("part33", partitionOffsetProvider: p => offsets[p].Tail - 300);
+            var messages = consumer.AsObservable.
                 GroupBy(m => m.Partition).Replay();
             messages.Connect();
-            await consumer.ConnectAsync();
+            await consumer.Subscribe(router);
 
-            var consumerSubscription = messages.Subscribe(p => p.Take(10).Subscribe(
+            messages.Subscribe(p => p.Take(10).Subscribe(
                 m => _log.Debug("Got message {0}/{1}", m.Partition, BitConverter.ToInt32(m.Value, 0)),
                 e => _log.Error("Error", e),
                 () => _log.Debug("Complete part {0}", p.Key)
@@ -514,9 +512,6 @@ namespace tests
 
             // wait for 3 partitions to arrrive and every partition to read at least 100 messages
             await messages.Select(g => g.Take(100)).Take(3).ToTask();
-
-            consumerSubscription.Dispose();
-            await consumer.CloseAsync(TimeSpan.FromSeconds(5));
         }
 
         // can read from the head of queue
@@ -544,9 +539,9 @@ namespace tests
             await producer.Close();
 
             // read starting from the head
-            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, ConsumerStartLocation.TopicHead));
-            await consumer.ConnectAsync();
-            var count2 = consumer.TakeUntil(DateTimeOffset.Now.AddSeconds(5)).Count().ToTask();
+            var consumer = new Consumer(topic, startFromQueueHead: true);
+            var count2 = consumer.AsObservable.TakeUntil(DateTimeOffset.Now.AddSeconds(5)).Count().ToTask();
+            await consumer.Subscribe(router);
             Assert.AreEqual(count, await count2);
         }
 
@@ -568,8 +563,9 @@ namespace tests
         [Test]
         public async void PositionToTheHead()
         {
-            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, "part33", ConsumerStartLocation.TopicHead));
-            await consumer.ConnectAsync();
+            var router = new Router(_seedAddresses);
+            var consumer = new Consumer("part33", partitionOffsetProvider: p => -2L);
+            await consumer.Subscribe(router);
         }
 
         // Create a new 1-partition topic and sent 100 messages.

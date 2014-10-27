@@ -52,6 +52,7 @@
     </Reference>
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="ConsumerImpl\ConsumerConfiguration.cs" />
     <Compile Include="PartitionInfo.cs" />
     <Compile Include="ConsumerImpl\TopicPartition.cs" />
     <Compile Include="Protocols\Requests\FetchRequest.cs" />

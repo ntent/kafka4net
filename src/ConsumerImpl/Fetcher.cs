@@ -52,7 +52,7 @@ namespace kafka4net.ConsumerImpl
             _protocol = protocol;
             _cancel = cancel;
             _consumerToPartitionsMap.Add(consumer, partitions);
-            Key = Tuple.Create(broker.NodeId, consumer.MaxWaitTimeMs, consumer.MinBytes);
+            Key = Tuple.Create(broker.NodeId, consumer.Configuration.MaxWaitTimeMs, consumer.Configuration.MinBytesPerFetch);
             _fetchResponses = FetchLoop();
 
             if(_log.IsDebugEnabled)
@@ -132,7 +132,7 @@ namespace kafka4net.ConsumerImpl
 
             IEnumerable<Tuple<int,long>> partOffsets;
 
-            if (consumer.PartitionOffsetProvider == null)
+            if (consumer.Configuration.StartLocation != ConsumerStartLocation.SpecifiedLocations)
             {
                 // if implicit, find out offsets
                 var req = new OffsetRequest
@@ -141,14 +141,14 @@ namespace kafka4net.ConsumerImpl
                     Partitions = partitions.Select(id => new OffsetRequest.PartitionData
                     {
                         Id = id,
-                        Time = consumer.StartFromQueueHead ? -2L : -1L
+                        Time = (long)consumer.Configuration.StartLocation
                     }).ToArray()
                 };
 
                 // issue request 
                 // TODO: relaiability. If offset failed, try to recover
                 // TODO: check offset return code
-            var offset = await _protocol.GetOffsets(req, _broker.Conn);
+                var offset = await _protocol.GetOffsets(req, _broker.Conn);
                 partOffsets = offset.Partitions.
                     // p.Offsets.First(): if start from head, then Offsets will be [head], otherwise [tail,head],
                     // thus First() will always get what we want.
@@ -158,7 +158,7 @@ namespace kafka4net.ConsumerImpl
             {
                 // if explicit offset provider exists
                 partOffsets = partitions.
-                    Select(p => Tuple.Create(p, consumer.PartitionOffsetProvider(p)));
+                    Select(p => Tuple.Create(p, consumer.Configuration.PartitionOffsetProvider(p)));
             }
 
             lock(_consumerToPartitionsMap)
@@ -224,7 +224,7 @@ namespace kafka4net.ConsumerImpl
                                 {
                                     Partition = p.PartId,
                                     FetchOffset = p.Offset,
-                                    MaxBytes = t.Key.MaxBytes
+                                    MaxBytes = t.Key.Configuration.MaxBytesPerFetch
                                 }).ToArray()
                         }).ToArray()
                     };
