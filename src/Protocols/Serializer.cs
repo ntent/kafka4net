@@ -4,11 +4,11 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using kafka4net.Metadata;
-using kafka4net.Protocol.Requests;
-using kafka4net.Protocol.Responses;
+using kafka4net.Protocols.Requests;
+using kafka4net.Protocols.Responses;
 using kafka4net.Utils;
 
-namespace kafka4net.Protocol
+namespace kafka4net.Protocols
 {
     // TODO: move functions into business objects
     static class Serializer

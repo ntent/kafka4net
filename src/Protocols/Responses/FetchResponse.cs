@@ -1,6 +1,6 @@
 ﻿using System.Linq;
 
-namespace kafka4net.Protocol.Responses
+namespace kafka4net.Protocols.Responses
 {
     class FetchResponse
     {

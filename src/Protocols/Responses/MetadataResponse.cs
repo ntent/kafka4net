@@ -1,6 +1,6 @@
 ﻿using kafka4net.Metadata;
 
-namespace kafka4net.Protocol.Responses
+namespace kafka4net.Protocols.Responses
 {
     class MetadataResponse
     {

@@ -1,7 +1,6 @@
-﻿using System.Collections;
-using System.Linq;
+﻿using System.Linq;
 
-namespace kafka4net.Protocol.Responses
+namespace kafka4net.Protocols.Responses
 {
     class ProducerResponse
     {

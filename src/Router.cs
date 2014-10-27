@@ -13,9 +13,9 @@ using System.Threading.Tasks.Dataflow;
 using kafka4net.ConsumerImpl;
 using kafka4net.Internal;
 using kafka4net.Metadata;
-using kafka4net.Protocol;
-using kafka4net.Protocol.Requests;
-using kafka4net.Protocol.Responses;
+using kafka4net.Protocols;
+using kafka4net.Protocols.Requests;
+using kafka4net.Protocols.Responses;
 using kafka4net.Utils;
 
 namespace kafka4net
@@ -25,7 +25,7 @@ namespace kafka4net
     /// </summary>
     public class Router
     {
-        readonly Transport _protocol;
+        readonly Protocol _protocol;
         BrokerState _state = BrokerState.Disconnected;
         static readonly Random _rnd = new Random();
         static readonly ILogger _log = Logger.GetLogger();
@@ -182,7 +182,7 @@ namespace kafka4net
         /// </param>
         public Router(string seedBrokers) : this()
         {
-            _protocol = new Transport(this, seedBrokers);
+            _protocol = new Protocol(this, seedBrokers);
             _state = BrokerState.Disconnected;
         }
 

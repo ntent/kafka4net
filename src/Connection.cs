@@ -3,7 +3,7 @@ using System.Linq;
 using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
-using kafka4net.Protocol;
+using kafka4net.Protocols;
 
 namespace kafka4net
 {
@@ -11,12 +11,12 @@ namespace kafka4net
     {
         readonly string _host;
         readonly int _port;
-        private readonly Transport _protocol;
+        private readonly Protocol _protocol;
         TcpClient _client;
         public ConnState State;
         static readonly ILogger _log = Logger.GetLogger();
 
-        public Connection(string host, int port, Transport protocol)
+        public Connection(string host, int port, Protocol protocol)
         {
             _host = host;
             _port = port;

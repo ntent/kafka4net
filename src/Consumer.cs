@@ -7,7 +7,7 @@ using System.Reactive.Linq;
 using System.Reactive.Subjects;
 using System.Threading;
 using System.Threading.Tasks;
-using kafka4net.Protocol.Responses;
+using kafka4net.Protocols.Responses;
 using kafka4net.Utils;
 
 namespace kafka4net
