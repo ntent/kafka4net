@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Net.Sockets;
 using System.Reactive.Concurrency;
@@ -35,7 +36,7 @@ namespace kafka4net
         // TODO: are kafka topics case-sensitive?
         Dictionary<string,PartitionMeta[]> _topicPartitionMap = new Dictionary<string, PartitionMeta[]>();
         Dictionary<PartitionMeta, BrokerMeta> _partitionBrokerMap = new Dictionary<PartitionMeta, BrokerMeta>();
-        readonly EventLoopScheduler _scheduler = new EventLoopScheduler(ts => new Thread(ts) { Name = "Kafka-route", IsBackground = true });
+        internal readonly EventLoopScheduler Scheduler = new EventLoopScheduler(ts => new Thread(ts) { Name = "Kafka4net-scheduler", IsBackground = true });
         CountObservable _inBatchCount = new CountObservable();
         static int _idCount;
         readonly int _id = Interlocked.Increment(ref _idCount);
@@ -69,6 +70,9 @@ namespace kafka4net
         /// </summary>
         public Router() 
         {
+            // Init synchronization context of scheduler thread
+            Scheduler.Schedule(() => SynchronizationContext.SetSynchronizationContext(new RxSyncContextFromScheduler(Scheduler)));
+
             _topicResolutionQueue = new ActionBlock<string>(t => ResolveTopic(t), 
                 new ExecutionDataflowBlockOptions { MaxDegreeOfParallelism = 5});
 
@@ -112,7 +116,7 @@ namespace kafka4net
         {
             _partitionRecoveryMonitor = new PartitionRecoveryMonitor(_metadata.Brokers, _protocol, _cancel.Token);
             // Merge metadata that recovery monitor discovers
-            _partitionRecoveryMonitor.NewMetadataEvents.Subscribe(meta => _scheduler.Schedule(() => MergeTopicMeta(meta)));
+            _partitionRecoveryMonitor.NewMetadataEvents.Subscribe(meta => Scheduler.Schedule(() => MergeTopicMeta(meta)));
             _partitionRecoveryMonitor.RecoveryEvents.Subscribe(
                 parts => OnPartitionRecoveredUpdateConsumers(parts.Item1, parts.Item2));
         }
@@ -190,7 +194,7 @@ namespace kafka4net
 
         public async Task ConnectAsync()
         {
-            await await _scheduler.Ask(async () =>
+            await await Scheduler.Ask(async () =>
             {
                 if (_state != BrokerState.Disconnected)
                     return;
@@ -200,7 +204,7 @@ namespace kafka4net
                 MergeTopicMeta(initMeta);
                 _state = BrokerState.Connected;
                 StartPartitionMonitor();
-            }).ConfigureAwait(false);
+            });
         }
 
         /// <summary>Get topics which are already cached. Does not issue metadata request.</summary>
@@ -209,7 +213,7 @@ namespace kafka4net
             if(_state != BrokerState.Connected)
                 throw new BrokerException("Broker is not connected");
 
-            return _scheduler.Ask(() => _metadata.Topics);
+            return Scheduler.Ask(() => _metadata.Topics);
         }
 
         /// <summary>Resolve initial offsets of partitions and start fetching loop</summary>
@@ -264,12 +268,12 @@ namespace kafka4net
             }).
                 // TODO: could this be avoided by rewriting the body somehow???
                 ToObservable().Merge().Merge().
-                ObserveOn(_scheduler);
+                ObserveOn(Scheduler);
         }
 
         public async Task<PartitionInfo[]> GetPartitionsInfo(string topic)
         {
-            var ret = await await _scheduler.Ask(async () => {
+            var ret = await await Scheduler.Ask(async () => {
                 // get partition list
                 await GetOrFetchMetaForTopic(topic);
                 var parts = _topicPartitionMap[topic].
@@ -684,7 +688,7 @@ resend:
                 switch (topicMeta.Topics[0].TopicErrorCode)
                 {
                     case ErrorCode.NoError:
-                        _scheduler.Schedule(async () => { 
+                        Scheduler.Schedule(async () => { 
                             var delayedMessages = _noTopicMessageQueue[topic];
                             _noTopicMessageQueue.Remove(topic);
                             MergeTopicMeta(topicMeta);
@@ -712,7 +716,7 @@ resend:
             }
             catch (Exception e)
             {
-                _scheduler.Schedule(() => {
+                Scheduler.Schedule(() => {
                     var failedMessages = _noTopicMessageQueue[topic];
                     _noTopicMessageQueue.Remove(topic);
                     failedMessages.
@@ -725,7 +729,7 @@ resend:
 
         internal void EnqueueToTopicResolutionQueue(Message msg, Publisher pub, string topic)
         {
-            _scheduler.Schedule(() =>
+            Scheduler.Schedule(() =>
             {
                 if (!_noTopicMessageQueue.ContainsKey(topic))
                 {
@@ -742,7 +746,7 @@ resend:
         internal async Task<TcpClient> GetAnyClient()
         {
             // Two awaits, one for scheduler and one for Conn.GetClient
-            return await await _scheduler.Ask(() =>
+            return await await Scheduler.Ask(() =>
             {
                 // TODO: would it be a good idea to query all brokers and return the 1st successful response?
                 // This way we do not fail the whole driver if first broker is down
@@ -760,7 +764,7 @@ resend:
         /// </summary>
         internal void OnTransportError(ProduceRequest request, SocketException e)
         {
-            _scheduler.Schedule(() =>
+            Scheduler.Schedule(() =>
             {
                 // start connection pooling only 1st time
                 if (request.Broker.Conn.State == ConnState.Connected)
@@ -858,7 +862,7 @@ resend:
 
             while (!_cancel.IsCancellationRequested)
             {
-                var brokers = await _scheduler.Ask(() => _metadata.Brokers.ToArray());
+                var brokers = await Scheduler.Ask(() => _metadata.Brokers.ToArray());
 
                 foreach (var broker in brokers)
                 {
@@ -866,7 +870,7 @@ resend:
                     try
                     {
                         // any topic which has partitions in non-draining state. Draining can stay in the queue for some time
-                        var topics = await _scheduler.Ask(() => _waitingMessages.Where(kv => kv.Value.Any(p => p.Key.ErrorCode != ErrorCode.Draining)).
+                        var topics = await Scheduler.Ask(() => _waitingMessages.Where(kv => kv.Value.Any(p => p.Key.ErrorCode != ErrorCode.Draining)).
                             Select(kv => kv.Key).
                             ToArray());
                         if (topics.Length == 0)
@@ -884,7 +888,7 @@ resend:
                         if(broker.Conn.State == ConnState.Connecting)
                             broker.Conn.State = ConnState.Connected;
 
-                        _scheduler.Schedule(() =>
+                        Scheduler.Schedule(() =>
                         {
                             // find healed partitions, if any
                             foreach (var metaTopicNew in metaNew.Topics.Where(t => t.TopicErrorCode == ErrorCode.NoError))
@@ -935,7 +939,7 @@ resend:
         private void RescanWaitingQueue()
         {
             // TODO: how to make sure this function is not called simulteounesly?
-            _scheduler.Schedule(async () => {
+            Scheduler.Schedule(async () => {
                 var recoveredParts = (from tkv in _waitingMessages
                  from pkv in tkv.Value
                  where pkv.Key.ErrorCode == ErrorCode.Draining
@@ -964,7 +968,7 @@ resend:
                     if (errorCode == ErrorCode.NoError)
                     {
                         var recovered1 = recovered;  // just make compiler happy
-                        _scheduler.Schedule(() => {
+                        Scheduler.Schedule(() => {
                             // remove from waiting
                             _waitingMessages[recovered1.Topic].Remove(recovered1.Part);
                         });
@@ -1008,7 +1012,7 @@ resend:
         {
             if(_metadata == null)
                 return new string[0];
-            return _scheduler.Ask(() => _metadata.Topics.Select(t => t.TopicName).ToArray()).Result;
+            return Scheduler.Ask(() => _metadata.Topics.Select(t => t.TopicName).ToArray()).Result;
         }
 
     }

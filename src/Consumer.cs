@@ -56,18 +56,13 @@ namespace kafka4net
             MaxBytes = maxBytes;
         }
 
-        public IEnumerable<Tuple<int,long,long>> GetPartitionsOfsets()
-        {
-            throw new NotImplementedException();
-        }
-
         public async Task Subscribe(Router router)
         {
             // TODO: if caller sets SynchronizationContext and it is blocked, fetcher cretion is delayed until caller
             // unblocks. For example, NUnit's async void test method.
             _router = router;
-            (await _router.InitFetching(this)).
-                Subscribe(msg => _events.OnNext(msg));
+            var fetch = await _router.InitFetching(this).ConfigureAwait(false);
+            await _router.Scheduler.Ask(() => fetch.Subscribe(msg => _events.OnNext(msg)));
         }
 
         public void Unsubscribe() {

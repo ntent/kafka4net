@@ -89,6 +89,7 @@
     <Compile Include="Utils\AskEx.cs" />
     <Compile Include="Utils\BigEndianConverter.cs" />
     <Compile Include="Utils\Crc32.cs" />
+    <Compile Include="Utils\RxSyncContextFromScheduler.cs" />
     <Compile Include="Utils\EnumerableEx.cs" />
     <Compile Include="Utils\CountObservable.cs" />
     <Compile Include="Utils\FlowControlState.cs" />
