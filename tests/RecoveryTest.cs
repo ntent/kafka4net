@@ -382,7 +382,7 @@ namespace tests
             var receivedMsgs = new List<ReceivedMessage>();
             var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, "part33"));
             await consumer.ConnectAsync();
-            consumer.Synchronize().Subscribe(msg =>
+            var consumerSubscription = consumer.Synchronize().Subscribe(msg =>
             {
                 lock (receivedMsgs)
                 {
@@ -434,6 +434,9 @@ namespace tests
 
             // wait for 3 sec for listener to catch up
             Thread.Sleep(3*1000);
+
+            consumerSubscription.Dispose();
+            await consumer.CloseAsync(TimeSpan.FromSeconds(4));
 
             // compare sent and received messages
             // TODO: for some reason preformance is not what I'd expect it to be and only 6K is generated.
