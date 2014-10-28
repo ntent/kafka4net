@@ -1,7 +1,9 @@
 ﻿using System;
+using System.Reactive.Concurrency;
 using System.Reactive.Linq;
 using System.Threading.Tasks;
 using System.Threading.Tasks.Dataflow;
+using kafka4net.Utils;
 
 namespace kafka4net
 {
@@ -22,6 +24,7 @@ namespace kafka4net
         readonly TaskCompletionSource<bool> _completion = new TaskCompletionSource<bool>();
         private BufferBlock<Message> _sendBuffer;
         static readonly ILogger _log = Logger.GetLogger();
+        private EventLoopScheduler _scheduler;
 
         public Publisher(string topic)
         {
@@ -30,8 +33,11 @@ namespace kafka4net
 
         public void Connect(Router router)
         {
+            _scheduler = router.Scheduler;
             _sendBuffer = new BufferBlock<Message>();
+
             _sendBuffer.AsObservable().
+                ObserveOn(_scheduler).
                 Buffer(BatchTime, BatchSize).
                 Where(b => b.Count > 0). // apparently, Buffer will trigger empty batches too, skip them
                 // TODO: how to check result? Make it failsafe?
@@ -61,7 +67,7 @@ namespace kafka4net
             _sendBuffer.Complete();
             
             //await _sendBuffer.Completion; // apparently it wont wait till sequence is complete
-            await _completion.Task.ConfigureAwait(false);
+            await _completion.Task;
             
             _log.Info("Close complete");
         }

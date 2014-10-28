@@ -11,6 +11,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using kafka4net;
+using kafka4net.Protocols.Requests;
 using kafka4net.ConsumerImpl;
 using kafka4net.Utils;
 using NLog;
@@ -100,7 +101,7 @@ namespace tests
 
         // if topic does not exists, it is created and pub-sub works
         [Test]
-        public async Task TopicIsAutocreated()
+        public async void TopicIsAutocreated()
         {
             var topic = "autocreate.test." + _rnd.Next();
             var publishedCount = 10;
@@ -299,7 +300,7 @@ namespace tests
 #endif
 
         [Test]
-        public async Task CleanShutdownTest()
+        public async void CleanShutdownTest()
         {
             var broker = new Router(_seedAddresses);
             await broker.ConnectAsync();
@@ -310,7 +311,7 @@ namespace tests
                 OnPermError = (e, messages) => Console.WriteLine("Publisher error: {0}", e.Message),
                 OnShutdownDirty = dirtyShutdown => Console.WriteLine("Dirty shutdown"), 
                 OnSuccess = success => { },
-                BatchTime = TimeSpan.FromSeconds(20)
+                BatchTime = TimeSpan.FromSeconds(2)
             };
             producer.Connect(broker);
 
@@ -340,10 +341,7 @@ namespace tests
             await Task.Delay(5000);
             producerSubscription.Dispose();
             consumerSubscription.Dispose();
-            var t1 = producer.Close();
-
-            // await for producer for 2 sec
-            Assert.IsTrue(t1.Wait(2000), "Timed out waiting for consumer");
+            await producer.Close();
 
             await broker.Close(TimeSpan.FromSeconds(4));
 
@@ -367,7 +365,7 @@ namespace tests
         }
 
         [Test]
-        public async Task KeyedMessagesPreserveOrder()
+        public async void KeyedMessagesPreserveOrder()
         {
             var routerProducer = new Router(_seedAddresses);
             await routerProducer.ConnectAsync();
@@ -484,7 +482,7 @@ namespace tests
 
         // explicit offset works
         [Test]
-        public async Task ExplicitOffset()
+        public async void ExplicitOffset()
         {
             var router = new Router(_seedAddresses);
             await router.ConnectAsync();
@@ -573,7 +571,7 @@ namespace tests
         // Create a new 1-partition topic and sent 100 messages.
         // Read offsets, they should be [0, 100]
         [Test, Timeout(30*1000)]
-        public async Task ReadOffsets()
+        public async void ReadOffsets()
         {
             var router = new Router(_seedAddresses);
             var sentEvents = new Subject<Message>();
