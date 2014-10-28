@@ -187,6 +187,13 @@ namespace kafka4net.ConsumerImpl
                         }).ToArray()
                     };
 
+                    if (fetchRequest.Topics.Length == 0)
+                    {
+                        // no topics, yield for a little and let others run
+                        await Task.Delay(_consumerConfig.MaxWaitTimeMs, _cancel);
+                        continue;
+                    }
+
                     // issue fetch 
                     FetchResponse fetch;
                     try

@@ -43,6 +43,9 @@ namespace kafka4net.ConsumerImpl
             if(startLocation==ConsumerStartLocation.SpecifiedLocations && partitionOffsetProvider == null)
                 throw new ArgumentException("If StartLocation is ConsumerStartLocation.SpecifiedLocations, PartitionOffsetProvider must be set");
 
+            if (startLocation != ConsumerStartLocation.SpecifiedLocations && partitionOffsetProvider != null)
+                throw new ArgumentException("If StartLocation is NOT ConsumerStartLocation.SpecifiedLocations then PartitionOffsetProvider must NOT be set");
+
             SeedBrokers = seedBrokers;
             PartitionOffsetProvider = partitionOffsetProvider;
             StartLocation = startLocation;

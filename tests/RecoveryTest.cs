@@ -505,7 +505,7 @@ namespace tests
 
             // consume tail-300 for each partition
             var offsets = (await router.GetPartitionsInfo("part33")).ToDictionary(p => p.Partition);
-            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, "part33", partitionOffsetProvider: p => offsets[p].Tail - 300));
+            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, "part33", ConsumerStartLocation.SpecifiedLocations, partitionOffsetProvider: p => offsets[p].Tail - 300));
             await consumer.ConnectAsync();
             var messages = consumer.
                 GroupBy(m => m.Partition).Replay();
