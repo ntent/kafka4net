@@ -322,6 +322,7 @@ namespace tests
             // start listener at the end of queue and accumulate received messages
             var received = new HashSet<string>();
             var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, maxWaitTimeMs: 30 * 1000));
+            await consumer.ConnectAsync();
             var consumerSubscription = consumer
                                         .Select(msg => Encoding.UTF8.GetString(msg.Value))
                                         .Subscribe(m => received.Add(m));
@@ -340,7 +341,6 @@ namespace tests
             // shutdown producer in 5 sec
             await Task.Delay(5000);
             producerSubscription.Dispose();
-            consumerSubscription.Dispose();
             await producer.Close();
 
             await broker.Close(TimeSpan.FromSeconds(4));
@@ -349,9 +349,10 @@ namespace tests
 
             // wait for 1sec for receiver to get all the messages
             await Task.Delay(1000);
+            consumerSubscription.Dispose();
+            await consumer.CloseAsync(TimeSpan.FromSeconds(4));
 
             // assert we received all the messages
-            //consumer.Close();
 
             Assert.AreEqual(sent.Count, received.Count, string.Format("Sent and Receved size differs. Sent: {0} Recevied: {1}", sent.Count, received.Count));
             // compare sets and not lists, because of 2 partitions, send order and receive orser are not the same
@@ -505,10 +506,10 @@ namespace tests
             // consume tail-300 for each partition
             var offsets = (await router.GetPartitionsInfo("part33")).ToDictionary(p => p.Partition);
             var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, "part33", partitionOffsetProvider: p => offsets[p].Tail - 300));
+            await consumer.ConnectAsync();
             var messages = consumer.
                 GroupBy(m => m.Partition).Replay();
             messages.Connect();
-            await consumer.ConnectAsync();
 
             var consumerSubscription = messages.Subscribe(p => p.Take(10).Subscribe(
                 m => _log.Debug("Got message {0}/{1}", m.Partition, BitConverter.ToInt32(m.Value, 0)),
