@@ -133,7 +133,7 @@ namespace kafka4net
         /// Compose a Subject that tracks the ready state for each topic/partiion. Always replay the most recent state for any topic/partition
         /// </summary>
         /// <returns></returns>
-        private static ISubject<Tuple<string, int, ErrorCode>, Tuple<string, int, ErrorCode>> BuildPartitionStateChangeSubject()
+        private ISubject<Tuple<string, int, ErrorCode>, Tuple<string, int, ErrorCode>> BuildPartitionStateChangeSubject()
         {
             var subj = new Subject<Tuple<string, int, ErrorCode>>();
             var pipeline = 
@@ -143,11 +143,11 @@ namespace kafka4net
                 Select(g =>
                 {
                     // we only want the distinct groups (one per topic/partition)
-                    var gg = g.DistinctUntilChanged().Replay(1); 
+                    var gg = g.DistinctUntilChanged().Replay(1, Scheduler); 
                     gg.Connect(); 
                     return gg;
                 }).
-                Replay();
+                Replay(Scheduler);
             pipeline.Connect();
             var pipeline2 = pipeline.Merge();
             return Subject.Create(subj, pipeline2);

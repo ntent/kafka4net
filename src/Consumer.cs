@@ -70,28 +70,31 @@ namespace kafka4net
         /// <returns>An IDisposable representing the subscription handle. Dispose of the observable to close this subscription.</returns>
         public IDisposable Subscribe(IObserver<ReceivedMessage> observer)
         {
-            if (_isDisposed)
-                throw new ObjectDisposedException("Consumer is already disposed.");
+            return _router.Scheduler.Ask(() =>
+            {
+                if (_isDisposed)
+                    throw new ObjectDisposedException("Consumer is already disposed.");
 
-            if (_router.State != Router.BrokerState.Connected)
-                throw new Exception("Must connect the consumer by calling ConnectAsync before consuming.");
+                if (_router.State != Router.BrokerState.Connected)
+                    throw new Exception("Must connect the consumer by calling ConnectAsync before consuming.");
 
-            // subscribe the observer to the ReceivedMessageStream
-            var consumerSubscription = _receivedMessageStream.Subscribe(observer);
+                // subscribe the observer to the ReceivedMessageStream
+                var consumerSubscription = _receivedMessageStream.Subscribe(observer);
 
-            // Get and subscribe to all TopicPartitions
-            var subscriptions = new CompositeDisposable();
+                // Get and subscribe to all TopicPartitions
+                var subscriptions = new CompositeDisposable();
 
-            // add the consumer subscription to the composite disposable so that everything is cancelled when disposed
-            subscriptions.Add(consumerSubscription);
+                // add the consumer subscription to the composite disposable so that everything is cancelled when disposed
+                subscriptions.Add(consumerSubscription);
 
-            // subscribe to all partitions
-            GetTopicPartitions()
-                .Select(topicPartition => topicPartition.Subscribe(this))
-                .Subscribe(subscriptions.Add);
+                // subscribe to all partitions
+                GetTopicPartitions()
+                    .Select(topicPartition => topicPartition.Subscribe(this))
+                    .Subscribe(subscriptions.Add);
 
-            _subscription.Disposable = subscriptions;
-            return subscriptions;
+                _subscription.Disposable = subscriptions;
+                return subscriptions;
+            }).Result;
         }
 
         private IObservable<TopicPartition> GetTopicPartitions()
