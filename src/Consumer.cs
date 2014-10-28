@@ -1,4 +1,7 @@
-﻿using kafka4net.ConsumerImpl;
+﻿using System.Linq;
+using System.Reactive.Threading.Tasks;
+using kafka4net.ConsumerImpl;
+using kafka4net.Protocols.Requests;
 using kafka4net.Protocols.Responses;
 using System;
 using System.Collections.Generic;
@@ -6,6 +9,7 @@ using System.Reactive.Disposables;
 using System.Reactive.Linq;
 using System.Reactive.Subjects;
 using System.Threading.Tasks;
+using kafka4net.Utils;
 
 namespace kafka4net
 {
@@ -17,12 +21,12 @@ namespace kafka4net
         internal string Topic { get { return Configuration.Topic; } }
 
         private readonly Router _router;
-        private readonly HashSet<TopicPartition> _topicPartitions = new HashSet<TopicPartition>(); 
+        private readonly Dictionary<int, TopicPartition> _topicPartitions = new Dictionary<int, TopicPartition>(); 
 
         // with new organization, use a Subject to connect to all TopicPartitions
         private readonly Subject<ReceivedMessage> _receivedMessageStream = new Subject<ReceivedMessage>();
  
-        // we should only every subscribe once, and we want to keep that around to check if it was disposed when we are disposed
+        // we should only ever subscribe once, and we want to keep that around to check if it was disposed when we are disposed
         private readonly SingleAssignmentDisposable _subscription = new SingleAssignmentDisposable();
 
         /// <summary>
@@ -44,11 +48,26 @@ namespace kafka4net
             return _router.ConnectAsync();
         }
 
-        public Task CloseAsync(TimeSpan timeout)
+        /// <summary>
+        /// Ensures the subscription is disposed and closes the consumer's router.
+        /// </summary>
+        /// <param name="timeout"></param>
+        /// <returns></returns>
+        public async Task CloseAsync(TimeSpan timeout)
         {
-            return _router.Close(timeout);
+            await await _router.Scheduler.Ask(() =>
+            {
+                if (_subscription != null && ! _subscription.IsDisposed)
+                    _subscription.Dispose();
+                return _router.Close(timeout);
+            });
         }
 
+        /// <summary>
+        /// Subscribes an observer to this consumer's stream of messages.
+        /// </summary>
+        /// <param name="observer">The observer of the messages.</param>
+        /// <returns>An IDisposable representing the subscription handle. Dispose of the observable to close this subscription.</returns>
         public IDisposable Subscribe(IObserver<ReceivedMessage> observer)
         {
             if (_isDisposed)
@@ -61,11 +80,15 @@ namespace kafka4net
             var consumerSubscription = _receivedMessageStream.Subscribe(observer);
 
             // Get and subscribe to all TopicPartitions
-            var subscriptions = new CompositeDisposable(GetTopicPartitions().Select(topicPartition => topicPartition.Subscribe(this)).ToEnumerable());
+            var subscriptions = new CompositeDisposable();
 
-            
             // add the consumer subscription to the composite disposable so that everything is cancelled when disposed
             subscriptions.Add(consumerSubscription);
+
+            // subscribe to all partitions
+            GetTopicPartitions()
+                .Select(topicPartition => topicPartition.Subscribe(this))
+                .Subscribe(subscriptions.Add);
 
             _subscription.Disposable = subscriptions;
             return subscriptions;
@@ -73,84 +96,44 @@ namespace kafka4net
 
         private IObservable<TopicPartition> GetTopicPartitions()
         {
-            var partitions = _router.PartitionStateChanges.Where(sc => sc.Item1 == Topic)
-                .Select(part=> new TopicPartition(_router, Topic, part.Item2))
-                .Where(tp => !_topicPartitions.Contains(tp))
-                .Do(tp=>_topicPartitions.Add(tp));
-
+            var partitions =
+                BuildTopicPartitionsAsync().ToObservable()
+                .SelectMany(p => p);
             return partitions;
         }
 
-        /// <summary>Resolve initial offsets of partitions and start fetching loop</summary>
-        //internal async Task<IObservable<ReceivedMessage>> ResolveOffsetsAsync()
-        //{
-        //    var partitions = await _router.GetPartitionsInfo(Topic);
+        /// <summary>
+        /// 
+        /// </summary>
+        /// <returns></returns>
+        internal async Task<IObservable<TopicPartition>> BuildTopicPartitionsAsync()
+        {
+            // two code paths here. If we have specified locations to start from, just get the partition metadata, and build the TopicPartitions
+            if (Configuration.StartLocation == ConsumerStartLocation.SpecifiedLocations)
+            {
+                var partitionMeta = await _router.GetTopicPartitionsAsync(Topic);
+                return partitionMeta
+                        .Where(pm=>!_topicPartitions.ContainsKey(pm.Id))
+                        .Select(part =>
+                            new TopicPartition(_router, Topic, part.Id, Configuration.PartitionOffsetProvider(part.Id)))
+                        .ToObservable()
+                        .Do(tp=>_topicPartitions.Add(tp.PartitionId,tp));
+            }
 
-        //    // TODO: if fetcher is complete due to partition changing leader, while offset operation
-        //    // in progress, what do we do?
+            // no offsets provided. Need to issue an offset request to get start/end locations and use them for consuming
+            var partitions = await _router.GetPartitionsInfo(Topic);
 
-        //    if (_log.IsDebugEnabled)
-        //        _log.Debug("Fetcher #{0} adding partitions to be time->offset resolved: parts: [{1}]", _id, string.Join(",", partitions));
+            if (_log.IsDebugEnabled)
+                // ReSharper disable once CoVariantArrayConversion
+                _log.Debug("Consumer for topic {0} got time->offset resolved. parts: [{1}]", Topic, string.Join(",", partitions as object[]));
 
-        //    IEnumerable<Tuple<int, long>> partOffsets;
-
-        //    if (Configuration.StartLocation != ConsumerStartLocation.SpecifiedLocations)
-        //    {
-        //        // if implicit, find out offsets
-        //        var req = new OffsetRequest
-        //        {
-        //            TopicName = Topic,
-        //            Partitions = partitions.Select(id => new OffsetRequest.PartitionData
-        //            {
-        //                Id = id.,
-        //                Time = (long)consumer.Configuration.StartLocation
-        //            }).ToArray()
-        //        };
-
-        //        // issue request 
-        //        // TODO: relaiability. If offset failed, try to recover
-        //        // TODO: check offset return code
-        //        var offset = await _protocol.GetOffsets(req, _broker.Conn);
-        //        partOffsets = offset.Partitions.
-        //            // p.Offsets.First(): if start from head, then Offsets will be [head], otherwise [tail,head],
-        //            // thus First() will always get what we want.
-        //            Select(p => Tuple.Create(p.Partition, p.Offsets.First()));
-        //    }
-        //    else
-        //    {
-        //        // if explicit offset provider exists
-        //        partOffsets = partitions.
-        //            Select(p => Tuple.Create(p, consumer.Configuration.PartitionOffsetProvider(p)));
-        //    }
-
-        //    lock (_consumerToPartitionsMap)
-        //    {
-        //        List<PartitionFetchState> state;
-        //        if (!_consumerToPartitionsMap.TryGetValue(consumer, out state))
-        //        {
-        //            _consumerToPartitionsMap.Add(consumer, state = new List<PartitionFetchState>());
-        //            _topicToPartitionsMap.Add(consumer.Topic, state);
-        //        }
-
-        //        // make sure there are no duplicates
-        //        var same = partitions.Intersect(state.Select(p => p.PartId)).ToArray();
-        //        if (same.Any())
-        //            _log.Error("Detected partitions which are already listening to. Topic: {0} partitions: {1}", consumer.Topic, string.Join(",", same.Select(p => p.ToString()).ToArray()));
-
-        //        var newStates = partOffsets.
-        //            Where(p => !same.Contains(p.Item1)).
-        //            // TODO: check offset.ErrorCode
-        //            Select(p => new PartitionFetchState(p.Item1, 0L, p.Item2)).
-        //            ToArray();
-
-        //        state.AddRange(newStates);
-
-        //        _fetchResponses = FetchLoop();
-
-        //        if (_log.IsDebugEnabled)
-        //            _log.Debug("Fetcher #{0} resolved time->offset. New fetch states: [{1}]", _id, string.Join(", ", newStates.AsEnumerable()));
-        //    }
-        //}
+            return partitions
+                .Where(pm => !_topicPartitions.ContainsKey(pm.Partition))
+                .Select(part =>
+                    new TopicPartition(_router, Topic, part.Partition, Configuration.StartLocation == ConsumerStartLocation.TopicHead ? part.Head : part.Tail))
+                .ToObservable()
+                .Do(tp => _topicPartitions.Add(tp.PartitionId, tp));
+        }
 
 
         public override string ToString()

@@ -550,7 +550,9 @@ namespace tests
             // read starting from the head
             var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, ConsumerStartLocation.TopicHead));
             await consumer.ConnectAsync();
-            var count2 = consumer.TakeUntil(DateTimeOffset.Now.AddSeconds(5)).Count().ToTask();
+            var count2 = consumer.TakeUntil(DateTimeOffset.Now.AddSeconds(5))
+                //.Do(val=>_log.Info("received value {0}", BitConverter.ToInt32(val.Value,0)))
+                .Count().ToTask();
             Assert.AreEqual(count, await count2);
         }
 
@@ -688,7 +690,7 @@ namespace tests
             var dir = AppDomain.CurrentDomain.BaseDirectory;
             dir = Path.Combine(dir, @"..\..\..\vagrant");
             dir = Path.GetFullPath(dir);
-            var pi = new ProcessStartInfo(@"C:\HashiCorp\Vagrant\bin\vagrant.exe", script)
+            var pi = new ProcessStartInfo(@"vagrant.exe", script)
             {
                 CreateNoWindow = true,
                 RedirectStandardError = true,

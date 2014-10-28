@@ -59,9 +59,10 @@ namespace kafka4net.Internal
                 {
                     var key = new Tuple<string, int>(state.Item1, state.Item2);
                     // check if it is failed or recovered, and remove or add to our failed list.
-                    if (state.Item3 == ErrorCode.NoError && _failedList.ContainsKey(key))
+                    if (state.Item3 == ErrorCode.NoError)
                     {
-                        _failedList.Remove(key);
+                         if (_failedList.ContainsKey(key))
+                            _failedList.Remove(key);
                     }
                     else
                     {

@@ -104,7 +104,8 @@ namespace kafka4net.ConsumerImpl
                         Value = msg.Value,
                         Offset = msg.Offset
                     });
-            });
+            })
+            .Do(_ => { },err => _log.Warn(err, "Error received in ReceivedMessages stream from broker {0}.",_broker),()=>_log.Debug("ReceivedMessages stream for broker {0} is complete.",_broker));
         }}
 
         /// <summary>
@@ -119,7 +120,8 @@ namespace kafka4net.ConsumerImpl
                     from part in topic.Partitions
                     where part.ErrorCode != ErrorCode.NoError
                     select new Tuple<string, int, ErrorCode>(topic.Topic, part.Partition, part.ErrorCode)
-                );
+                )
+                .Do(t=>_log.Info("Errored partition received for topic: {0}, partition: {1}, error code: {2}",t.Item1,t.Item2,t.Item3));
             }
         }
 

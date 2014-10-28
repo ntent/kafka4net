@@ -13,17 +13,21 @@ namespace kafka4net.ConsumerImpl
         private readonly Router _router;
         private readonly string _topic;
         private readonly int _partitionId;
-        private PartitionFetchState _partitionFetchState;
+        private readonly PartitionFetchState _partitionFetchState;
 
         // subscription handles
         private IDisposable _fetcherChangesSubscription;
         private IDisposable _currentfetcherSubscription;
 
-        public TopicPartition(Router router, string topic, int partitionId)
+        public TopicPartition(Router router, string topic, int partitionId, long initialOffset)
         {
             _router = router;
             _topic = topic;
             _partitionId = partitionId;
+            _partitionFetchState = new PartitionFetchState(
+                            PartitionId,
+                            ConsumerStartLocation.SpecifiedLocations,
+                            initialOffset);
         }
 
         public string Topic { get { return _topic; } }
@@ -53,15 +57,6 @@ namespace kafka4net.ConsumerImpl
                 throw new Exception("TopicPartition is already subscribed to by a consumer!");
 
             _subscribedConsumer = consumer;
-
-            // initialize the partition fetch state
-            var start = _subscribedConsumer.Configuration.StartLocation;
-            _partitionFetchState = new PartitionFetchState(
-                PartitionId, 
-                start, 
-                start == ConsumerStartLocation.SpecifiedLocations 
-                    ? _subscribedConsumer.Configuration.PartitionOffsetProvider(PartitionId) 
-                    : (long)start );
 
             // subscribe to fetcher changes for this partition.
             // We will immediately get a call with the "current" fetcher if it is available, and connect to it then.
@@ -118,7 +113,7 @@ namespace kafka4net.ConsumerImpl
                 _subscribedConsumer.OnNext(value);
 
                 // track that we handled this offset so the next time around, we fetch the next message
-                _partitionFetchState.Offset = value.Offset;
+                _partitionFetchState.Offset = value.Offset+1;
             }
         }
 

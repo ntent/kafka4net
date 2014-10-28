@@ -162,7 +162,10 @@ namespace kafka4net
         /// <returns></returns>
         internal IObservable<Fetcher> GetFetcherChanges(string topic, int partitionId, ConsumerConfiguration consumerConfiguration)
         {
-            return PartitionStateChanges.Where(t => t.Item1 == topic && t.Item2 == partitionId)
+            return PartitionStateChanges
+                .Where(t => t.Item1 == topic && t.Item2 == partitionId)
+                .Do(psc => _log.Info("GetFetcherChages saw CORRECT partition state {0}-{1}-{2}", psc.Item1, psc.Item2, psc.Item3),
+                    ex => _log.Warn(ex, "GetFetcherChages saw ERROR from PartitionStateChanges"))
                 .Select(state =>
                 {
                     // if the state is not ready, return NULL for the fetcher.
@@ -182,7 +185,10 @@ namespace kafka4net
 
                     return fetcher;
 
-                }).Replay(1);
+                })
+                .Do(f=>_log.Info("GetFetcherChanges returning new fetcher {0}",f),
+                    ex => _log.Error(ex, "GetFetcherChages saw ERROR returning new fetcher."),
+                    ()=> _log.Error("GetFetcherChanges saw COMPLETE from returning new fetcher."));
         }
 
 
@@ -230,6 +236,26 @@ namespace kafka4net
             return Scheduler.Ask(() => _metadata.Topics);
         }
 
+        /// <summary>
+        /// Get the cached partition metadata for the given topic if it exists, otherwise issue a topic metadata request to get it
+        /// </summary>
+        /// <param name="topic"></param>
+        /// <returns></returns>
+        public async Task<PartitionMeta[]> GetTopicPartitionsAsync(string topic)
+        {
+            PartitionMeta[] partitions;
+
+            if (_topicPartitionMap.TryGetValue(topic, out partitions))
+                return partitions;
+
+            await GetOrFetchMetaForTopic(topic);
+
+            _topicPartitionMap.TryGetValue(topic, out partitions);
+
+            return partitions;
+
+        }
+
         public async Task<PartitionInfo[]> GetPartitionsInfo(string topic)
         {
             var ret = await await Scheduler.Ask(async () => {
@@ -273,7 +299,7 @@ namespace kafka4net
         }
 
         /// <summary>Get cached metadata for topic, or request, wait and cache it</summary>
-        async Task GetOrFetchMetaForTopic(string topic)
+        private async Task GetOrFetchMetaForTopic(string topic)
         {
             if (!_topicPartitionMap.ContainsKey(topic))
             {
@@ -557,10 +583,17 @@ namespace kafka4net
             });
 
             // add new brokers
-            var newBrokers = topicMeta.Brokers.Except(_metadata.Brokers, BrokerMeta.NodeIdComparer);
+            var newBrokers = topicMeta.Brokers.Except(_metadata.Brokers, BrokerMeta.NodeIdComparer).ToArray();
             _metadata.Brokers = _metadata.Brokers.Concat(newBrokers).ToArray();
 
             RebuildBrokerIndexes(_metadata);
+
+            // broadcast any new brokers
+            newBrokers.ForEach(b => _newBrokerSubject.OnNext(b));
+
+            // broadcast the current partition state for all partitions.
+            topicMeta.Topics.SelectMany(t=>t.Partitions.Select(part=>new Tuple<string,int,ErrorCode>(t.TopicName,part.Id,part.ErrorCode))).ForEach(tp=>_partitionStateChangesSubject.OnNext(tp));
+            
         }
 
         // TODO: is called from ActionBlock but acess dictionaries. Unsafe!!!
