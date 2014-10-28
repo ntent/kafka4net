@@ -1,5 +1,8 @@
 ﻿using System;
 using System.Reactive.Disposables;
+using System.Reactive.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace kafka4net.ConsumerImpl
 {
@@ -10,6 +13,7 @@ namespace kafka4net.ConsumerImpl
         private readonly Router _router;
         private readonly string _topic;
         private readonly int _partitionId;
+        private PartitionFetchState _partitionFetchState;
 
         // subscription handles
         private IDisposable _fetcherChangesSubscription;
@@ -25,6 +29,18 @@ namespace kafka4net.ConsumerImpl
         public string Topic { get { return _topic; } }
         public int PartitionId { get { return _partitionId; } }
 
+        public long CurrentOffset
+        {
+            get
+            {
+                // if we have not been initialized, something went wrong.
+                if (_partitionFetchState == null)
+                 throw new Exception("Partition Fetch State is not initialized. Has a consumer subscribed?");
+
+                return _partitionFetchState.Offset;
+            }
+        }
+
         /// <summary>
         /// Subscribe a consumer to this topic partition. The act of subscribing 
         /// will cause this partition to seek out and connect to the "correct" Fetcher.
@@ -38,9 +54,19 @@ namespace kafka4net.ConsumerImpl
 
             _subscribedConsumer = consumer;
 
+            // initialize the partition fetch state
+            var start = _subscribedConsumer.Configuration.StartLocation;
+            _partitionFetchState = new PartitionFetchState(
+                PartitionId, 
+                start, 
+                start == ConsumerStartLocation.SpecifiedLocations 
+                    ? _subscribedConsumer.Configuration.PartitionOffsetProvider(PartitionId) 
+                    : (long)start );
+
             // subscribe to fetcher changes for this partition.
             // We will immediately get a call with the "current" fetcher if it is available, and connect to it then.
-            _fetcherChangesSubscription = _router.GetFetcherChanges(_topic, _partitionId)
+            _fetcherChangesSubscription = _router
+                .GetFetcherChanges(_topic, _partitionId, consumer.Configuration)
                 .Subscribe(OnNewFetcher,OnFetcherChangesError,OnFetcherChangesComplete);
 
             // give back a handle to close this topic partition.
@@ -59,7 +85,8 @@ namespace kafka4net.ConsumerImpl
                 _currentfetcherSubscription.Dispose();
 
             // now subscribe to the new fetcher. This will begin pumping messages through to the consumer.
-            _currentfetcherSubscription = newFetcher.Subscribe(this);
+            if (newFetcher != null)
+                _currentfetcherSubscription = newFetcher.Subscribe(this);
         }
 
         private void OnFetcherChangesComplete()
@@ -89,6 +116,9 @@ namespace kafka4net.ConsumerImpl
             else
             {
                 _subscribedConsumer.OnNext(value);
+
+                // track that we handled this offset so the next time around, we fetch the next message
+                _partitionFetchState.Offset = value.Offset;
             }
         }
 
@@ -103,7 +133,7 @@ namespace kafka4net.ConsumerImpl
         public void OnCompleted()
         {
             // this shouldn't happen, but don't pass this up to the consumer, log it and wait for a new fetcher
-            _log.Error("Recieved OnComplete from Fetcher. This shouldn't happen! Waiting for new or updated Fetcher.");
+            _log.Warn("Recieved OnComplete from Fetcher. Fetcher may have errored out. Waiting for new or updated Fetcher.");
             _currentfetcherSubscription.Dispose();
             _currentfetcherSubscription = null;
         }
@@ -127,6 +157,29 @@ namespace kafka4net.ConsumerImpl
             {
                 _currentfetcherSubscription.Dispose();
                 _currentfetcherSubscription = null;
+            }
+        }
+
+        public override bool Equals(object obj)
+        {
+            if (obj == null)
+                return false;
+
+            var objTopicPartition = obj as TopicPartition;
+            if (objTopicPartition == null)
+                return false;
+
+            return _router == objTopicPartition._router && _topic == objTopicPartition._topic && _partitionId == objTopicPartition._partitionId;
+        }
+
+        public override int GetHashCode()
+        {
+            unchecked // disable overflow, for the unlikely possibility that you
+            {         // are compiling with overflow-checking enabled
+                int hash = 27;
+                hash = (13 * hash) + _topic.GetHashCode();
+                hash = (13 * hash) + _partitionId.GetHashCode();
+                return hash;
             }
         }
     }

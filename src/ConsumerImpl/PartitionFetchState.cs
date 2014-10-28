@@ -3,19 +3,19 @@
     class PartitionFetchState
     {
         public readonly int PartId;
-        public readonly long Time;
+        public readonly ConsumerStartLocation StartLocation;
         public long Offset;
 
-        public PartitionFetchState(int partId, long time, long offset)
+        public PartitionFetchState(int partId, ConsumerStartLocation startLocation, long offset)
         {
             PartId = partId;
-            Time = time;
+            StartLocation = startLocation;
             Offset = offset;
         }
 
         public override string ToString()
         {
-            return string.Format("Part: {0}, Offset: {1} Time: {2}", PartId, Offset, Time);
+            return string.Format("Part: {0}, Offset: {1} StartLocation: {2}", PartId, Offset, StartLocation);
         }
     }
 }

@@ -1,17 +1,15 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Reactive.Linq;
-using System.Reactive.Subjects;
-using System.Text;
-using System.Threading;
-using System.Threading.Tasks;
-using kafka4net.ConsumerImpl;
-using kafka4net.Metadata;
+﻿using kafka4net.Metadata;
 using kafka4net.Protocols;
 using kafka4net.Protocols.Requests;
 using kafka4net.Protocols.Responses;
 using kafka4net.Utils;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Reactive.Subjects;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace kafka4net.Internal
 {
@@ -20,197 +18,161 @@ namespace kafka4net.Internal
     /// </summary>
     class PartitionRecoveryMonitor
     {
+        static readonly ILogger _log = Logger.GetLogger();
+
         private readonly Protocol _protocol;
         private readonly CancellationToken _cancel;
-        readonly Dictionary<string,List<PartitionFetchState>> _failedList = new Dictionary<string, List<PartitionFetchState>>();
-        readonly Subject<Tuple<string,PartitionFetchState[]>> _events = new Subject<Tuple<string, PartitionFetchState[]>>();
-        Subject<MetadataResponse> _newMetadataEvent = new Subject<MetadataResponse>();
-        private IEnumerable<BrokerMeta> _brokers;
 
-        public IObservable<Tuple<string, PartitionFetchState[]>> RecoveryEvents { get { return _events; } }
+        // keep list of all known brokers so we can make requests to them to check that they're alive.
+        private readonly Dictionary<int,BrokerMeta> _brokers = new Dictionary<int, BrokerMeta>();
+        private readonly List<Task> _recoveryTasks = new List<Task>();
+
+        private readonly Subject<MetadataResponse> _newMetadataEvent = new Subject<MetadataResponse>();
         public IObservable<MetadataResponse> NewMetadataEvents { get { return _newMetadataEvent; } }
 
         public Task Completion { get { return _completion.Task; } }
-        TaskCompletionSource<bool> _completion = new TaskCompletionSource<bool>();
+        private readonly TaskCompletionSource<bool> _completion = new TaskCompletionSource<bool>();
 
-        static readonly ILogger _log = Logger.GetLogger();
+        // keep a list of partitions that are failed, and their broker
+        private readonly Dictionary<Tuple<string,int>,ErrorCode> _failedList = new Dictionary<Tuple<string, int>, ErrorCode>(); 
 
-        public PartitionRecoveryMonitor(IEnumerable<BrokerMeta> brokers, Protocol protocol, CancellationToken cancel)
+        public PartitionRecoveryMonitor(Router router, Protocol protocol, CancellationToken cancel)
         {
-            // TODO: if we change Broker to disover only needed topics upon connect, than brokers should be replaced with
-            // IObservable<BrokerMeta>
-
-            this._protocol = protocol;
+            _protocol = protocol;
             _cancel = cancel;
-            _cancel.Register(() => { 
-                if(_failedList.Count == 0)
-                    _completion.TrySetResult(true);
-            });
-            _brokers = brokers;
 
-            RecoveryLoop(brokers);
-        }
-
-        public void StartRecovery(Dictionary<string, List<PartitionFetchState>> offsetStates)
-        {
-            if(_cancel.IsCancellationRequested)
-                throw new BrokerException("Can not recover partition beause cancellation has been requested");
-
-            lock(_failedList)
-            {
-                Merge(offsetStates);
-            }
-        }
-
-        private void Merge(Dictionary<string, List<PartitionFetchState>> offsetStates)
-        {
-            foreach(var newTopic in offsetStates)
-            {
-                List<PartitionFetchState> offsets;
-                if (!_failedList.TryGetValue(newTopic.Key, out offsets))
+            // listen for new brokers
+            router.NewBrokers.Subscribe(
+                broker =>
                 {
-                    _failedList.Add(newTopic.Key, new List<PartitionFetchState>(newTopic.Value));
-                    _log.Debug("Started recovering new topic: '{0}', partitions: {1}", newTopic.Key, string.Join(",", newTopic.Value.Select(p=>p.ToString()).ToArray()));
+                    // check and add this broker
+                    if (_brokers.ContainsKey(broker.NodeId)) return;
+                    _recoveryTasks.Add(RecoveryLoop(broker));
+                    _brokers.Add(broker.NodeId, broker);
+                },
+                ex => _log.Error("Error thrown in NewBrokers subscription!")
+                );
+
+            // listen for any topic status changes and keep our "failed" list updated
+            router.PartitionStateChanges.Subscribe(
+                state =>
+                {
+                    var key = new Tuple<string, int>(state.Item1, state.Item2);
+                    // check if it is failed or recovered, and remove or add to our failed list.
+                    if (state.Item3 == ErrorCode.NoError && _failedList.ContainsKey(key))
+                    {
+                        _failedList.Remove(key);
+                    }
+                    else
+                    {
+                        if (!_failedList.ContainsKey(key))
+                            _failedList.Add(key, state.Item3);
+                        else
+                            _failedList[key] = state.Item3;
+                    }
+                },
+                ex => _log.Error("Error thrown in PartitionStateChanges subscription!"));
+        }
+
+        private async Task RecoveryLoop(BrokerMeta broker)
+        {
+            _log.Debug("Starting recovery loop on broker: {0}", broker);
+            while (!_cancel.IsCancellationRequested)
+            {
+
+                //
+                // Check either there is any job for given broker
+                //
+                if (_failedList.Count == 0)
+                {
+                    await Task.Delay(1000, _cancel);
+                    continue;
                 }
-                else
+
+                //
+                // Query metadata from given broker for any failed topics.
+                //
+                MetadataResponse response;
+                try
                 {
-                    offsets.AddRange(newTopic.Value);
-                    _log.Debug("Started recovering more partitions of topic: '{0}', partitions: {1}", newTopic.Key, string.Join(",", newTopic.Value.Select(p => p.ToString()).ToArray()));
+                    response = await _protocol.MetadataRequest(new TopicRequest { Topics = _failedList.Keys.Select(t => t.Item1).Distinct().ToArray() }, broker);
                 }
-            }
-        }
-
-        void RecoveryLoop(IEnumerable<BrokerMeta> brokers)
-        {
-            // TODO: relay on Broker's discovering new brokers?
-            // TODO: merge currently known brokers with seed brokers
-            // TODO: refactor Brokers Monitor into a separate class
-
-            brokers.Select(async broker =>
-            {
-                _log.Debug("Starting recovery loop on broker: {0}", broker);
-                while (!_cancel.IsCancellationRequested)
+                catch (Exception ex)
                 {
+                    _log.Debug("PartitionRecoveryMonitor error. Broker: {0}, error: {1}", broker, ex.Message);
+                    response = null;
+                }
 
-                    //
-                    // Check either there is any job for given broker
-                    //
-                    if (_failedList.Count == 0)
-                    {
-                        await Task.Delay(1000, _cancel);
-                        continue;
-                    }
+                if (response == null)
+                {
+                    await Task.Delay(1000, _cancel);
+                    continue;
+                }
 
-                    //
-                    // Query metadata from given broker
-                    //
-                    var responseTask = _protocol.MetadataRequest(new TopicRequest { Topics = _failedList.Keys.ToArray() }, broker);
-                    await responseTask;
-                    if (responseTask.IsFaulted)
-                    {
-                        _log.Debug("PartitionRecoveryMonitor error. Broker: {0}, error: {1}", broker, responseTask.Exception.Message);
-                        await Task.Delay(1000, _cancel);
-                        continue;
-                    }
-                    var response = responseTask.Result;
+                //
+                // Join failed partitions with successful responses to find out recovered ones
+                //
+                Tuple<string, int, int>[] healedPartitions = (
+                    from responseTopic in response.Topics
+                    from responsePart in responseTopic.Partitions
+                    let key = new Tuple<string, int>(responseTopic.TopicName, responsePart.Id)
+                    where 
+                        responseTopic.TopicErrorCode == ErrorCode.NoError 
+                        && responsePart.ErrorCode == ErrorCode.NoError 
+                        && _failedList.ContainsKey(key)
+                    select Tuple.Create(responseTopic.TopicName, responsePart.Id, responsePart.Leader)
+                    ).ToArray();
 
-                    //
-                    // Join failed partitions with successful responses to find out recovered ones
-                    //
-                    Tuple<string, PartitionFetchState, int>[] healedPartitions;   // topic, state, brokerId
-                    lock (_failedList)
+                if (_log.IsDebugEnabled)
+                {
+                    var str = new StringBuilder();
+                    foreach (var leader in healedPartitions.GroupBy(p => p.Item3, p => p, (i, tuples) => new { Leader = i, Topics = tuples.GroupBy(t => t.Item1) }))
                     {
-                        healedPartitions = (
-                            from responseTopic in response.Topics
-                            where responseTopic.TopicErrorCode == ErrorCode.NoError && _failedList.ContainsKey(responseTopic.TopicName)
-                            from failedPart in _failedList[responseTopic.TopicName]
-                            from responsePart in responseTopic.Partitions
-                            where responsePart.Id == failedPart.PartId
-                            select Tuple.Create(responseTopic.TopicName, failedPart, responsePart.Leader)
-                        ).ToArray();
-                    }
-                    if (_log.IsDebugEnabled)
-                    {
-                        var str = new StringBuilder();
-                        foreach (var leader in healedPartitions.GroupBy(p => p.Item3, p => p, (i, tuples) => new { Leader = i, Topics = tuples.GroupBy(t => t.Item1) }))
+                        str.AppendFormat(" Leader: {0}\n", leader.Leader);
+                        foreach (var topic1 in leader.Topics)
                         {
-                            str.AppendFormat(" Leader: {0}\n", leader.Leader);
-                            foreach (var topic1 in leader.Topics)
-                            {
-                                str.AppendFormat("  Topic: {0} ", topic1.Key);
-                                str.AppendFormat("[{0}]\n", string.Join(",", topic1.Select(t => t.Item2)));
-                            }
+                            str.AppendFormat("  Topic: {0} ", topic1.Key);
+                            str.AppendFormat("[{0}]\n", string.Join(",", topic1.Select(t => t.Item2)));
                         }
-                        _log.Debug("Healed partitions found (will check broker availability):\n{0}", str.ToString());
                     }
+                    _log.Debug("Healed partitions found (will check broker availability):\n{0}", str.ToString());
+                }
 
-                    //
-                    // Make sure that brokers for healed partitions are accessible, because it is possible that
-                    // broker B1 said that partition belongs to B2 and B2 can not be reach.
-                    // It is checked only that said broker responds to metadata request without exceptions.
-                    //
-                    var alivePartitions = healedPartitions.
-                        GroupBy(p => p.Item3).
-                        Select(async brokerGrp =>
+                //
+                // Make sure that brokers for healed partitions are accessible, because it is possible that
+                // broker B1 said that partition belongs to B2 and B2 can not be reach.
+                // It is checked only that said broker responds to metadata request without exceptions.
+                //
+                healedPartitions.
+                    GroupBy(p => p.Item3).
+                    ForEach(async brokerGrp =>
+                    {
+                        BrokerMeta newBroker;
+                        _brokers.TryGetValue(brokerGrp.Key, out newBroker);
+                        if (newBroker == null)
                         {
-                            // TODO: should _brokers var be synced with Router because it is by-ref constructor parameter?
-                            // TODO: any chance that newly discovered broker is not in _brokers yet?
-                            var broker2 = _brokers.Single(b => b.NodeId == brokerGrp.Key);
-                            MetadataResponse response2;
-                            try
-                            {
-                                response2 = await _protocol.MetadataRequest(new TopicRequest { Topics = _failedList.Keys.ToArray() }, broker2);
-                            }
-                            catch (Exception e)
-                            {
-                                throw new BrokerException(string.Format("Exception while connecting to broker {0}. Error: {1}", broker2, e.Message));
-                            }
+                            _log.Error("received MetadataResponse for broker that is not yet in our list!");
+                            return;
+                        }
 
-                            //
+                        try
+                        {
+                            MetadataResponse response2 = await _protocol.MetadataRequest(new TopicRequest { Topics = brokerGrp.Select(g=>g.Item1).Distinct().ToArray() }, newBroker);
+
                             // success!
-                            //
-
-                            // raise new metadata event BEFORE recovered topic event 
+                            // raise new metadata event 
                             _newMetadataEvent.OnNext(response2);
 
-                            // remove partitons from failed list
-                            lock (_failedList)
-                            {
-                                brokerGrp.GroupBy(b => b.Item1).    // group by topic
-                                    Select(b => new { Topic = b.Key, States = b.Select(s => s.Item2).ToArray() }).
-                                    // multiple brokers may respond with healed partitions, handle just one responce
-                                    Where(topic => _failedList.ContainsKey(topic.Topic)).
-                                    ForEach(topic =>
-                                    {
-                                        var failedParts = _failedList[topic.Topic];
-                                        topic.States.ForEach(p => failedParts.Remove(p));
-                                        if (failedParts.Count == 0)
-                                            _failedList.Remove(topic.Topic);
+                            _log.Info("Alive brokers detected: {0}", newBroker);
+                        }
+                        catch (Exception e)
+                        {
+                            _log.Warn(e, "Metadata points to broker but it is not accessible");
+                        }
+                    });
 
-                                        // raise partition recovered events
-                                        _events.OnNext(Tuple.Create(topic.Topic, topic.States));
-                                    });
-                            }
-
-                            return broker2;
-                        }).ToArray();
-
-                    if (alivePartitions.Length > 0)
-                    {
-                        alivePartitions.ToObservable().
-                            Merge().
-                            Subscribe(
-                                b => _log.Info("Alive brokers detected: {0}", b),
-                                e => _log.Debug(e, "Metadata points to broker but it is not accessible")
-                            );
-                    }
-
-                    await Task.Delay(1000, _cancel);
-                }
-            }).ForEach(_ => {
-                if (_failedList.Count == 0)
-                    _completion.TrySetResult(true);
-            });
+                await Task.Delay(1000, _cancel);
+            }
         }
     }
 }
