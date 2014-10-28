@@ -37,9 +37,10 @@ namespace kafka4net
             _sendBuffer = new BufferBlock<Message>();
 
             _sendBuffer.AsObservable().
-                ObserveOn(_scheduler).
                 Buffer(BatchTime, BatchSize).
                 Where(b => b.Count > 0). // apparently, Buffer will trigger empty batches too, skip them
+                ObserveOn(_scheduler).  // Important! this needs to be AFTER Buffer call, because buffer execute on timer thread
+                                        // and will ignore ObserveOn
                 // TODO: how to check result? Make it failsafe?
                 Subscribe(batch => router.SendBatch(this, batch), // TODO: how to check result? Make it failsafe?
                 // How to prevent overlap?
