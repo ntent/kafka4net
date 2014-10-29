@@ -154,6 +154,15 @@ namespace kafka4net
         }
 
         /// <summary>
+        /// Allow publishing of a new partition state detected by a component (likely the TopicPartition)
+        /// </summary>
+        /// <param name="state"></param>
+        public void SendPartitionStateChange(Tuple<string, int, ErrorCode> state)
+        {
+            _partitionStateChangesSubject.OnNext(state);
+        }
+
+        /// <summary>
         /// Gets an observable sequence of any changes to the Fetcher for a specific topic/partition
         /// </summary>
         /// <param name="topic"></param>
@@ -164,8 +173,8 @@ namespace kafka4net
         {
             return PartitionStateChanges
                 .Where(t => t.Item1 == topic && t.Item2 == partitionId)
-                .Do(psc => _log.Info("GetFetcherChages saw CORRECT partition state {0}-{1}-{2}", psc.Item1, psc.Item2, psc.Item3),
-                    ex => _log.Warn(ex, "GetFetcherChages saw ERROR from PartitionStateChanges"))
+                .Do(psc => _log.Info("GetFetcherChages saw new partition state {0}-{1}-{2}", psc.Item1, psc.Item2, psc.Item3),
+                    ex => _log.Fatal(ex, "GetFetcherChages saw ERROR from PartitionStateChanges"))
                 .Select(state =>
                 {
                     // if the state is not ready, return NULL for the fetcher.
@@ -178,15 +187,28 @@ namespace kafka4net
                     var fetcher = _activeFetchers.GetOrAdd(broker, b =>
                     {
                         // all new fetchers need to be "watched" for errors.
-                        var f = new Fetcher(b, _protocol, consumerConfiguration, _cancel.Token);
-                        f.FetcherPartitionErrors.Subscribe(_partitionStateChangesSubject);
+                        var f = new Fetcher(this, b, _protocol, consumerConfiguration, _cancel.Token);
+                        // subscribe to error and complete notifications, and remove from active fetchers
+                        f.ReceivedMessages.Subscribe(_ => { },
+                            err =>
+                            {
+                                _log.Warn("Received error from fetcher {0}. Removing from active fetchers.", f);
+                                Fetcher ef;
+                                _activeFetchers.TryRemove(broker, out ef);
+                            },
+                            () =>
+                            {
+                                _log.Info("Received complete from fetcher {0}. Removing from active fetchers.", f);
+                                Fetcher ef;
+                                _activeFetchers.TryRemove(broker, out ef);
+                            });
                         return f;
                     });
 
                     return fetcher;
 
                 })
-                .Do(f=>_log.Info("GetFetcherChanges returning new fetcher {0}",f),
+                .Do(f => _log.Info("GetFetcherChanges returning {1} fetcher {0}", f, f==null?"null":"new"),
                     ex => _log.Error(ex, "GetFetcherChages saw ERROR returning new fetcher."),
                     ()=> _log.Error("GetFetcherChanges saw COMPLETE from returning new fetcher."));
         }
@@ -343,14 +365,12 @@ namespace kafka4net
             return null;
         } 
 
-        BrokerMeta FindBrokerMetaForPartitionId(string topic, int partition)
+        internal BrokerMeta FindBrokerMetaForPartitionId(string topic, int partition)
         {
             // TODO: how to handle not found exceptions, downed partitions?
-            var leader = _topicPartitionMap[topic].
-                Single(p => p.Id == partition).Leader;
-            var broker = _metadata.Brokers.Single(b => b.NodeId == leader);
-            _log.Debug("FindBrokerMetaForPartitionId '{0}'/{1} -> {2}", topic, partition, broker);
-            return broker;
+            var partMeta = _topicPartitionMap[topic].Single(p => p.Id == partition);
+            var brokerMeta = _partitionBrokerMap[partMeta];
+            return brokerMeta;
         }
 
         internal async Task SendBatch(Publisher publisher, IList<Message> batch)
@@ -909,15 +929,6 @@ resend:
             public List<Message> Messages = new List<Message>();
             public Publisher Pub;
         }
-
-        #if DEBUG
-        internal BrokerMeta TestGetBrokerForPartition(string topic, int partition)
-        {
-            var partMeta = _topicPartitionMap[topic].Single(p => p.Id == partition);
-            var brokerMeta = _partitionBrokerMap[partMeta];
-            return brokerMeta;
-        }
-        #endif
 
         public string[] GetAllTopics()
         {

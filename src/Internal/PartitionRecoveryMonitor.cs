@@ -72,7 +72,7 @@ namespace kafka4net.Internal
                             _failedList[key] = state.Item3;
                     }
                 },
-                ex => _log.Error("Error thrown in PartitionStateChanges subscription!"));
+                ex => _log.Error(ex, "Error thrown in PartitionStateChanges subscription!"));
         }
 
         private async Task RecoveryLoop(BrokerMeta broker)

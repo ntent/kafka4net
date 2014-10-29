@@ -45,6 +45,7 @@
 
         /// <summary>This state is not Kafka error code but driver-set state, meaning that there are messages in the waiting queue for this partition and sending routine needs to drain
         /// waiting queue first, to prevent possible message reordering, when fresh messages will go out before waiting ones.</summary>
-        Draining = 1000
+        Draining = 1000,
+        FetcherException = 1001
     }
 }

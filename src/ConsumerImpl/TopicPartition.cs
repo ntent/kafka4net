@@ -54,7 +54,7 @@ namespace kafka4net.ConsumerImpl
         public IDisposable Subscribe(Consumer consumer)
         {
             if (_subscribedConsumer != null && consumer != _subscribedConsumer)
-                throw new Exception("TopicPartition is already subscribed to by a consumer!");
+                throw new Exception(string.Format("TopicPartition {0} is already subscribed to by a consumer!", this));
 
             _subscribedConsumer = consumer;
 
@@ -81,20 +81,23 @@ namespace kafka4net.ConsumerImpl
 
             // now subscribe to the new fetcher. This will begin pumping messages through to the consumer.
             if (newFetcher != null)
+            {
+                _log.Info("{0} Received new fetcher. Fetcher: {1}. Subscribing to this fetcher.", this, newFetcher);
                 _currentfetcherSubscription = newFetcher.Subscribe(this);
+            }
         }
 
         private void OnFetcherChangesComplete()
         {
             // we aren't getting any more fetcher changes... shouldn't happen!
-            _log.Error("Received FetcherChanges OnComplete event.... shouldn't happen!");
+            _log.Warn("{0} Received FetcherChanges OnComplete event.... shouldn't happen unless we're shutting down.", this);
             DisposeImpl();
         }
 
         private void OnFetcherChangesError(Exception ex)
         {
             // we aren't getting any more fetcher changes... shouldn't happen!
-            _log.Error(ex, "Received FetcherChanges OnError event.... shouldn't happen!");
+            _log.Fatal(ex, "{0} Received FetcherChanges OnError event.... shouldn't happen!", this);
             DisposeImpl();
         }
 
@@ -106,7 +109,7 @@ namespace kafka4net.ConsumerImpl
         {
             if (_subscribedConsumer == null)
             {
-                _log.Error("Recieved Message with no subscribed consumer. Discarding message.");
+                _log.Error("{0} Recieved Message with no subscribed consumer. Discarding message.", this);
             }
             else
             {
@@ -120,15 +123,16 @@ namespace kafka4net.ConsumerImpl
         public void OnError(Exception error)
         {
             // don't pass this error up to the consumer, log it and wait for a new fetcher
-            _log.Warn(error, "Recieved Error from Fetcher. Waiting for new or updated Fetcher.");
+            _log.Warn("{0} Recieved Error from Fetcher. Waiting for new or updated Fetcher. Message: {1}", this, error.Message);
             _currentfetcherSubscription.Dispose();
             _currentfetcherSubscription = null;
+            _router.SendPartitionStateChange(new Tuple<string, int, ErrorCode>(Topic, PartitionId, ErrorCode.FetcherException));
         }
 
         public void OnCompleted()
         {
             // this shouldn't happen, but don't pass this up to the consumer, log it and wait for a new fetcher
-            _log.Warn("Recieved OnComplete from Fetcher. Fetcher may have errored out. Waiting for new or updated Fetcher.");
+            _log.Warn("{0} Recieved OnComplete from Fetcher. Fetcher may have errored out. Waiting for new or updated Fetcher.", this);
             _currentfetcherSubscription.Dispose();
             _currentfetcherSubscription = null;
         }
@@ -153,6 +157,11 @@ namespace kafka4net.ConsumerImpl
                 _currentfetcherSubscription.Dispose();
                 _currentfetcherSubscription = null;
             }
+        }
+
+        public override string ToString()
+        {
+            return string.Format("<{0}-{1}>",Topic, PartitionId);
         }
 
         public override bool Equals(object obj)
