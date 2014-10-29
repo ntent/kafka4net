@@ -42,7 +42,7 @@ namespace tests
             var fileTarget = new FileTarget();
             config.AddTarget("file", fileTarget);
 
-            consoleTarget.Layout = "${date:format=HH\\:MM\\:ss} ${level} [${threadname}:${threadid}] ${logger} ${message} ${exception:format=tostring}";
+            consoleTarget.Layout = "${date:format=HH\\:mm\\:ss.fff} ${level} [${threadname}:${threadid}] ${logger} ${message} ${exception:format=tostring}";
             fileTarget.FileName = "${basedir}../../../../log.txt";
             fileTarget.Layout = "${longdate} ${level} [${threadname}:${threadid}] ${logger:shortName=true} ${message} ${exception:format=tostring,stacktrace:innerFormat=tostring,stacktrace}";
 
