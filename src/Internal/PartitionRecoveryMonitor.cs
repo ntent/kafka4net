@@ -30,8 +30,7 @@ namespace kafka4net.Internal
         private readonly Subject<MetadataResponse> _newMetadataEvent = new Subject<MetadataResponse>();
         public IObservable<MetadataResponse> NewMetadataEvents { get { return _newMetadataEvent; } }
 
-        public Task Completion { get { return _completion.Task; } }
-        private readonly TaskCompletionSource<bool> _completion = new TaskCompletionSource<bool>();
+        public Task Completion { get { return Task.WhenAll(_recoveryTasks); } }
 
         // keep a list of partitions that are failed, and their broker
         private readonly Dictionary<Tuple<string,int>,ErrorCode> _failedList = new Dictionary<Tuple<string, int>, ErrorCode>(); 
@@ -80,7 +79,7 @@ namespace kafka4net.Internal
             _log.Debug("Starting recovery loop on broker: {0}", broker);
             while (!_cancel.IsCancellationRequested)
             {
-
+                _log.Debug("RecoveryLoop iterating");
                 //
                 // Check either there is any job for given broker
                 //
@@ -174,6 +173,8 @@ namespace kafka4net.Internal
 
                 await Task.Delay(1000, _cancel);
             }
+
+            _log.Debug("RecoveryLoop exiting. Setting completion");
         }
     }
 }
