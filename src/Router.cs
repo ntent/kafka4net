@@ -237,25 +237,12 @@ namespace kafka4net
         }
 
         /// <summary>
-        /// Get the cached partition metadata for the given topic if it exists, otherwise issue a topic metadata request to get it
+        /// Get list of partitions and their head and tail offsets. 
+        /// If partition is empty, head is -1.
+        /// Tail is pointing to the offest AFTER the last message, i.e. offset of the message to be written next.
         /// </summary>
         /// <param name="topic"></param>
         /// <returns></returns>
-        public async Task<PartitionMeta[]> GetTopicPartitionsAsync(string topic)
-        {
-            PartitionMeta[] partitions;
-
-            if (_topicPartitionMap.TryGetValue(topic, out partitions))
-                return partitions;
-
-            await GetOrFetchMetaForTopic(topic);
-
-            _topicPartitionMap.TryGetValue(topic, out partitions);
-
-            return partitions;
-
-        }
-
         public async Task<PartitionInfo[]> GetPartitionsInfo(string topic)
         {
             var ret = await await Scheduler.Ask(async () => {
@@ -299,7 +286,7 @@ namespace kafka4net
         }
 
         /// <summary>Get cached metadata for topic, or request, wait and cache it</summary>
-        private async Task GetOrFetchMetaForTopic(string topic)
+        internal async Task<PartitionMeta[]> GetOrFetchMetaForTopic(string topic)
         {
             if (!_topicPartitionMap.ContainsKey(topic))
             {
@@ -308,6 +295,10 @@ namespace kafka4net
                 _log.Debug("Got topic metadata");
                 MergeTopicMeta(meta);
             }
+
+            PartitionMeta[] partMeta;
+            _topicPartitionMap.TryGetValue(topic, out partMeta);
+            return partMeta;
         }
 
 
