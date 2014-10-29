@@ -1,4 +1,5 @@
 ﻿using System.Linq;
+using System.Reactive.Concurrency;
 using System.Reactive.Threading.Tasks;
 using kafka4net.ConsumerImpl;
 using kafka4net.Protocols.Requests;
@@ -70,7 +71,7 @@ namespace kafka4net
         /// <returns>An IDisposable representing the subscription handle. Dispose of the observable to close this subscription.</returns>
         public IDisposable Subscribe(IObserver<ReceivedMessage> observer)
         {
-            return _router.Scheduler.Ask(() =>
+            _router.Scheduler.Schedule(() =>
             {
                 if (_isDisposed)
                     throw new ObjectDisposedException("Consumer is already disposed.");
@@ -93,8 +94,9 @@ namespace kafka4net
                     .Subscribe(subscriptions.Add);
 
                 _subscription.Disposable = subscriptions;
-                return subscriptions;
-            }).Result;
+            });
+
+            return this;
         }
 
         private IObservable<TopicPartition> GetTopicPartitions()
@@ -114,7 +116,7 @@ namespace kafka4net
             // two code paths here. If we have specified locations to start from, just get the partition metadata, and build the TopicPartitions
             if (Configuration.StartLocation == ConsumerStartLocation.SpecifiedLocations)
             {
-                var partitionMeta = await _router.GetTopicPartitionsAsync(Topic);
+                var partitionMeta = await _router.GetOrFetchMetaForTopic(Topic);
                 return partitionMeta
                         .Where(pm=>!_topicPartitions.ContainsKey(pm.Id))
                         .Select(part =>
@@ -161,10 +163,14 @@ namespace kafka4net
             {
                 // close and release the connections in the Router.
                 if (_router != null && _router.State != Router.BrokerState.Disconnected)
-                    _router.Close(TimeSpan.FromSeconds(5)).Wait();
+                    _router.Close(TimeSpan.FromSeconds(5)).
+                        ContinueWith(t => _log.Error(t.Exception, "Error when closing router"), TaskContinuationOptions.OnlyOnFaulted);
             }
             // ReSharper disable once EmptyGeneralCatchClause
-            catch { }
+            catch(Exception e)
+            {
+                _log.Error(e, "Error in Dispose");
+            }
 
             _isDisposed = true;
         }
