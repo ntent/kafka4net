@@ -1,6 +1,8 @@
 ﻿using System.Linq;
+using System.Reactive;
 using System.Reactive.Concurrency;
 using System.Reactive.Threading.Tasks;
+using System.Runtime.Remoting.Messaging;
 using kafka4net.ConsumerImpl;
 using kafka4net.Protocols.Requests;
 using kafka4net.Protocols.Responses;
@@ -14,8 +16,11 @@ using kafka4net.Utils;
 
 namespace kafka4net
 {
-    public class Consumer : ISubject<ReceivedMessage>, IDisposable
+    public class Consumer : IDisposable
     {
+        public readonly IObservable<ReceivedMessage> OnMessageArrived;
+        internal readonly ISubject<ReceivedMessage> OnMessageArrivedInput = new Subject<ReceivedMessage>();
+
         private static readonly ILogger _log = Logger.GetLogger();
 
         internal ConsumerConfiguration Configuration { get; private set; }
@@ -24,11 +29,8 @@ namespace kafka4net
         private readonly Router _router;
         private readonly Dictionary<int, TopicPartition> _topicPartitions = new Dictionary<int, TopicPartition>(); 
 
-        // with new organization, use a Subject to connect to all TopicPartitions
-        private readonly Subject<ReceivedMessage> _receivedMessageStream = new Subject<ReceivedMessage>();
- 
         // we should only ever subscribe once, and we want to keep that around to check if it was disposed when we are disposed
-        private readonly SingleAssignmentDisposable _subscription = new SingleAssignmentDisposable();
+        private readonly CompositeDisposable _partitionsSubscription = new CompositeDisposable();
 
         /// <summary>
         /// Create a new consumer using the specified configuration. See @ConsumerConfiguration
@@ -38,6 +40,36 @@ namespace kafka4net
         {
             Configuration = consumerConfig;
             _router = new Router(consumerConfig.SeedBrokers);
+
+            OnMessageArrived = Observable.Create<ReceivedMessage>(async observer =>
+            {
+                _log.Debug("Connecting router");
+                await _router.ConnectAsync();
+
+                // subscribe to all partitions
+                var parts = (await BuildTopicPartitionsAsync()).ToArray();
+                _log.Debug("{0} Discovered {1} partitions, subscribing");
+                parts.ForEach(part =>
+                {
+                    var partSubscription = part.Subscribe(this);
+                    _partitionsSubscription.Add(partSubscription);
+                });
+
+                // Relay messages from partition to consumer's output
+                OnMessageArrivedInput.Subscribe(observer);
+
+                // upon unsubscribe
+                return () =>
+                {
+                    _partitionsSubscription.Dispose();
+                    _topicPartitions.Clear();
+                    // Do not wait for broker closure. Seems impossible in synchronous unsubscribe.
+                    _router.Close(TimeSpan.FromSeconds(1));
+                };
+            }).
+                // allow multiple consumers to share the same subscription
+                Publish().
+                RefCount();
         }
 
         /// <summary>
@@ -58,85 +90,43 @@ namespace kafka4net
         {
             await await _router.Scheduler.Ask(() =>
             {
-                if (_subscription != null && ! _subscription.IsDisposed)
-                    _subscription.Dispose();
+                if (_partitionsSubscription != null && ! _partitionsSubscription.IsDisposed)
+                    _partitionsSubscription.Dispose();
                 return _router.Close(timeout);
             });
         }
 
-        /// <summary>
-        /// Subscribes an observer to this consumer's stream of messages.
-        /// </summary>
-        /// <param name="observer">The observer of the messages.</param>
-        /// <returns>An IDisposable representing the subscription handle. Dispose of the observable to close this subscription.</returns>
-        public IDisposable Subscribe(IObserver<ReceivedMessage> observer)
-        {
-            _router.Scheduler.Schedule(() =>
-            {
-                if (_isDisposed)
-                    throw new ObjectDisposedException("Consumer is already disposed.");
-
-                if (_router.State != Router.BrokerState.Connected)
-                    throw new Exception("Must connect the consumer by calling ConnectAsync before consuming.");
-
-                // subscribe the observer to the ReceivedMessageStream
-                var consumerSubscription = _receivedMessageStream.Subscribe(observer);
-
-                // Get and subscribe to all TopicPartitions
-                var subscriptions = new CompositeDisposable();
-
-                // add the consumer subscription to the composite disposable so that everything is cancelled when disposed
-                subscriptions.Add(consumerSubscription);
-
-                // subscribe to all partitions
-                GetTopicPartitions()
-                    .Select(topicPartition => topicPartition.Subscribe(this))
-                    .Subscribe(subscriptions.Add);
-
-                _subscription.Disposable = subscriptions;
-            });
-
-            return this;
-        }
-
-        private IObservable<TopicPartition> GetTopicPartitions()
-        {
-            var partitions =
-                BuildTopicPartitionsAsync().ToObservable()
-                .SelectMany(p => p);
-            return partitions;
-        }
-
-        /// <summary>
-        /// 
-        /// </summary>
-        /// <returns></returns>
-        internal async Task<IObservable<TopicPartition>> BuildTopicPartitionsAsync()
+        /// <summary>For every patition, resolve offsets and build TopicPartition object</summary>
+        internal async Task<IEnumerable<TopicPartition>> BuildTopicPartitionsAsync()
         {
             // two code paths here. If we have specified locations to start from, just get the partition metadata, and build the TopicPartitions
             if (Configuration.StartLocation == ConsumerStartLocation.SpecifiedLocations)
             {
                 var partitionMeta = await _router.GetOrFetchMetaForTopic(Topic);
                 return partitionMeta
-                        .Where(pm=>!_topicPartitions.ContainsKey(pm.Id))
-                        .Select(part =>
-                            new TopicPartition(_router, Topic, part.Id, Configuration.PartitionOffsetProvider(part.Id)))
-                        .ToObservable()
-                        .Do(tp=>_topicPartitions.Add(tp.PartitionId,tp));
+                    .Where(pm => !_topicPartitions.ContainsKey(pm.Id))
+                    .Select(part =>
+                    {
+                        var tp = new TopicPartition(_router, Topic, part.Id, Configuration.PartitionOffsetProvider(part.Id));
+                        _topicPartitions.Add(tp.PartitionId, tp);
+                        return tp;
+                    });
             }
 
             // no offsets provided. Need to issue an offset request to get start/end locations and use them for consuming
-            var partitions = await _router.GetPartitionsInfo(Topic);
+            var partitions = await _router.FetchPartitionsInfo(Topic);
 
             if (_log.IsDebugEnabled)
                 _log.Debug("Consumer for topic {0} got time->offset resolved for location {1}. parts: [{2}]", Topic, Configuration.StartLocation, string.Join(",", partitions.Select(p => string.Format("{0}-{1}", p.Partition, Configuration.StartLocation == ConsumerStartLocation.TopicHead ? p.Head : p.Tail))));
 
             return partitions
                 .Where(pm => !_topicPartitions.ContainsKey(pm.Partition))
-                .Select(part =>
-                    new TopicPartition(_router, Topic, part.Partition, Configuration.StartLocation == ConsumerStartLocation.TopicHead ? part.Head : part.Tail))
-                .ToObservable()
-                .Do(tp => _topicPartitions.Add(tp.PartitionId, tp));
+                .Select(part => 
+                {
+                    var tp = new TopicPartition(_router, Topic, part.Partition, Configuration.StartLocation == ConsumerStartLocation.TopicHead ? part.Head : part.Tail);
+                    _topicPartitions.Add(tp.PartitionId, tp);
+                    return tp;
+                });
         }
 
 
@@ -153,8 +143,8 @@ namespace kafka4net
 
             try
             {
-                if (_subscription != null && !_subscription.IsDisposed)
-                    _subscription.Dispose();
+                if (_partitionsSubscription != null && !_partitionsSubscription.IsDisposed)
+                    _partitionsSubscription.Dispose();
             }
             // ReSharper disable once EmptyGeneralCatchClause
             catch {}
@@ -195,35 +185,6 @@ namespace kafka4net
             //        }).
             //        ForEach(msg => _events.OnNext(msg))
             //    );
-        }
-
-        public void OnNext(ReceivedMessage value)
-        {
-            // check that we have someone subscribed to the _receivedMessageSubject otherwise we could lose messages!
-            if (!_receivedMessageStream.HasObservers)
-                _log.Error("Got message from TopicPartition with no Observers!");
-
-            // go ahead and pass it along anyway
-            _receivedMessageStream.OnNext(value);
-        }
-
-        public void OnError(Exception error)
-        {
-            _log.Error("Exception sent from TopicPartition!",error);
-
-            // go ahead and pass it along
-            _receivedMessageStream.OnError(error);
-        }
-
-        /// <summary>
-        /// This happens when an underlying TopicPartition calls OnCompleted... why would this occur?! Should not, other than when closing the whole consumer?
-        /// </summary>
-        public void OnCompleted()
-        {
-            _log.Info("Completed receiving from TopicPartition");
-
-            // go ahead and pass it along
-            _receivedMessageStream.OnCompleted();
         }
     }
 }

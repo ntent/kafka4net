@@ -73,6 +73,7 @@
   <ItemGroup>
     <Compile Include="RecoveryTest.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
+    <Compile Include="VagrantBrokerUtil.cs" />
   </ItemGroup>
   <ItemGroup>
     <None Include="packages.config" />

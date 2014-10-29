@@ -28,8 +28,6 @@ namespace tests
         Random _rnd = new Random();
         //string _seedAddresses = "192.168.56.10,192.168.56.20";
         string _seedAddresses = "192.168.56.10";
-        readonly List<string> _stoppedBrokers = new List<string>();
-        readonly string _part33CreateScript = "ssh -c '/opt/kafka_2.10-0.8.1.1/bin/kafka-topics.sh --create --topic part33 --partitions 3 --replication-factor 2 --zookeeper 192.168.56.2' broker1";
         static readonly NLog.Logger _log = NLog.LogManager.GetCurrentClassLogger();
 
         [SetUp]
@@ -72,14 +70,15 @@ namespace tests
 
             TaskScheduler.UnobservedTaskException += (sender, args) => logger.Error("Unhandled task exception", (Exception)args.Exception);
             AppDomain.CurrentDomain.UnhandledException += (sender, args) => logger.Error("Unhandled exception", (Exception)args.ExceptionObject);
+
+            // make sure brokers are up from last run
+            VagrantBrokerUtil.RestartBrokers();
         }
 
         [TearDown]
         public void RestartBrokers()
         {
-            foreach(var broker in _stoppedBrokers)
-                Vagrant("ssh -c 'sudo service kafka start' " + broker);
-            _stoppedBrokers.Clear();
+            VagrantBrokerUtil.RestartBrokers();
         }
 
         //public void TearDown()
@@ -131,7 +130,7 @@ namespace tests
             await consumer.ConnectAsync();
             var received = new Subject<ReceivedMessage>();
             var receivedTxt = new List<string>();
-            var consumerSubscription = consumer.
+            var consumerSubscription = consumer.OnMessageArrived.
                 Do(m => _log.Info("Got message")).
                 Subscribe(received.OnNext);
             
@@ -159,20 +158,20 @@ namespace tests
             await consumer.CloseAsync(TimeSpan.FromSeconds(5));
         }
 
-        [Test]
-        public void MultithreadingSend()
-        {
-            // for 10 minutes, 15 threads, each to its own topic, 100ms interval, send messages.
-            // In addition, 5 topics are produced by 
-            // Consumer must validate that messages were sent in order and all were received
-        }
+        //[Test]
+        //public void MultithreadingSend()
+        //{
+        //    // for 10 minutes, 15 threads, each to its own topic, 100ms interval, send messages.
+        //    // In addition, 5 topics are produced by 
+        //    // Consumer must validate that messages were sent in order and all were received
+        //}
 
-        [Test]
-        public void Miltithreading2()
-        {
-            // subjects are produced by 15, 7, 3, 3, 2, 2, 2, 2, producers/threads
-            // Consumer must validate that messages were sent in order and all were received
-        }
+        //[Test]
+        //public void Miltithreading2()
+        //{
+        //    // subjects are produced by 15, 7, 3, 3, 2, 2, 2, 2, producers/threads
+        //    // Consumer must validate that messages were sent in order and all were received
+        //}
 
         // consumer sees the same messages as publisher
 
@@ -185,9 +184,9 @@ namespace tests
             var broker = new Router(_seedAddresses);
             await broker.ConnectAsync();
 
-            var topic = "part33";
+            const string topic = "part33";
             if(!broker.GetAllTopics().Contains(topic))
-                Vagrant(_part33CreateScript);
+                VagrantBrokerUtil.CreateTopic(topic,3,3);
 
             var publisher = new Publisher(topic) { OnSuccess = msgs => _log.Debug("Sent {0} messages", msgs.Length) };
             publisher.Connect(broker);
@@ -201,7 +200,7 @@ namespace tests
             // read messages
             var received = new List<ReceivedMessage>();
             var receivedEvents = new ReplaySubject<ReceivedMessage>();
-            var consumerSubscription = consumer.
+            var consumerSubscription = consumer.OnMessageArrived.
                 Synchronize().
                 Subscribe(msg =>
                 {
@@ -219,13 +218,11 @@ namespace tests
                 );
 
             // wait for first 50 messages to arrive
-            await receivedEvents.Take(postCount).Count().ToTask();
-            Assert.AreEqual(postCount, received.Count);
+            await receivedEvents.Take(postCount2).Count().ToTask();
+            Assert.AreEqual(postCount2, received.Count);
 
             // stop broker1. As messages have null-key, some of 50 of them have to end up on relocated broker1
-            Vagrant("ssh -c 'sudo service kafka stop' broker1");
-            _stoppedBrokers.Add("broker1");
-            _log.Info("Stopped broker1");
+            VagrantBrokerUtil.StopBroker("broker1");
 
             // post another 50 messages
             var sender2 = Observable.Interval(TimeSpan.FromMilliseconds(100)).
@@ -252,19 +249,18 @@ namespace tests
             _log.Debug("Done");
         }
 
-        #if DEBUG
         [Test]
         public async void ListenerRecoveryTest()
         {
             var count = 400;
             var topic = "part3";
-            var broker = new Router(_seedAddresses);
+            var router = new Router(_seedAddresses);
             _log.Debug("Connecting");
-            await broker.ConnectAsync();
+            await router.ConnectAsync();
 
             _log.Debug("Filling out {0}", topic);
             var producer = new Publisher(topic);
-            producer.Connect(broker);
+            producer.Connect(router);
             Enumerable.Range(1, count).
                 Select(i => new Message() {Value = BitConverter.GetBytes(i)}).
                 ForEach(producer.Send);
@@ -274,16 +270,12 @@ namespace tests
             await consumer.ConnectAsync();
             var current =0;
             var received = new ReplaySubject<ReceivedMessage>();
-            var consumerSubscription = consumer.
+            var consumerSubscription = consumer.OnMessageArrived.
                 Subscribe(msg => {
                     current++;
                     if (current == 10)
                     {
-                        var brokerMeta = broker.TestGetBrokerForPartition(consumer.Topic, msg.Partition);
-                        var brokerName = GetBrokerNameFromIp(brokerMeta.Host);
-                        _log.Info("Closing {0}", brokerName);
-                        Vagrant("ssh -c 'sudo service kafka stop' "+brokerName);
-                        _stoppedBrokers.Add(brokerName);
+                        VagrantBrokerUtil.StopBrokerLeaderForPartition(router, consumer.Topic, msg.Partition);
                     }
 
                     received.OnNext(msg);
@@ -297,7 +289,6 @@ namespace tests
             consumerSubscription.Dispose();
             await consumer.CloseAsync(TimeSpan.FromSeconds(5));
         }
-#endif
 
         [Test]
         public async void CleanShutdownTest()
@@ -323,7 +314,7 @@ namespace tests
             var received = new HashSet<string>();
             var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, maxWaitTimeMs: 30 * 1000));
             await consumer.ConnectAsync();
-            var consumerSubscription = consumer
+            var consumerSubscription = consumer.OnMessageArrived
                                         .Select(msg => Encoding.UTF8.GetString(msg.Value))
                                         .Subscribe(m => received.Add(m));
 
@@ -373,16 +364,17 @@ namespace tests
             
             // create a topic with 3 partitions
             // TODO: how to skip initialization if topic already exists? Add router.GetAllTopics().Any(...)??? Or make it part of provisioning script?
-            if(!routerProducer.GetAllTopics().Any(t => t == "part33"))
+            const string topicName = "part33";
+            if(routerProducer.GetAllTopics().All(t => t != topicName))
             {
-                Vagrant(_part33CreateScript);
+                VagrantBrokerUtil.CreateTopic(topicName, 3, 3);
             }
             
             // create listener in a separate connection/broker
             var receivedMsgs = new List<ReceivedMessage>();
-            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, "part33"));
+            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topicName));
             await consumer.ConnectAsync();
-            var consumerSubscription = consumer.Synchronize().Subscribe(msg =>
+            var consumerSubscription = consumer.OnMessageArrived.Synchronize().Subscribe(msg =>
             {
                 lock (receivedMsgs)
                 {
@@ -392,7 +384,7 @@ namespace tests
             });
 
             // sender is configured with 50ms batch period
-            var producer = new Publisher("part33") { BatchTime = TimeSpan.FromMilliseconds(50)};
+            var producer = new Publisher(topicName) { BatchTime = TimeSpan.FromMilliseconds(50)};
             producer.Connect(routerProducer);
 
             //
@@ -500,11 +492,12 @@ namespace tests
             await router.ConnectAsync();
 
             // create new topic with 3 partitions
-            if(!router.GetAllTopics().Contains("part33"))
-                Vagrant(_part33CreateScript);
+            const string topic = "part33";
+            if(!router.GetAllTopics().Contains(topic))
+                VagrantBrokerUtil.CreateTopic(topic,3,3);
 
             // fill it out with 10K messages
-            var producer = new Publisher("part33");
+            var producer = new Publisher(topic);
             producer.Connect(router);
             _log.Info("Sending data");
             Enumerable.Range(1, 10 * 1000).
@@ -515,10 +508,10 @@ namespace tests
             await producer.Close();
 
             // consume tail-300 for each partition
-            var offsets = (await router.GetPartitionsInfo("part33")).ToDictionary(p => p.Partition);
-            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, "part33", ConsumerStartLocation.SpecifiedLocations, partitionOffsetProvider: p => offsets[p].Tail - 300));
+            var offsets = (await router.FetchPartitionsInfo(topic)).ToDictionary(p => p.Partition);
+            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, ConsumerStartLocation.SpecifiedLocations, partitionOffsetProvider: p => offsets[p].Tail - 300));
             await consumer.ConnectAsync();
-            var messages = consumer.
+            var messages = consumer.OnMessageArrived.
                 GroupBy(m => m.Partition).Replay();
             messages.Connect();
 
@@ -545,8 +538,7 @@ namespace tests
 
             var topic = "part32." + _rnd.Next();
             await router.ConnectAsync();
-            _log.Info("Creating '{0}'", topic);
-            Vagrant("ssh -c '/opt/kafka_2.10-0.8.1.1/bin/kafka-topics.sh --create --topic " + topic + " --partitions 3 --replication-factor 2 --zookeeper 192.168.56.2' broker1");
+            VagrantBrokerUtil.CreateTopic(topic,3,2);
 
             // fill it out with 100 messages
             var producer = new Publisher(topic);
@@ -562,25 +554,25 @@ namespace tests
             // read starting from the head
             var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, ConsumerStartLocation.TopicHead));
             await consumer.ConnectAsync();
-            var count2 = consumer.TakeUntil(DateTimeOffset.Now.AddSeconds(5))
+            var count2 = consumer.OnMessageArrived.TakeUntil(DateTimeOffset.Now.AddSeconds(5))
                 //.Do(val=>_log.Info("received value {0}", BitConverter.ToInt32(val.Value,0)))
                 .Count().ToTask();
             Assert.AreEqual(count, await count2);
         }
 
         // if attempt to fetch from offset out of range, excption is thrown
-        [Test]
-        public void OutOfRangeOffsetThrows()
-        {
+        //[Test]
+        //public void OutOfRangeOffsetThrows()
+        //{
 
-        }
+        //}
 
-        // implicit offset is defaulted to fetching from the end
-        [Test]
-        public void DefaultPositionToTheTail()
-        {
+        //// implicit offset is defaulted to fetching from the end
+        //[Test]
+        //public void DefaultPositionToTheTail()
+        //{
 
-        }
+        //}
 
         // Create a new 1-partition topic and sent 100 messages.
         // Read offsets, they should be [0, 100]
@@ -591,14 +583,14 @@ namespace tests
             var sentEvents = new Subject<Message>();
             var topic = "part12." + _rnd.Next();
             await router.ConnectAsync();
-            _log.Info("Creating '{0}'", topic);
-            Vagrant("ssh -c '/opt/kafka_2.10-0.8.1.1/bin/kafka-topics.sh --create --topic "+topic+" --partitions 1 --replication-factor 2 --zookeeper 192.168.56.2' broker1");
+            
+            VagrantBrokerUtil.CreateTopic(topic,1,2);
 
             // read offsets of empty queue
-            var parts = await router.GetPartitionsInfo(topic);
+            var parts = await router.FetchPartitionsInfo(topic);
             Assert.AreEqual(1, parts.Length, "Expected just one partition");
-            Assert.AreEqual(-1L, parts[0].Head, "Expected start at 0");
-            Assert.AreEqual(0L, parts[0].Tail, "Expected end at 100");
+            Assert.AreEqual(-1L, parts[0].Head, "Expected start at -1");
+            Assert.AreEqual(0L, parts[0].Tail, "Expected end at 0");
 
             var publisher = new Publisher(topic) { OnSuccess = e => e.ForEach(sentEvents.OnNext)};
             publisher.Connect(router);
@@ -614,12 +606,23 @@ namespace tests
             await publisher.Close();
 
             // re-read offsets after messages published
-            parts = await router.GetPartitionsInfo(topic);
+            parts = await router.FetchPartitionsInfo(topic);
 
             Assert.AreEqual(1, parts.Length, "Expected just one partition");
             Assert.AreEqual(0, parts[0].Partition, "Expected the only partition with Id=0");
             Assert.AreEqual(0L, parts[0].Head, "Expected start at 0");
             Assert.AreEqual(100L, parts[0].Tail, "Expected end at 100");
+        }
+
+        [Test]
+        public async void TwoConsumerSubscribersOneBroker()
+        {
+            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, "part33"));
+            await consumer.ConnectAsync();
+            var t1 = consumer.OnMessageArrived.TakeUntil(DateTimeOffset.Now.AddSeconds(5)).LastOrDefaultAsync().ToTask();
+            var t2 = consumer.OnMessageArrived.TakeUntil(DateTimeOffset.Now.AddSeconds(6)).LastOrDefaultAsync().ToTask();
+            await Task.WhenAll(new[] { t1, t2 });
+            await consumer.CloseAsync(TimeSpan.FromSeconds(2));
         }
 
         // if last leader is down, all in-buffer messages are errored and the new ones
@@ -695,40 +698,6 @@ namespace tests
         // OnSuccess is fired if topic was autocreated, there was no errors, there were 1 or more errors with leaders change
 
         // For same key, order of the messages is preserved
-
-        static void Vagrant(string script)
-        {
-            // TODO: implement vagrant-control 
-            var dir = AppDomain.CurrentDomain.BaseDirectory;
-            dir = Path.Combine(dir, @"..\..\..\vagrant");
-            dir = Path.GetFullPath(dir);
-            var pi = new ProcessStartInfo(@"vagrant.exe", script)
-            {
-                CreateNoWindow = true,
-                RedirectStandardError = true,
-                RedirectStandardOutput = true,
-                UseShellExecute = false,
-                WorkingDirectory = dir
-            };
-
-            var p = Process.Start(pi);
-            p.OutputDataReceived += (sender, args) => Console.WriteLine(args.Data);
-            p.ErrorDataReceived += (sender, args) => Console.WriteLine(args.Data);
-            p.BeginOutputReadLine();
-            p.BeginErrorReadLine();
-            p.WaitForExit();
-        }
-
-        private string GetBrokerNameFromIp(string ip)
-        {
-            switch(ip)
-            {
-                case "192.168.56.10": return "broker1";
-                case "192.168.56.20": return "broker2";
-                case "192.168.56.30": return "broker3";
-                default: throw new Exception("Unknown ip: "+ip);
-            }
-        }
 
     }
 }

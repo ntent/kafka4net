@@ -10,6 +10,7 @@ using System.Reactive.Disposables;
 using System.Reactive.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using kafka4net.Utils;
 
 namespace kafka4net.ConsumerImpl
 {
@@ -26,6 +27,7 @@ namespace kafka4net.ConsumerImpl
         private static int _nextId;
         private readonly int _id = Interlocked.Increment(ref _nextId);
 
+        private readonly Router _router;
         private readonly BrokerMeta _broker;
         private readonly Protocol _protocol;
         private readonly CancellationToken _cancel;
@@ -38,8 +40,9 @@ namespace kafka4net.ConsumerImpl
         private readonly IObservable<FetchResponse> _fetchResponses;
 
 
-        public Fetcher(BrokerMeta broker, Protocol protocol, ConsumerConfiguration consumerConfig, CancellationToken cancel)
+        public Fetcher(Router router, BrokerMeta broker, Protocol protocol, ConsumerConfiguration consumerConfig, CancellationToken cancel)
         {
+            _router = router;
             _broker = broker;
             _protocol = protocol;
             _cancel = cancel;
@@ -94,7 +97,7 @@ namespace kafka4net.ConsumerImpl
                 
                 return (
                     from topic in response.Topics
-                    from part in topic.Partitions
+                    from part in topic.Partitions where part.ErrorCode == ErrorCode.NoError
                     from msg in part.Messages
                     select new ReceivedMessage
                     {
@@ -105,25 +108,8 @@ namespace kafka4net.ConsumerImpl
                         Offset = msg.Offset
                     });
             })
-            .Do(_ => { },err => _log.Warn(err, "Error received in ReceivedMessages stream from broker {0}.",_broker),()=>_log.Debug("ReceivedMessages stream for broker {0} is complete.",_broker));
+            .Do(_ => { }, err => _log.Warn("Error received in ReceivedMessages stream from broker {0}. Message: {1}", _broker, err.Message), () => _log.Debug("ReceivedMessages stream for broker {0} is complete.", _broker));
         }}
-
-        /// <summary>
-        /// Composes the FetchResponses into a stream of occurrences of partition errors. This sequence does not contain successful partitions.
-        /// </summary>
-        internal IObservable<Tuple<string, int, ErrorCode>> FetcherPartitionErrors
-        {
-            get
-            {
-                return _fetchResponses.SelectMany(response =>
-                    from topic in response.Topics
-                    from part in topic.Partitions
-                    where part.ErrorCode != ErrorCode.NoError
-                    select new Tuple<string, int, ErrorCode>(topic.Topic, part.Partition, part.ErrorCode)
-                )
-                .Do(t=>_log.Info("Errored partition received for topic: {0}, partition: {1}, error code: {2}",t.Item1,t.Item2,t.Item3));
-            }
-        }
 
         internal Tuple<string, int>[] AllListeningPartitions
         {
@@ -203,8 +189,10 @@ namespace kafka4net.ConsumerImpl
                         
                         fetch = await _protocol.Fetch(fetchRequest, _broker.Conn);
 
-                        if (fetch.Topics.Any(t => t.Partitions.Any(p => p.ErrorCode != ErrorCode.NoError)))
-                            _log.Debug("_");
+                        // if any TopicPartitions have an error, fail them with the router.
+                        fetch.Topics.SelectMany(t=> t.Partitions.Select(p => new Tuple<string, int, ErrorCode>(t.Topic, p.Partition, p.ErrorCode)))
+                            .Where(ps => ps.Item3 != ErrorCode.NoError)
+                            .ForEach(ps => _router.SendPartitionStateChange(ps));
                         
                         if (_log.IsDebugEnabled)
                             _log.Debug("#{0}: got FetchResponse: {1}", _id, fetch);
