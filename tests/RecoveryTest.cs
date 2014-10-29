@@ -399,6 +399,7 @@ namespace tests
             // generate messages with 100ms interval in 10 threads
             //
             var sentMsgs = new List<Message>();
+            _log.Info("Start sending");
             var senders = Enumerable.Range(1, 1).
                 Select(thread => Observable.
                     Interval(TimeSpan.FromMilliseconds(10)).
@@ -428,15 +429,22 @@ namespace tests
                 ToArray();
 
             // wait for around 10K messages (10K/(10*10) = 100sec) and close producer
+            _log.Info("Waiting for producer to produce enough...");
             Thread.Sleep(100*1000);
+            _log.Info("Closing senders intervals");
             senders.ForEach(s => s.Dispose());
+            _log.Info("Closing producer");
             producer.Close().Wait();
 
             // wait for 3 sec for listener to catch up
+            _log.Info("Waiting for additional 3sec");
             Thread.Sleep(3*1000);
 
+            _log.Info("Disposing consumer");
             consumerSubscription.Dispose();
+            _log.Info("Closing consumer");
             await consumer.CloseAsync(TimeSpan.FromSeconds(4));
+            _log.Info("Done with networking");
 
             // compare sent and received messages
             // TODO: for some reason preformance is not what I'd expect it to be and only 6K is generated.
