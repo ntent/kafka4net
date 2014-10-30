@@ -389,7 +389,7 @@ namespace tests
             await producer.Close();
             _log.Info("Producer closed.");
 
-            var parts = await router.GetPartitionsInfo(topic);
+            var parts = await router.FetchPartitionsInfo(topic);
             _log.Info("Sum of offsets: {0}", parts.Select(p => p.Tail - p.Head).Sum());
             _log.Info("Offsets: [{0}]", string.Join(",", parts.Select(p => p.ToString())));
 
