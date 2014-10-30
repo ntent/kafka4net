@@ -291,43 +291,56 @@ namespace tests
         [Test]
         public async void ListenerRecoveryTest()
         {
-            const int count = 400;
+            const int count = 200;
             var topic = "part33." + _rnd.Next();
+            VagrantBrokerUtil.CreateTopic(topic,6,3);
             var router = new Router(_seedAddresses);
             _log.Debug("Connecting");
             await router.ConnectAsync();
 
             _log.Debug("Filling out {0}", topic);
             var producer = new Publisher(topic);
+            var sentList = new List<int>(200);
             producer.Connect(router);
-            Enumerable.Range(1, count).
-                Select(i => new Message() {Value = BitConverter.GetBytes(i)}).
-                ForEach(producer.Send);
-            await producer.Close();
+            Observable.Interval(TimeSpan.FromMilliseconds(100))
+                .Select(l => (int) l)
+                .Select(i => new Message() {Value = BitConverter.GetBytes(i)})
+                .Take(count)
+                .Subscribe(msg=> { producer.Send(msg); sentList.Add(BitConverter.ToInt32(msg.Value, 0)); });
 
             var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, ConsumerStartLocation.TopicHead, maxBytesPerFetch: 4*8));
             await consumer.ConnectAsync();
             var current =0;
             var received = new ReplaySubject<ReceivedMessage>();
             var consumerSubscription = consumer.
-                Subscribe(msg => {
+                Subscribe(async msg => {
                     current++;
-                    if (current == 10)
+                    if (current == 18)
                     {
-                        VagrantBrokerUtil.StopBrokerLeaderForPartition(router, consumer.Topic, msg.Partition);
+                        await Task.Factory.StartNew(() => VagrantBrokerUtil.StopBrokerLeaderForPartition(router, consumer.Topic, msg.Partition), CancellationToken.None, TaskCreationOptions.None, TaskScheduler.Default);
                     }
-
                     received.OnNext(msg);
                     _log.Info("Got: {0}", BitConverter.ToInt32(msg.Value, 0));
                 });
 
-            _log.Debug("Waiting for receiver complete");
-            var count2 = await received.Take(count).TakeUntil(DateTime.Now.AddSeconds(30)).Count().ToTask();
+            _log.Info("Waiting for receiver complete");
+            var receivedList = await received.Select(msg => BitConverter.ToInt32(msg.Value, 0)).Take(count).TakeUntil(DateTime.Now.AddSeconds(80)).ToList().ToTask();
 
+            await producer.Close();
             consumerSubscription.Dispose();
             await consumer.CloseAsync(TimeSpan.FromSeconds(5));
 
-            Assert.AreEqual(count, count2);
+            if (sentList.Count != receivedList.Count)
+            {
+                // log some debug info.
+                _log.Error("Did not receive all messages. Messages received: {0}",string.Join(",",receivedList.OrderBy(i=>i)));
+                _log.Error("Did not receive all messages. Messages sent but NOT received: {0}", string.Join(",", sentList.Except(receivedList).OrderBy(i => i)));
+
+                var parts = await router.GetPartitionsInfo(topic);
+                _log.Error("Offsets fetched: [{0}]", string.Join(",",parts.Select(p=>p.ToString())));
+            }
+
+            Assert.AreEqual(sentList.Count, receivedList.Count);
 
         }
 

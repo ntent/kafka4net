@@ -202,7 +202,7 @@ namespace kafka4net.ConsumerImpl
                         // Usually reason of fetch to time out is broker closing Tcp socket.
                         // Due to Tcp specifics, there are situations when closed connection can not be detected, 
                         // thus we need to implement timeout to detect it and restart connection.
-                        _log.Info("Fetch #{0} timed out {1}", _id, this);
+                        _log.Info("#{0} Fetch timed out {1}", _id, this);
 
                         // Continue so that socket exception happen and handle exception
                         // in uniform way
@@ -210,13 +210,13 @@ namespace kafka4net.ConsumerImpl
                     }
                     catch (SocketException e)
                     {
-                        _log.Info(e, "Connection failed. {0}", e.Message);
+                        _log.Info(e, "#{0} Connection failed. {1}", _id, e.Message);
                         observer.OnError(e);
                         return;
                     }
                     catch (Exception e)
                     {
-                        _log.Error(e, "Fetcher failed");
+                        _log.Error(e, "#{0} Fetcher failed",_id);
                         observer.OnError(e);
                         return;
                     }

@@ -62,14 +62,23 @@ namespace kafka4net.Internal
                     if (state.Item3 == ErrorCode.NoError)
                     {
                          if (_failedList.ContainsKey(key))
-                            _failedList.Remove(key);
+                         {
+                             _log.Info("Partition {0}-{1} is recovered. Removing from failed list.", state.Item1, state.Item2);
+                             _failedList.Remove(key);
+                         }
                     }
                     else
                     {
                         if (!_failedList.ContainsKey(key))
+                        {
+                            _log.Info("Partition {0}-{1} is in error state {2}. Adding to failed list.", state.Item1, state.Item2, state.Item3);
                             _failedList.Add(key, state.Item3);
+                        }
                         else
+                        {
+                            _log.Info("Partition {0}-{1} is updated but still errored. Updating ErrorCode in failed list.", state.Item1, state.Item2);
                             _failedList[key] = state.Item3;
+                        }
                     }
                 },
                 ex => _log.Error(ex, "Error thrown in PartitionStateChanges subscription!"));
@@ -126,17 +135,32 @@ namespace kafka4net.Internal
 
                 if (_log.IsDebugEnabled)
                 {
-                    var str = new StringBuilder();
-                    foreach (var leader in healedPartitions.GroupBy(p => p.Item3, p => p, (i, tuples) => new { Leader = i, Topics = tuples.GroupBy(t => t.Item1) }))
+                    if (healedPartitions.Length == 0)
                     {
-                        str.AppendFormat(" Leader: {0}\n", leader.Leader);
-                        foreach (var topic1 in leader.Topics)
-                        {
-                            str.AppendFormat("  Topic: {0} ", topic1.Key);
-                            str.AppendFormat("[{0}]\n", string.Join(",", topic1.Select(t => t.Item2)));
-                        }
+                        _log.Debug("Out of {0} partitions returned from broker {2}, none of the {3} errored partitions are healed. Current partition states for errored partitions: [{1}]",
+                            response.Topics.SelectMany(t => t.Partitions).Count(),
+                            string.Join(",", response.Topics
+                                .SelectMany(t => t.Partitions.Select(p => new { t.TopicName, t.TopicErrorCode, PartitionId = p.Id, PartitionErrorCode = p.ErrorCode }))
+                                .Where(p => _failedList.ContainsKey(new Tuple<string, int>(p.TopicName, p.PartitionId)))
+                                .Select(p => string.Format("{0}:{1}:{2}:{3}", p.TopicName, p.TopicErrorCode, p.PartitionId, p.PartitionErrorCode))),
+                            broker,
+                            _failedList.Count
+                            );
                     }
-                    _log.Debug("Healed partitions found (will check broker availability):\n{0}", str.ToString());
+                    else
+                    {
+                        var str = new StringBuilder();
+                        foreach (var leader in healedPartitions.GroupBy(p => p.Item3, p => p, (i, tuples) => new { Leader = i, Topics = tuples.GroupBy(t => t.Item1) }))
+                        {
+                            str.AppendFormat(" Leader: {0}\n", leader.Leader);
+                            foreach (var topic1 in leader.Topics)
+                            {
+                                str.AppendFormat("  Topic: {0} ", topic1.Key);
+                                str.AppendFormat("[{0}]\n", string.Join(",", topic1.Select(t => t.Item2)));
+                            }
+                        }
+                        _log.Debug("Healed partitions found (will check broker availability):\n{0}", str.ToString());
+                    }
                 }
 
                 //
