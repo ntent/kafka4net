@@ -73,7 +73,7 @@ namespace kafka4net
         /// <summary>
         /// Observable list of Brokers. 
         /// </summary>
-        private readonly Subject<BrokerMeta> _newBrokerSubject = new Subject<BrokerMeta>();
+        private readonly ISubject<BrokerMeta,BrokerMeta> _newBrokerSubject;
         internal IObservable<BrokerMeta> NewBrokers { get { return _newBrokerSubject.AsObservable(); } } 
         
         readonly CancellationTokenSource _cancel = new CancellationTokenSource();
@@ -96,6 +96,7 @@ namespace kafka4net
 
             // build a subject that relays any changes to a partition's error state to anyone observing.
             _partitionStateChangesSubject = BuildPartitionStateChangeSubject();
+            _newBrokerSubject = BuildnewBrokersSubject();
 
             _inBatchCount.Subscribe(c => _log.Debug("#{0} InBatchCount: {1}", _id, c));
         }
@@ -127,6 +128,30 @@ namespace kafka4net
             {
                 _log.Debug("#{0} Closed", _id);
             }
+        }
+
+        /// <summary>
+        /// Compose a Subject that tracks the ready state for each topic/partiion. Always replay the most recent state for any topic/partition
+        /// </summary>
+        /// <returns></returns>
+        private ISubject<BrokerMeta,BrokerMeta> BuildnewBrokersSubject()
+        {
+            var subj = new Subject<BrokerMeta>();
+            var pipeline =
+                // group by BrokerMeta
+                subj.GroupBy(e => e).
+                // select 
+                Select(g =>
+                {
+                    // we only want one per Broker
+                    var gg = g.DistinctUntilChanged().Replay(1, Scheduler);
+                    gg.Connect();
+                    return gg;
+                }).
+                Replay(Scheduler);
+            pipeline.Connect();
+            var pipeline2 = pipeline.Merge();
+            return Subject.Create(subj, pipeline2);
         }
 
         /// <summary>
@@ -260,48 +285,84 @@ namespace kafka4net
 
         /// <summary>
         /// Get list of partitions and their head and tail offsets. 
-        /// If partition is empty, head is -1.
+        /// If partition is empty, head is the same as tail representing the offset of the next message to read.
         /// Tail is pointing to the offest AFTER the last message, i.e. offset of the message to be written next.
+        /// Subtracting Head from Tail will yield the size of the topic.
         /// </summary>
         /// <param name="topic"></param>
         /// <returns></returns>
         public async Task<PartitionInfo[]> GetPartitionsInfo(string topic)
         {
+
             var ret = await await Scheduler.Ask(async () => {
-                // get partition list
-                await GetOrFetchMetaForTopic(topic);
-                var parts = _topicPartitionMap[topic].
-                    Select(p => new OffsetRequest.PartitionData {
-                        Id = p.Id,
-                        Time = (long)ConsumerStartLocation.TopicTail
-                    }).ToArray();
+                var numAttempts = -1;
+                while (!_cancel.IsCancellationRequested)
+                {
+                    numAttempts++;
+                    bool retry;
+                    Exception exception;
+                    try
+                    {
+                        // get partition list
+                        await GetOrFetchMetaForTopic(topic);
+                        var parts = _topicPartitionMap[topic].
+                            Select(p => new OffsetRequest.PartitionData {
+                                Id = p.Id,
+                                Time = (long)ConsumerStartLocation.TopicTail
+                            }).ToArray();
 
-                // group parts by broker
-                var requests = (
-                    from part in parts
-                    let broker = FindBrokerMetaForPartitionId(topic, part.Id)
-                    group part by broker into brokerGrp
-                    let req = new OffsetRequest { TopicName = topic, Partitions = brokerGrp.ToArray() }
-                    select _protocol.GetOffsets(req, brokerGrp.Key.Conn)
-                ).ToArray();
+                        // group parts by broker
+                        var requests = (
+                            from part in parts
+                            let broker = FindBrokerMetaForPartitionId(topic, part.Id)
+                            group part by broker into brokerGrp
+                            let req = new OffsetRequest { TopicName = topic, Partitions = brokerGrp.ToArray() }
+                            select _protocol.GetOffsets(req, brokerGrp.Key.Conn)
+                            ).ToArray();
 
-                await Task.WhenAll(requests);
+                        await Task.WhenAll(requests);
 
-                // TODO: handle recoverable errors, such as tcp transport exceptions (with limited retry)
-                // or partition relocation
-                // TODO: handler error codes
-                if(requests.Any(r => r.IsFaulted))
-                    throw new AggregateException("Failure when getting offsets info", requests.Where(r => r.IsFaulted).Select(r => r.Exception));
+                        // handle recoverable errors, such as tcp transport exceptions (with limited retry)
+                        // or partition relocation error codes
+                        if(requests.Any(r => r.IsFaulted))
+                            throw new AggregateException("Failure when getting offsets info", requests.Where(r => r.IsFaulted).Select(r => r.Exception));
 
-                return (
-                    from r in requests
-                    from part in r.Result.Partitions
-                    select new PartitionInfo { 
-                        Partition = part.Partition, 
-                        Head = part.Offsets.Length == 1 ? -1 : part.Offsets[1], 
-                        Tail = part.Offsets[0] 
+                        var partitions = (from r in requests
+                                         from part in r.Result.Partitions
+                                         select part).ToArray();
+
+                        if (partitions.Any(p=>p.ErrorCode != ErrorCode.NoError))
+                            throw new Exception(string.Format("Partition Errors: [{0}]", string.Join(",", partitions.Select(p=>p.Partition + ":" + p.ErrorCode))));
+
+                        //if (partitions.Any(p => (p.Offsets.Length == 1 ? -1 : p.Offsets[1])==-1))
+                        //    throw new Exception(string.Format("Partition Head Offset is -1 for partition(s): [{0}]", string.Join(",", partitions.Select(p => p.Partition + ":" + (p.Offsets.Length == 1 ? -1 : p.Offsets[1])))));
+
+                        return (
+                            from part in partitions
+                            select new PartitionInfo { 
+                                Partition = part.Partition,
+                                Head = part.Offsets.Length == 1 ? part.Offsets[0] : part.Offsets[1], 
+                                Tail = part.Offsets[0]
+                            }).ToArray();
                     }
-                ).ToArray();
+                    catch (Exception ex)
+                    {
+                        retry = numAttempts < 4;
+                        exception = ex;
+                    }
+   
+                    if (retry)
+                    {
+                        _log.Warn("Could not fetch offsets for topic {0}. Will Retry. Message: {1}", topic, exception.Message);
+                        await Task.Delay(TimeSpan.FromSeconds(1));
+                    }
+                    else
+                    {
+                        _log.Fatal(exception, "Could not fetch offsets for topic {0} after 4 attempts! Failing call.", topic);
+                        throw exception;
+                    }
+                }
+                throw new TaskCanceledException();
             });
 
             return ret;
@@ -393,7 +454,10 @@ namespace kafka4net
                     {
                         case BrokerState.Disconnected:
                             // TODO: make OnPermError accepting IList or IEnumerable?
-                            publisher.OnPermError(new BrokerException("Router is not connected"), batch.ToArray());
+                            if (publisher.OnPermError != null)
+                                publisher.OnPermError(new BrokerException("Router is not connected"), batch.ToArray());
+                            else
+                                _log.Fatal("Error in SendBatch. BrokerState is Disconnected, and no OnPermError handler available. batch of {0} items is being lost!", batch.Count);
                             break;
                         case BrokerState.Connecting:
                             // TODO:

@@ -250,10 +250,49 @@ namespace tests
         }
 
         [Test]
+        public async void ListenerOnNonExistentTopicWaitsForTopicCreation()
+        {
+            const int numMessages = 400;
+            var topic = "topic." + _rnd.Next();
+            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses,topic,ConsumerStartLocation.TopicHead));
+            await consumer.ConnectAsync();
+            var cancelSubject = new Subject<bool>();
+            var receivedValuesTask = consumer
+                .Select(msg=>BitConverter.ToInt32(msg.Value, 0))
+                .Do(val=>_log.Info("Received: {0}", val))
+                .Take(numMessages)
+                .TakeUntil(cancelSubject)
+                .ToList().ToTask();
+            //receivedValuesTask.Start();
+
+            // wait a couple seconds for things to "stabilize"
+            await Task.Delay(TimeSpan.FromSeconds(4));
+
+            // now produce 400 messages
+            var router = new Router(_seedAddresses);
+            await router.ConnectAsync();
+            var producer = new Publisher(topic);
+            producer.Connect(router);
+            Enumerable.Range(1, numMessages).
+                Select(i => new Message() { Value = BitConverter.GetBytes(i) }).
+                ForEach(producer.Send);
+            await producer.Close();
+
+            // wait another little while, and stop the producer.
+            await Task.Delay(TimeSpan.FromSeconds(2));
+
+            cancelSubject.OnNext(true);
+
+            var receivedValues = await receivedValuesTask;
+            Assert.AreEqual(numMessages,receivedValues.Count);
+
+        }
+
+        [Test]
         public async void ListenerRecoveryTest()
         {
-            var count = 400;
-            var topic = "part3";
+            const int count = 400;
+            var topic = "part33." + _rnd.Next();
             var router = new Router(_seedAddresses);
             _log.Debug("Connecting");
             await router.ConnectAsync();
@@ -283,11 +322,13 @@ namespace tests
                 });
 
             _log.Debug("Waiting for receiver complete");
-            var count2 = await received.Take(count).Count().ToTask();
-            Assert.AreEqual(count, count2);
+            var count2 = await received.Take(count).TakeUntil(DateTime.Now.AddSeconds(30)).Count().ToTask();
 
             consumerSubscription.Dispose();
             await consumer.CloseAsync(TimeSpan.FromSeconds(5));
+
+            Assert.AreEqual(count, count2);
+
         }
 
         [Test]
@@ -576,7 +617,7 @@ namespace tests
 
         // Create a new 1-partition topic and sent 100 messages.
         // Read offsets, they should be [0, 100]
-        [Test, Timeout(30*1000)]
+        [Test]
         public async void ReadOffsets()
         {
             var router = new Router(_seedAddresses);
@@ -589,7 +630,7 @@ namespace tests
             // read offsets of empty queue
             var parts = await router.GetPartitionsInfo(topic);
             Assert.AreEqual(1, parts.Length, "Expected just one partition");
-            Assert.AreEqual(-1L, parts[0].Head, "Expected start at -1");
+            Assert.AreEqual(0L, parts[0].Head, "Expected start at 0");
             Assert.AreEqual(0L, parts[0].Tail, "Expected end at 0");
 
             var publisher = new Publisher(topic) { OnSuccess = e => e.ForEach(sentEvents.OnNext)};

@@ -291,6 +291,10 @@ namespace kafka4net.Protocols
         private static string ReadString(MemoryStream stream)
         {
             var len = BigEndianConverter.ReadInt16(stream);
+            // per contract, null string is represented with -1 len.
+            if (len == -1)
+                return null;
+ 
             var buffer = new byte[len];
             stream.Read(buffer, 0, len);
             return Encoding.UTF8.GetString(buffer);
