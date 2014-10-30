@@ -96,6 +96,11 @@ namespace kafka4net
             });
         }
 
+        ///  Provides access to the router for this consumer
+        /// </summary>
+        public Router Router { get { return _router; } }
+
+        /// <summary>
         /// <summary>For every patition, resolve offsets and build TopicPartition object</summary>
         internal async Task<IEnumerable<TopicPartition>> BuildTopicPartitionsAsync()
         {
