@@ -12,7 +12,7 @@ namespace kafka4net.Protocols.Requests
 
         /// <summary>Is not serialized. Is carried through to send error/success notifications
         /// if herror happen</summary>
-        public Publisher Pub;
+        public Producer Pub;
 
         /// <summary>
         /// Not serialized.

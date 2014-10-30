@@ -5,11 +5,11 @@ using System.Threading.Tasks.Dataflow;
 
 namespace kafka4net
 {
-    public class Publisher
+    public class Producer
     {
         private static readonly ILogger _log = Logger.GetLogger();
 
-        public readonly PublisherConfiguration Configuration;
+        public readonly ProducerConfiguration Configuration;
         public string Topic { get { return Configuration.Topic; } }
         public Router Router { get { return _router; } }
 
@@ -23,10 +23,10 @@ namespace kafka4net
         private readonly BufferBlock<Message> _sendBuffer;
         private readonly Router _router;
 
-        public Publisher(PublisherConfiguration publisherConfiguration)
+        public Producer(ProducerConfiguration producerConfiguration)
         {
-            Configuration = publisherConfiguration;
-            _router = new Router(publisherConfiguration.SeedBrokers);
+            Configuration = producerConfiguration;
+            _router = new Router(producerConfiguration.SeedBrokers);
             _sendBuffer = new BufferBlock<Message>();
 
             // start up the subscription to the buffer and call SendBatch on the router when a batch is ready.
@@ -38,7 +38,7 @@ namespace kafka4net
                 // TODO: how to check result? Make it failsafe?
                 Subscribe(batch => _router.SendBatch(this, batch), // TODO: how to check result? Make it failsafe?
                 // How to prevent overlap?
-                // Make sure publisher.OnError are fired
+                // Make sure producer.OnError are fired
                     e =>
                     {
                         _log.Fatal("Unexpected error in send buffer: {0}", e.Message);

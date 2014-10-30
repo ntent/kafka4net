@@ -51,7 +51,7 @@ namespace kafka4net
         //
         // message waiting structures
         //
-        private readonly Dictionary<string,List<Tuple<Publisher,Message>>> _noTopicMessageQueue = new Dictionary<string, List<Tuple<Publisher, Message>>>();
+        private readonly Dictionary<string,List<Tuple<Producer,Message>>> _noTopicMessageQueue = new Dictionary<string, List<Tuple<Producer, Message>>>();
         private readonly ActionBlock<string> _topicResolutionQueue;
         private readonly  Dictionary<string,Dictionary<PartitionMeta,WaitQueueRecord>> _waitingMessages = new Dictionary<string, Dictionary<PartitionMeta, WaitQueueRecord>>();
         
@@ -434,7 +434,7 @@ namespace kafka4net
             return brokerMeta;
         }
 
-        internal async Task SendBatch(Publisher publisher, IList<Message> batch)
+        internal async Task SendBatch(Producer producer, IList<Message> batch)
         {
             _inBatchCount.Incr();
             try
@@ -446,16 +446,16 @@ namespace kafka4net
 
                 if (_state == BrokerState.Connecting || _state == BrokerState.Disconnected)
                 {
-                    // group by publisher to send errors in batches
+                    // group by producer to send errors in batches
                     //foreach (var pubGroup in batch.GroupBy(_ => _.Item1))
                     //{
-                    //    var publisher = pubGroup.Key;
+                    //    var producer = pubGroup.Key;
                     switch (_state)
                     {
                         case BrokerState.Disconnected:
                             // TODO: make OnPermError accepting IList or IEnumerable?
-                            if (publisher.OnPermError != null)
-                                publisher.OnPermError(new BrokerException("Router is not connected"), batch.ToArray());
+                            if (producer.OnPermError != null)
+                                producer.OnPermError(new BrokerException("Router is not connected"), batch.ToArray());
                             else
                                 _log.Fatal("Error in SendBatch. BrokerState is Disconnected, and no OnPermError handler available. batch of {0} items is being lost!", batch.Count);
                             break;
@@ -477,13 +477,13 @@ namespace kafka4net
                     //      Timeout => int32
                     //      Partition => int32
                     //      MessageSetSize => int32
-                    var waitingList = new List<Tuple<Publisher, PartitionMeta, Message>>();
+                    var waitingList = new List<Tuple<Producer, PartitionMeta, Message>>();
                     var requests = (
                         from msg in
                             (
                                 // extend message with broker and partition info
                                 from msg in batch
-                                let brokerPart = FindBrokerAndPartition(msg, publisher, waitingList)
+                                let brokerPart = FindBrokerAndPartition(msg, producer, waitingList)
                                 // Messages without known partition are sent to retry by FindBrokerAndPartition()
                                 // so just skip them here
                                 where brokerPart != null
@@ -495,19 +495,19 @@ namespace kafka4net
                             select new ProduceRequest
                             {
                                 Broker = routeGrp.Key,
-                                RequiredAcks = publisher.Configuration.RequiredAcks,
-                                Timeout = (int)publisher.Configuration.ProduceRequestTimeoutMs,
+                                RequiredAcks = producer.Configuration.RequiredAcks,
+                                Timeout = (int)producer.Configuration.ProduceRequestTimeoutMs,
                                 TopicData = new[] 
                                 {
                                     new TopicData {
-                                        TopicName = publisher.Topic,
+                                        TopicName = producer.Topic,
                                         PartitionsData = (
                                             from msg in routeGrp
                                             // group messages belonging to the same partition
                                             group msg by msg.Part
                                             into partitionGrp
                                             select new PartitionData {
-                                                Pub = publisher,
+                                                Pub = producer,
                                                 OriginalMessages = partitionGrp.Select(m => m.Msg).ToArray(),
                                                 Partition = partitionGrp.Key.Id,
                                                 Messages = (
@@ -543,7 +543,7 @@ namespace kafka4net
         /// </summary>
         /// <param name="waitingList">If partition is not found, null will be returned but message is enqueued onto this list for further resolution.</param>
         /// <returns>Null if metadata for this topic not found</returns>
-        private Tuple<BrokerMeta,PartitionMeta> FindBrokerAndPartition(Message msg, Publisher pub, List<Tuple<Publisher,PartitionMeta,Message>> waitingList)
+        private Tuple<BrokerMeta,PartitionMeta> FindBrokerAndPartition(Message msg, Producer pub, List<Tuple<Producer,PartitionMeta,Message>> waitingList)
         {
             PartitionMeta[] parts;
             var topic = pub.Topic;
@@ -722,13 +722,13 @@ resend:
             }
         }
 
-        internal void EnqueueToTopicResolutionQueue(Message msg, Publisher pub, string topic)
+        internal void EnqueueToTopicResolutionQueue(Message msg, Producer pub, string topic)
         {
             Scheduler.Schedule(() =>
             {
                 if (!_noTopicMessageQueue.ContainsKey(topic))
                 {
-                    _noTopicMessageQueue.Add(topic, new List<Tuple<Publisher,Message>> { Tuple.Create(pub, msg) });
+                    _noTopicMessageQueue.Add(topic, new List<Tuple<Producer,Message>> { Tuple.Create(pub, msg) });
                     _topicResolutionQueue.Post(topic);
                 }
                 else
@@ -817,7 +817,7 @@ resend:
             });
         }
 
-        private void PutMessagesIntoWaitingQueue(List<Tuple<Publisher,PartitionMeta,Message>> messages)
+        private void PutMessagesIntoWaitingQueue(List<Tuple<Producer,PartitionMeta,Message>> messages)
         {
             (
                 from message in messages
@@ -991,7 +991,7 @@ resend:
 
         class WaitQueueRecord {
             public List<Message> Messages = new List<Message>();
-            public Publisher Pub;
+            public Producer Pub;
         }
 
         public string[] GetAllTopics()

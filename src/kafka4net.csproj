@@ -52,7 +52,7 @@
     </Reference>
   </ItemGroup>
   <ItemGroup>
-    <Compile Include="PublisherConfiguration.cs" />
+    <Compile Include="ProducerConfiguration.cs" />
     <Compile Include="ConsumerConfiguration.cs" />
     <Compile Include="ConsumerImpl\TopicPartitionOffsets.cs" />
     <Compile Include="PartitionInfo.cs" />
@@ -86,7 +86,7 @@
     <Compile Include="Metadata\PartitionMeta.cs" />
     <Compile Include="Metadata\TopicMeta.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
-    <Compile Include="Publisher.cs" />
+    <Compile Include="Producer.cs" />
     <Compile Include="ReceivedMessage.cs" />
     <Compile Include="Router.cs" />
     <Compile Include="Utils\AskEx.cs" />

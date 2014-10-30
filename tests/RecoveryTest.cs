@@ -83,30 +83,30 @@ namespace tests
 
         // If failed to connect, messages are errored
 
-        // if topic does not exists, it is created when publisher connects
+        // if topic does not exists, it is created when producer connects
         [Test]
-        public async void TopicIsAutocreatedByPublisher()
+        public async void TopicIsAutocreatedByProducer()
         {
             var topic ="autocreate.test." + _rnd.Next();
-            const int publishedCount = 10;
+            const int producedCount = 10;
             var lala = Encoding.UTF8.GetBytes("la-la-la");
             // TODO: set wait to 5sec
 
             //
-            // Publish
-            // In order to make sure that topic was created by publisher, send and wait for publisher
+            // Produce
+            // In order to make sure that topic was created by producer, send and wait for producer
             // completion before performing validation read.
             //
-            var publisher = new Publisher(new PublisherConfiguration(_seedAddresses,topic));
+            var producer = new Producer(new ProducerConfiguration(_seedAddresses,topic));
 
-            await publisher.ConnectAsync();
+            await producer.ConnectAsync();
 
-            _log.Debug("Publishing...");
+            _log.Debug("Producing...");
             await Observable.Interval(TimeSpan.FromSeconds(1)).
-                Take(publishedCount).
-                Do(_ => publisher.Send(new Message { Value = lala })).
+                Take(producedCount).
+                Do(_ => producer.Send(new Message { Value = lala })).
                 ToTask();
-            await publisher.Close(TimeSpan.FromSeconds(10));
+            await producer.Close(TimeSpan.FromSeconds(10));
 
             //
             // Validate by reading published messages
@@ -122,9 +122,9 @@ namespace tests
                 Subscribe();
 
             _log.Debug("Waiting for consumer");
-            await consumer.OnMessageArrived.Take(publishedCount).TakeUntil(DateTimeOffset.Now.AddSeconds(5)).LastOrDefaultAsync().ToTask();
+            await consumer.OnMessageArrived.Take(producedCount).TakeUntil(DateTimeOffset.Now.AddSeconds(5)).LastOrDefaultAsync().ToTask();
 
-            Assert.AreEqual(publishedCount, receivedTxt.Count, "Did not received all messages");
+            Assert.AreEqual(producedCount, receivedTxt.Count, "Did not received all messages");
             Assert.IsTrue(receivedTxt.All(m => m == "la-la-la"), "Unexpected message content");
 
             consumerSubscription.Dispose();
@@ -146,7 +146,7 @@ namespace tests
         //    // Consumer must validate that messages were sent in order and all were received
         //}
 
-        // consumer sees the same messages as publisher
+        // consumer sees the same messages as producer
 
         // if leader goes down, messages keep being accepted 
         // and are committed (can be read) within (5sec?)
@@ -156,10 +156,10 @@ namespace tests
         {
             const string topic = "part33";
 
-            var publisher = new Publisher(new PublisherConfiguration(_seedAddresses, topic)) { OnSuccess = msgs => _log.Debug("Sent {0} messages", msgs.Length) };
-            await publisher.ConnectAsync();
+            var producer = new Producer(new ProducerConfiguration(_seedAddresses, topic)) { OnSuccess = msgs => _log.Debug("Sent {0} messages", msgs.Length) };
+            await producer.ConnectAsync();
 
-            if (!publisher.Router.GetAllTopics().Contains(topic))
+            if (!producer.Router.GetAllTopics().Contains(topic))
                 VagrantBrokerUtil.CreateTopic(topic, 3, 3);
 
             var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic));
@@ -184,8 +184,8 @@ namespace tests
             Observable.Interval(TimeSpan.FromMilliseconds(200)).
                 Take(postCount).
                 Subscribe(
-                    i => publisher.Send(new Message { Value = Encoding.UTF8.GetBytes("msg " + i) }),
-                    () => Console.WriteLine("Publisher complete")
+                    i => producer.Send(new Message { Value = Encoding.UTF8.GetBytes("msg " + i) }),
+                    () => Console.WriteLine("Producer complete")
                 );
 
             // wait for first 50 messages to arrive
@@ -201,10 +201,10 @@ namespace tests
 
             sender2.Subscribe(
                     i => {
-                        publisher.Send(new Message { Value = Encoding.UTF8.GetBytes("msg #2 " + i) });
+                        producer.Send(new Message { Value = Encoding.UTF8.GetBytes("msg #2 " + i) });
                         _log.Debug("Sent msg #2 {0}", i);
                     },
-                    () => Console.WriteLine("Publisher #2 complete")
+                    () => Console.WriteLine("Producer #2 complete")
                 );
 
             _log.Debug("Waiting for #2 sender to complete");
@@ -216,7 +216,7 @@ namespace tests
             Assert.AreEqual(postCount + postCount2, received.Count);
             consumerSubscription.Dispose();
             await consumer.CloseAsync(TimeSpan.FromSeconds(5));
-            await publisher.Close(TimeSpan.FromSeconds(5));
+            await producer.Close(TimeSpan.FromSeconds(5));
 
             _log.Debug("Done");
         }
@@ -241,7 +241,7 @@ namespace tests
             await Task.Delay(TimeSpan.FromSeconds(4));
 
             // now produce 400 messages
-            var producer = new Publisher(new PublisherConfiguration(_seedAddresses,topic));
+            var producer = new Producer(new ProducerConfiguration(_seedAddresses,topic));
             await producer.ConnectAsync();
             Enumerable.Range(1, numMessages).
                 Select(i => new Message { Value = BitConverter.GetBytes(i) }).
@@ -269,7 +269,7 @@ namespace tests
             var topic = "part33." + _rnd.Next();
             VagrantBrokerUtil.CreateTopic(topic,6,3);
 
-            var producer = new Publisher(new PublisherConfiguration(_seedAddresses,topic));
+            var producer = new Producer(new ProducerConfiguration(_seedAddresses,topic));
 
             _log.Debug("Connecting");
             await producer.ConnectAsync();
@@ -335,7 +335,7 @@ namespace tests
             var topic = "part33." + _rnd.Next();
             VagrantBrokerUtil.CreateTopic(topic, 6, 3);
 
-            var producer = new Publisher(new PublisherConfiguration(_seedAddresses,topic));
+            var producer = new Producer(new ProducerConfiguration(_seedAddresses,topic));
 
             _log.Debug("Connecting");
             await producer.ConnectAsync();
@@ -387,7 +387,7 @@ namespace tests
             var topic = "part33." + _rnd.Next();
             VagrantBrokerUtil.CreateTopic(topic, 6, 3);
 
-            var producer = new Publisher(new PublisherConfiguration(_seedAddresses,topic));
+            var producer = new Producer(new ProducerConfiguration(_seedAddresses,topic));
             _log.Debug("Connecting");
             await producer.ConnectAsync();
 
@@ -408,7 +408,7 @@ namespace tests
             _log.Info("Producer closed, starting consumer subscription.");
 
             var messagesInTopic = (int)parts.Select(p => p.Tail - p.Head).Sum();
-            _log.Info("Topic offsets indicate publisher sent {0} messages.", messagesInTopic);
+            _log.Info("Topic offsets indicate producer sent {0} messages.", messagesInTopic);
 
 
             var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, ConsumerStartLocation.TopicHead, maxBytesPerFetch: 4 * 8));
@@ -458,10 +458,10 @@ namespace tests
             const string topic = "shutdown.test";
 
             // set producer long batching period, 20 sec
-            var producer = new Publisher(new PublisherConfiguration(_seedAddresses, topic, TimeSpan.FromSeconds(20), int.MaxValue))
+            var producer = new Producer(new ProducerConfiguration(_seedAddresses, topic, TimeSpan.FromSeconds(20), int.MaxValue))
             {
                 OnTempError = tmpErrored => { },
-                OnPermError = (e, messages) => Console.WriteLine("Publisher error: {0}", e.Message),
+                OnPermError = (e, messages) => Console.WriteLine("Producer error: {0}", e.Message),
                 OnShutdownDirty = dirtyShutdown => Console.WriteLine("Dirty shutdown"), 
                 OnSuccess = success => { },
             };
@@ -534,7 +534,7 @@ namespace tests
             });
 
             // sender is configured with 50ms batch period
-            var producer = new Publisher(new PublisherConfiguration(_seedAddresses,topicName,TimeSpan.FromMilliseconds(50)));
+            var producer = new Producer(new ProducerConfiguration(_seedAddresses,topicName,TimeSpan.FromMilliseconds(50)));
             await producer.ConnectAsync();
 
             //
@@ -641,13 +641,23 @@ namespace tests
             VagrantBrokerUtil.CreateTopic(topic,3,3);
 
             // fill it out with 10K messages
-            var producer = new Publisher(new PublisherConfiguration(_seedAddresses,topic));
+            const int count = 10*1000;
+            var producer = new Producer(new ProducerConfiguration(_seedAddresses,topic));
             await producer.ConnectAsync();
 
+            var sentMessagesObservable = Observable.FromEvent<Message[]>(evtHandler => producer.OnSuccess += evtHandler, evtHandler => { })
+                .SelectMany(msgs=>msgs)
+                .Take(count)
+                .TakeUntil(DateTime.Now.AddSeconds(10))
+                .ToList();
+
             _log.Info("Sending data");
-            Enumerable.Range(1, 10 * 1000).
+            Enumerable.Range(1, count).
                 Select(i => new Message { Value = BitConverter.GetBytes(i) }).
                 ForEach(producer.Send);
+
+            var sentMsgs = await sentMessagesObservable;
+            _log.Info("Producer sent {0} messages.",sentMsgs.Count);
 
             // consume tail-300 for each partition
             var offsets = (await producer.Router.FetchPartitionsInfo(topic)).ToDictionary(p => p.Partition);
@@ -683,7 +693,7 @@ namespace tests
             VagrantBrokerUtil.CreateTopic(topic,3,2);
 
             // fill it out with 100 messages
-            var producer = new Publisher(new PublisherConfiguration(_seedAddresses,topic));
+            var producer = new Producer(new ProducerConfiguration(_seedAddresses,topic));
             await producer.ConnectAsync();
 
             _log.Info("Sending data");
@@ -726,11 +736,11 @@ namespace tests
             var topic = "part12." + _rnd.Next();
             VagrantBrokerUtil.CreateTopic(topic,1,2);
 
-            var publisher = new Publisher(new PublisherConfiguration(_seedAddresses,topic)) { OnSuccess = e => e.ForEach(sentEvents.OnNext)};
-            await publisher.ConnectAsync();
+            var producer = new Producer(new ProducerConfiguration(_seedAddresses,topic)) { OnSuccess = e => e.ForEach(sentEvents.OnNext)};
+            await producer.ConnectAsync();
 
             // read offsets of empty queue
-            var parts = await publisher.Router.FetchPartitionsInfo(topic);
+            var parts = await producer.Router.FetchPartitionsInfo(topic);
             Assert.AreEqual(1, parts.Length, "Expected just one partition");
             Assert.AreEqual(0L, parts[0].Head, "Expected start at 0");
             Assert.AreEqual(0L, parts[0].Tail, "Expected end at 0");
@@ -739,16 +749,16 @@ namespace tests
             // send 100 messages
             Enumerable.Range(1, 100).
                 Select(i => new Message { Value = BitConverter.GetBytes(i) }).
-                ForEach(publisher.Send);
+                ForEach(producer.Send);
             _log.Info("Waiting for 100 sent messages");
             sentEvents.Subscribe(msg => _log.Debug("Sent {0}", BitConverter.ToInt32(msg.Value, 0)));
             await sentEvents.Take(100).ToTask();
 
             // re-read offsets after messages published
-            parts = await publisher.Router.FetchPartitionsInfo(topic);
+            parts = await producer.Router.FetchPartitionsInfo(topic);
 
-            _log.Info("Closing publisher");
-            await publisher.Close(TimeSpan.FromSeconds(5));
+            _log.Info("Closing producer");
+            await producer.Close(TimeSpan.FromSeconds(5));
 
             Assert.AreEqual(1, parts.Length, "Expected just one partition");
             Assert.AreEqual(0, parts[0].Partition, "Expected the only partition with Id=0");

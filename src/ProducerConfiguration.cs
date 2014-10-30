@@ -3,10 +3,10 @@ using System.Threading;
 
 namespace kafka4net
 {
-    public class PublisherConfiguration
+    public class ProducerConfiguration
     {
         /// <summary>
-        /// Short constructor for PublisherConfiguration. Defaults used for not specified settings.
+        /// Short constructor for ProducerConfiguration. Defaults used for not specified settings.
         /// Default values are:
         ///     RequiredAcks: 1
         ///     Timeout: 1s
@@ -17,7 +17,7 @@ namespace kafka4net
         /// <example>192.168.56.10,192.168.56.20:8081,broker3.local.net:8181</example>
         /// </param>
         /// <param name="topic"></param>
-        public PublisherConfiguration(
+        public ProducerConfiguration(
             string seedBrokers,
             string topic)
         {
@@ -30,7 +30,7 @@ namespace kafka4net
         }
 
         /// <summary>
-        /// Full constructor for PublisherConfiguration. Specify all settings.
+        /// Full constructor for ProducerConfiguration. Specify all settings.
         /// Default values are:
         ///     RequiredAcks: 1
         ///     Timeout: 1s
@@ -42,7 +42,7 @@ namespace kafka4net
         /// <param name="requiredAcks">Number of Kafka servers required to acknowledge the write for it to be considered successful. Default 1.</param>
         /// <param name="batchFlushTime">Max time to wait before flushing messages. Default 500ms.</param>
         /// <param name="batchFlushSize">Max number of messages to accumulate before flushing messages. Default 1000.</param>
-        public PublisherConfiguration(
+        public ProducerConfiguration(
             string seedBrokers,
             string topic,
             TimeSpan batchFlushTime,
