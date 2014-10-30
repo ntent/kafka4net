@@ -354,6 +354,58 @@ namespace tests
         }
 
         /// <summary>
+        /// Test producer recovery isolated
+        /// </summary>
+        [Test]
+        public async void ProducerRecoveryTest()
+        {
+            const int count = 200;
+            var topic = "part33." + _rnd.Next();
+            VagrantBrokerUtil.CreateTopic(topic, 6, 3);
+            var router = new Router(_seedAddresses);
+            _log.Debug("Connecting");
+            await router.ConnectAsync();
+
+            _log.Debug("Filling out {0}", topic);
+            var producer = new Publisher(topic);
+
+            producer.Connect(router);
+
+            // when we get a confirm back, add to list actually sent.
+            var actuallySentList = new List<int>(200);
+            producer.OnSuccess += msgs => actuallySentList.AddRange(msgs.Select(msg => BitConverter.ToInt32(msg.Value, 0)));
+
+            var sentList = await Observable.Interval(TimeSpan.FromMilliseconds(100))
+                .Select(l => (int)l)
+                .Do(l => { if(l==30) Task.Factory.StartNew(() => VagrantBrokerUtil.StopBroker("broker2"), CancellationToken.None, TaskCreationOptions.None, TaskScheduler.Default); })
+                .Select(i => new Message() { Value = BitConverter.GetBytes(i) })
+                .Take(count)
+                .Do(producer.Send)
+                .Select(msg => BitConverter.ToInt32(msg.Value, 0))
+                .ToList();
+
+
+            _log.Info("Done waiting for sending. Closing producer.");
+            await producer.Close();
+            _log.Info("Producer closed.");
+
+            var parts = await router.GetPartitionsInfo(topic);
+            _log.Info("Sum of offsets: {0}", parts.Select(p => p.Tail - p.Head).Sum());
+            _log.Info("Offsets: [{0}]", string.Join(",", parts.Select(p => p.ToString())));
+
+
+            if (sentList.Count != actuallySentList.Count)
+            {
+                // log some debug info.
+                _log.Error("Did not send all messages. Messages sent but NOT acknowledged: {0}", string.Join(",", sentList.Except(actuallySentList).OrderBy(i => i)));
+            }
+
+            Assert.AreEqual(sentList.Count, actuallySentList.Count);
+            Assert.AreEqual(sentList.Count, parts.Select(p => p.Tail - p.Head).Sum());
+
+        }
+
+        /// <summary>
         /// Test just listener recovery isolated from producer
         /// </summary>
         [Test]
