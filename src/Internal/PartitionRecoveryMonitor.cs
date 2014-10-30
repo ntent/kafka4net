@@ -33,12 +33,18 @@ namespace kafka4net.Internal
         public Task Completion { get { return Task.WhenAll(_recoveryTasks); } }
 
         // keep a list of partitions that are failed, and their broker
-        private readonly Dictionary<Tuple<string,int>,ErrorCode> _failedList = new Dictionary<Tuple<string, int>, ErrorCode>(); 
+        private readonly Dictionary<Tuple<string,int>,ErrorCode> _failedList = new Dictionary<Tuple<string, int>, ErrorCode>();
+
+        static int _idGenerator;
+        readonly int _id;
 
         public PartitionRecoveryMonitor(Router router, Protocol protocol, CancellationToken cancel)
         {
             _protocol = protocol;
             _cancel = cancel;
+            _id = Interlocked.Increment(ref _idGenerator);
+
+            _log.Debug("Created PartitionRecoveryMonitor {0}", this);
 
             // listen for new brokers
             router.NewBrokers.Subscribe(
@@ -85,10 +91,11 @@ namespace kafka4net.Internal
 
         private async Task RecoveryLoop(BrokerMeta broker)
         {
-            _log.Debug("Starting recovery loop on broker: {0}", broker);
+            _log.Debug("{0} Starting recovery loop on broker: {1}", this, broker);
             while (!_cancel.IsCancellationRequested)
             {
-                _log.Debug("RecoveryLoop iterating");
+                //_log.Debug("RecoveryLoop iterating {0}", this);
+
                 //
                 // Check either there is any job for given broker
                 //
@@ -199,6 +206,11 @@ namespace kafka4net.Internal
             }
 
             _log.Debug("RecoveryLoop exiting. Setting completion");
+        }
+
+        public override string ToString()
+        {
+            return string.Format("RecoveryMonitor Id: {0}", _id);
         }
     }
 }

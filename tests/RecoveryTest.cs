@@ -81,28 +81,13 @@ namespace tests
             VagrantBrokerUtil.RestartBrokers();
         }
 
-        //public void TearDown()
-        //{
-        //    _router.Dispose();
-        //}
-
-        //[Test]
-        //public void ConnectionActorTest()
-        //{
-        //    var topic = "autocreate.test." + _rnd.Next();
-        //    var conn = new Transport(_seedAddresses);
-        //    var cmd = new GetMetaForTopicCmd { Topic = topic};
-        //    conn.Post(cmd);
-        //    Thread.Sleep(1000);
-        //}
-
         // If failed to connect, messages are errored
 
-        // if topic does not exists, it is created and pub-sub works
+        // if topic does not exists, it is created when publisher connects
         [Test]
-        public async void TopicIsAutocreated()
+        public async void TopicIsAutocreatedByPublisher()
         {
-            var topic = "autocreate.test." + _rnd.Next();
+            var topic ="autocreate.test." + _rnd.Next();
             var publishedCount = 10;
             var broker = new Router(_seedAddresses);
             await broker.ConnectAsync();
@@ -110,46 +95,37 @@ namespace tests
             // TODO: set wait to 5sec
             var requestTimeout = TimeSpan.FromSeconds(1000);
 
-            var topics = broker.GetTopics().Result.Select(t => t.TopicName);
-            Console.WriteLine("Topics: {0}", string.Join(", ", topics.Take(3)));
-
-            var confirmedSent = new Subject<Message>();
-            var publisher = new Publisher(topic) {
-                OnTempError = tmp => _log.Info("Delayed {0} messages", tmp.Length),
-                OnPermError = (ex, err) => _log.Info("Failed {0} messages: {1}", err.Length, ex.Message),
-                OnShutdownDirty = shutdown => _log.Info("Failed {0} messages", shutdown.Length),
-                OnSuccess = success => { 
-                    success.ToList().ForEach(confirmedSent.OnNext);
-                    _log.Info("Published message '{0}'", string.Join("; ", success.Select(m => Encoding.UTF8.GetString(m.Value)).ToArray()));
-                }
-            };
+            //
+            // Publish
+            // In order to make sure that topic was created by publisher, send and wait for publisher
+            // completion before performing validation read.
+            //
+            var publisher = new Publisher(topic);
             publisher.Connect(broker);
-            
-            // start listening
-            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, maxWaitTimeMs: 1000, minBytesPerFetch: 1));
+
+            _log.Debug("Publishing...");
+            await Observable.Interval(TimeSpan.FromSeconds(1)).
+                Take(publishedCount).
+                Do(_ => publisher.Send(new Message { Value = lala })).
+                ToTask();
+            await publisher.Close();
+            await broker.Close(TimeSpan.FromSeconds(10));
+
+            //
+            // Validate by reading published messages
+            //
+            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, maxWaitTimeMs: 1000, minBytesPerFetch: 1, startLocation: ConsumerStartLocation.TopicHead));
             await consumer.ConnectAsync();
-            var received = new Subject<ReceivedMessage>();
             var receivedTxt = new List<string>();
             var consumerSubscription = consumer.OnMessageArrived.
-                Do(m => _log.Info("Got message")).
-                Subscribe(received.OnNext);
-            
-            received.
                 Select(m => Encoding.UTF8.GetString(m.Value)).
                 Do(m => _log.Info("Received {0}", m)).
+                Synchronize(). // protect receivedTxt
                 Do(receivedTxt.Add).
                 Subscribe();
 
-            // start publishing
-            var pubTask = Observable.Interval(TimeSpan.FromSeconds(1)).Take(publishedCount).
-                Do(_ => publisher.Send(new Message { Value = lala }));
-
-            _log.Info("Waiting for publisher to complete...");
-            pubTask.ToTask().Wait(publishedCount * 1000 + 3000);
-            await publisher.Close();
-            // wait for 3sec for messages to propagate to subscriber
-            _log.Info("Waiting for subscriber to get all messages");
-            received.Take(publishedCount).ToTask().Wait(3000);
+            _log.Debug("Waiting for consumer");
+            await consumer.OnMessageArrived.Take(publishedCount).TakeUntil(DateTimeOffset.Now.AddSeconds(5)).LastOrDefaultAsync().ToTask();
 
             Assert.AreEqual(publishedCount, receivedTxt.Count, "Did not received all messages");
             Assert.IsTrue(receivedTxt.All(m => m == "la-la-la"), "Unexpected message content");
@@ -539,11 +515,11 @@ namespace tests
             Assert.True(received.SetEquals(sent), "Sent and Received set differs");
         }
 
-        [Test]
-        public void DirtyShutdownTest()
-        {
+        //[Test]
+        //public void DirtyShutdownTest()
+        //{
 
-        }
+        //}
 
         [Test]
         public async void KeyedMessagesPreserveOrder()
