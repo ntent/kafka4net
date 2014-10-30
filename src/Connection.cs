@@ -52,23 +52,32 @@ namespace kafka4net
 
         public async Task<TcpClient> GetClient()
         {
-            if (_client != null && !_client.Connected)
+            try
             {
-                _log.Debug("Replacing closed connection {0} with a new one", _client.Client.RemoteEndPoint);
-                _client = null;
+                if (_client != null && !_client.Connected)
+                {
+                    _log.Debug("Replacing closed connection {0} with a new one", _client.Client.RemoteEndPoint);
+                    _client = null;
+                }
+
+                if (_client == null)
+                {
+                    _log.Debug("Opening new connection {0}:{1}", _host, _port);
+
+                    State = ConnState.Connecting;
+                    _client = new TcpClient();
+                    await _client.ConnectAsync(_host, _port);
+                    // TODO: Who and when is going to cancell reading?
+                    _protocol.CorrelateResponseLoop(_client, CancellationToken.None);
+                    State = ConnState.Connected;
+                    return _client;
+                }
             }
-
-            if (_client == null)
+            catch
             {
-                _log.Debug("Opening new connection {0}:{1}", _host, _port);
-
-                State = ConnState.Connecting;
-                _client = new TcpClient();
-                await _client.ConnectAsync(_host, _port);
-                // TODO: Who and when is going to cancell reading?
-                _protocol.CorrelateResponseLoop(_client, CancellationToken.None);
-                State = ConnState.Connected;
-                return _client;
+                // some exception getting a connection, clear what we have for next time.
+                _client = null;
+                throw;
             }
 
             return _client;
