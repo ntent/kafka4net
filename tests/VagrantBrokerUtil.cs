@@ -67,8 +67,15 @@ namespace tests
 
         private static bool IsBrokerResponding(string ip)
         {
-            var client = new TcpClient();
-            return client.ConnectAsync(ip, 9092).Wait(TimeSpan.FromSeconds(2));
+            try
+            {
+                var client = new TcpClient();
+                return client.ConnectAsync(ip, 9092).Wait(TimeSpan.FromSeconds(2));
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         private static void Vagrant(string script)

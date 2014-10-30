@@ -117,7 +117,7 @@ namespace kafka4net
             var partitions = await _router.FetchPartitionsInfo(Topic);
 
             if (_log.IsDebugEnabled)
-                _log.Debug("Consumer for topic {0} got time->offset resolved for location {1}. parts: [{2}]", Topic, Configuration.StartLocation, string.Join(",", partitions.Select(p => string.Format("{0}-{1}", p.Partition, Configuration.StartLocation == ConsumerStartLocation.TopicHead ? p.Head : p.Tail))));
+                _log.Debug("Consumer for topic {0} got time->offset resolved for location {1}. parts: [{2}]", Topic, Configuration.StartLocation, string.Join(",", partitions.OrderBy(p=>p.Partition).Select(p => string.Format("{0}:{1}", p.Partition, Configuration.StartLocation == ConsumerStartLocation.TopicHead ? p.Head : p.Tail))));
 
             return partitions
                 .Where(pm => !_topicPartitions.ContainsKey(pm.Partition))

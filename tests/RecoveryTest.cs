@@ -250,44 +250,98 @@ namespace tests
         }
 
         [Test]
+        public async void ListenerOnNonExistentTopicWaitsForTopicCreation()
+        {
+            const int numMessages = 400;
+            var topic = "topic." + _rnd.Next();
+            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses,topic,ConsumerStartLocation.TopicHead));
+            await consumer.ConnectAsync();
+            var cancelSubject = new Subject<bool>();
+            var receivedValuesTask = consumer.OnMessageArrived
+                .Select(msg=>BitConverter.ToInt32(msg.Value, 0))
+                .Do(val=>_log.Info("Received: {0}", val))
+                .Take(numMessages)
+                .TakeUntil(cancelSubject)
+                .ToList().ToTask();
+            //receivedValuesTask.Start();
+
+            // wait a couple seconds for things to "stabilize"
+            await Task.Delay(TimeSpan.FromSeconds(4));
+
+            // now produce 400 messages
+            var router = new Router(_seedAddresses);
+            await router.ConnectAsync();
+            var producer = new Publisher(topic);
+            producer.Connect(router);
+            Enumerable.Range(1, numMessages).
+                Select(i => new Message() { Value = BitConverter.GetBytes(i) }).
+                ForEach(producer.Send);
+            await producer.Close();
+
+            // wait another little while, and stop the producer.
+            await Task.Delay(TimeSpan.FromSeconds(2));
+
+            cancelSubject.OnNext(true);
+
+            var receivedValues = await receivedValuesTask;
+            Assert.AreEqual(numMessages,receivedValues.Count);
+
+        }
+
+        [Test]
         public async void ListenerRecoveryTest()
         {
-            var count = 400;
-            var topic = "part3";
+            const int count = 200;
+            var topic = "part33." + _rnd.Next();
+            VagrantBrokerUtil.CreateTopic(topic,6,3);
             var router = new Router(_seedAddresses);
             _log.Debug("Connecting");
             await router.ConnectAsync();
 
             _log.Debug("Filling out {0}", topic);
             var producer = new Publisher(topic);
+            var sentList = new List<int>(200);
             producer.Connect(router);
-            Enumerable.Range(1, count).
-                Select(i => new Message() {Value = BitConverter.GetBytes(i)}).
-                ForEach(producer.Send);
-            await producer.Close();
+            Observable.Interval(TimeSpan.FromMilliseconds(100))
+                .Select(l => (int) l)
+                .Select(i => new Message() {Value = BitConverter.GetBytes(i)})
+                .Take(count)
+                .Subscribe(msg=> { producer.Send(msg); sentList.Add(BitConverter.ToInt32(msg.Value, 0)); });
 
             var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, ConsumerStartLocation.TopicHead, maxBytesPerFetch: 4*8));
             await consumer.ConnectAsync();
             var current =0;
             var received = new ReplaySubject<ReceivedMessage>();
             var consumerSubscription = consumer.OnMessageArrived.
-                Subscribe(msg => {
+                Subscribe(async msg => {
                     current++;
-                    if (current == 10)
+                    if (current == 18)
                     {
-                        VagrantBrokerUtil.StopBrokerLeaderForPartition(router, consumer.Topic, msg.Partition);
+                        await Task.Factory.StartNew(() => VagrantBrokerUtil.StopBrokerLeaderForPartition(router, consumer.Topic, msg.Partition), CancellationToken.None, TaskCreationOptions.None, TaskScheduler.Default);
                     }
-
                     received.OnNext(msg);
                     _log.Info("Got: {0}", BitConverter.ToInt32(msg.Value, 0));
                 });
 
-            _log.Debug("Waiting for receiver complete");
-            var count2 = await received.Take(count).Count().ToTask();
-            Assert.AreEqual(count, count2);
+            _log.Info("Waiting for receiver complete");
+            var receivedList = await received.Select(msg => BitConverter.ToInt32(msg.Value, 0)).Take(count).TakeUntil(DateTime.Now.AddSeconds(80)).ToList().ToTask();
 
+            await producer.Close();
             consumerSubscription.Dispose();
             await consumer.CloseAsync(TimeSpan.FromSeconds(5));
+
+            if (sentList.Count != receivedList.Count)
+            {
+                // log some debug info.
+                _log.Error("Did not receive all messages. Messages received: {0}",string.Join(",",receivedList.OrderBy(i=>i)));
+                _log.Error("Did not receive all messages. Messages sent but NOT received: {0}", string.Join(",", sentList.Except(receivedList).OrderBy(i => i)));
+
+                var parts = await router.FetchPartitionsInfo(topic);
+                _log.Error("Offsets fetched: [{0}]", string.Join(",",parts.Select(p=>p.ToString())));
+            }
+
+            Assert.AreEqual(sentList.Count, receivedList.Count);
+
         }
 
         [Test]
@@ -576,7 +630,7 @@ namespace tests
 
         // Create a new 1-partition topic and sent 100 messages.
         // Read offsets, they should be [0, 100]
-        [Test, Timeout(30*1000)]
+        [Test]
         public async void ReadOffsets()
         {
             var router = new Router(_seedAddresses);
@@ -589,7 +643,7 @@ namespace tests
             // read offsets of empty queue
             var parts = await router.FetchPartitionsInfo(topic);
             Assert.AreEqual(1, parts.Length, "Expected just one partition");
-            Assert.AreEqual(-1L, parts[0].Head, "Expected start at -1");
+            Assert.AreEqual(0L, parts[0].Head, "Expected start at 0");
             Assert.AreEqual(0L, parts[0].Tail, "Expected end at 0");
 
             var publisher = new Publisher(topic) { OnSuccess = e => e.ForEach(sentEvents.OnNext)};

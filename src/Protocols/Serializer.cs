@@ -291,6 +291,10 @@ namespace kafka4net.Protocols
         private static string ReadString(MemoryStream stream)
         {
             var len = BigEndianConverter.ReadInt16(stream);
+            // per contract, null string is represented with -1 len.
+            if (len == -1)
+                return null;
+ 
             var buffer = new byte[len];
             stream.Read(buffer, 0, len);
             return Encoding.UTF8.GetString(buffer);
@@ -365,6 +369,16 @@ namespace kafka4net.Protocols
             return WriteMessageLength(stream);
         }
 
+        /// <summary>
+        /// FetchResponse => [TopicName [Partition ErrorCode HighwaterMarkOffset MessageSetSize MessageSet]]
+        ///  TopicName => string
+        ///  Partition => int32
+        ///  ErrorCode => int16
+        ///  HighwaterMarkOffset => int64
+        ///  MessageSetSize => int32
+        /// </summary>
+        /// <param name="buff"></param>
+        /// <returns></returns>
         public static FetchResponse DeserializeFetchResponse(byte[] buff)
         {
             var stream = new MemoryStream(buff);
@@ -394,25 +408,48 @@ namespace kafka4net.Protocols
             return response;
         }
 
+
+        //N.B., MessageSets are not preceded by an int32 like other array elements in the protocol.
+        //
+        //MessageSet => [Offset MessageSize Message]
+        //  Offset => int64
+        //  MessageSize => int32
+        //
+        //Message => Crc MagicByte Attributes Key Value
+        //  Crc => int32
+        //  MagicByte => int8
+        //  Attributes => int8
+        //  Key => bytes
+        //  Value => bytes
         private static IEnumerable<Message> ReadMessageSet(MemoryStream stream)
         {
             // "As an optimization the server is allowed to return a partial message at the end of the message set. 
             // Clients should handle this case"
 
             var messageSetSize = BigEndianConverter.ReadInt32(stream);
-            
-            while (messageSetSize > 0)
+            var remainingMessageSetBytes = messageSetSize;
+
+            while (remainingMessageSetBytes > 0)
             {
                 // we need at least be able to read offset and messageSize
-                if(stream.Position + 8 + 4 > stream.Length)
+                if (remainingMessageSetBytes < + 8 + 4)
+                {
+                    // not enough bytes left. This is a partial message. Skip to the end of the message set.
+                    stream.Position += remainingMessageSetBytes;
                     yield break;
+                }
 
                 var offset = BigEndianConverter.ReadInt64(stream);
                 var messageSize = BigEndianConverter.ReadInt32(stream);
                 
-                // we need to be ale to read message body
-                if(stream.Position + messageSize > stream.Length)
+                // we took 12 bytes there, check again that we have a full message.
+                remainingMessageSetBytes -= 8 + 4;
+                if (remainingMessageSetBytes < messageSize)
+                {
+                    // not enough bytes left. This is a partial message. Skip to the end of the message set.
+                    stream.Position += remainingMessageSetBytes;
                     yield break;
+                }
 
                 // Message
                 var crc = BigEndianConverter.ReadInt32(stream);
@@ -427,11 +464,13 @@ namespace kafka4net.Protocols
                 var computedCrcArray = Crc32.Compute(stream, crcPos, pos - crcPos);
                 var computedCrc = BigEndianConverter.ToInt32(computedCrcArray);
                 if (computedCrc != crc)
+                {
                     throw new BrokerException(string.Format("Corrupt message: Crc does not match. Caclulated {0} but got {1}", computedCrc, crc));
+                }
                 yield return msg;
 
-                // 12 bytes for offset and messageSize flags
-                messageSetSize -= 12 + messageSize;
+                // subtract messageSize of that message from remaining bytes
+                remainingMessageSetBytes -= messageSize;
             }
         }
 
