@@ -495,8 +495,8 @@ namespace kafka4net
                             select new ProduceRequest
                             {
                                 Broker = routeGrp.Key,
-                                RequiredAcks = publisher.Acks,
-                                Timeout = publisher.TimeoutMs,
+                                RequiredAcks = publisher.Configuration.RequiredAcks,
+                                Timeout = (int)publisher.Configuration.ProduceRequestTimeoutMs,
                                 TopicData = new[] 
                                 {
                                     new TopicData {
@@ -957,7 +957,7 @@ resend:
                             } 
                         }
                     };
-                    var response = await _protocol.ProduceRaw(new ProduceRequest {Broker = broker, RequiredAcks = recovered.Pub.Acks, Timeout = recovered.Pub.TimeoutMs, TopicData = new[] {topicData}}, CancellationToken.None);
+                    var response = await _protocol.ProduceRaw(new ProduceRequest {Broker = broker, RequiredAcks = recovered.Pub.Configuration.RequiredAcks, Timeout = recovered.Pub.Configuration.ProduceRequestTimeoutMs, TopicData = new[] {topicData}}, CancellationToken.None);
 
                     var errorCode = response.Topics.Single().Partitions.Single().ErrorCode;
                     if (errorCode == ErrorCode.NoError)

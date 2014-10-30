@@ -103,18 +103,12 @@ namespace tests
         public async void TopicIsAutocreated()
         {
             var topic = "autocreate.test." + _rnd.Next();
-            var publishedCount = 10;
-            var broker = new Router(_seedAddresses);
-            await broker.ConnectAsync();
+            const int publishedCount = 10;
             var lala = Encoding.UTF8.GetBytes("la-la-la");
             // TODO: set wait to 5sec
-            var requestTimeout = TimeSpan.FromSeconds(1000);
-
-            var topics = broker.GetTopics().Result.Select(t => t.TopicName);
-            Console.WriteLine("Topics: {0}", string.Join(", ", topics.Take(3)));
 
             var confirmedSent = new Subject<Message>();
-            var publisher = new Publisher(topic) {
+            var publisher = new Publisher(new PublisherConfiguration(_seedAddresses,topic)) {
                 OnTempError = tmp => _log.Info("Delayed {0} messages", tmp.Length),
                 OnPermError = (ex, err) => _log.Info("Failed {0} messages: {1}", err.Length, ex.Message),
                 OnShutdownDirty = shutdown => _log.Info("Failed {0} messages", shutdown.Length),
@@ -123,10 +117,15 @@ namespace tests
                     _log.Info("Published message '{0}'", string.Join("; ", success.Select(m => Encoding.UTF8.GetString(m.Value)).ToArray()));
                 }
             };
-            publisher.Connect(broker);
+
+            await publisher.ConnectAsync();
+
+            var topics = publisher.Router.GetTopics().Result.Select(t => t.TopicName);
+            Console.WriteLine("Topics: {0}", string.Join(", ", topics.Take(3)));
+
             
             // start listening
-            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, maxWaitTimeMs: 1000, minBytesPerFetch: 1));
+            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, maxWaitTimeMs: 1000));
             await consumer.ConnectAsync();
             var received = new Subject<ReceivedMessage>();
             var receivedTxt = new List<string>();
@@ -146,7 +145,8 @@ namespace tests
 
             _log.Info("Waiting for publisher to complete...");
             pubTask.ToTask().Wait(publishedCount * 1000 + 3000);
-            await publisher.Close();
+            await publisher.Close(TimeSpan.FromSeconds(5));
+
             // wait for 3sec for messages to propagate to subscriber
             _log.Info("Waiting for subscriber to get all messages");
             received.Take(publishedCount).ToTask().Wait(3000);
@@ -181,21 +181,19 @@ namespace tests
         [Test]
         public async void LeaderDownRecovery()
         {
-            var broker = new Router(_seedAddresses);
-            await broker.ConnectAsync();
-
             const string topic = "part33";
-            if(!broker.GetAllTopics().Contains(topic))
-                VagrantBrokerUtil.CreateTopic(topic,3,3);
 
-            var publisher = new Publisher(topic) { OnSuccess = msgs => _log.Debug("Sent {0} messages", msgs.Length) };
-            publisher.Connect(broker);
+            var publisher = new Publisher(new PublisherConfiguration(_seedAddresses, topic)) { OnSuccess = msgs => _log.Debug("Sent {0} messages", msgs.Length) };
+            await publisher.ConnectAsync();
+
+            if (!publisher.Router.GetAllTopics().Contains(topic))
+                VagrantBrokerUtil.CreateTopic(topic, 3, 3);
 
             var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic));
             await consumer.ConnectAsync();
 
-            var postCount = 100;
-            var postCount2 = 50;
+            const int postCount = 100;
+            const int postCount2 = 50;
 
             // read messages
             var received = new List<ReceivedMessage>();
@@ -245,6 +243,7 @@ namespace tests
             Assert.AreEqual(postCount + postCount2, received.Count);
             consumerSubscription.Dispose();
             await consumer.CloseAsync(TimeSpan.FromSeconds(5));
+            await publisher.Close(TimeSpan.FromSeconds(5));
 
             _log.Debug("Done");
         }
@@ -269,14 +268,12 @@ namespace tests
             await Task.Delay(TimeSpan.FromSeconds(4));
 
             // now produce 400 messages
-            var router = new Router(_seedAddresses);
-            await router.ConnectAsync();
-            var producer = new Publisher(topic);
-            producer.Connect(router);
+            var producer = new Publisher(new PublisherConfiguration(_seedAddresses,topic));
+            await producer.ConnectAsync();
             Enumerable.Range(1, numMessages).
-                Select(i => new Message() { Value = BitConverter.GetBytes(i) }).
+                Select(i => new Message { Value = BitConverter.GetBytes(i) }).
                 ForEach(producer.Send);
-            await producer.Close();
+            await producer.Close(TimeSpan.FromSeconds(5));
 
             // wait another little while, and stop the producer.
             await Task.Delay(TimeSpan.FromSeconds(2));
@@ -298,17 +295,17 @@ namespace tests
             const int count = 200;
             var topic = "part33." + _rnd.Next();
             VagrantBrokerUtil.CreateTopic(topic,6,3);
-            var router = new Router(_seedAddresses);
+
+            var producer = new Publisher(new PublisherConfiguration(_seedAddresses,topic));
+
             _log.Debug("Connecting");
-            await router.ConnectAsync();
+            await producer.ConnectAsync();
 
             _log.Debug("Filling out {0}", topic);
-            var producer = new Publisher(topic);
             var sentList = new List<int>(200);
-            producer.Connect(router);
             Observable.Interval(TimeSpan.FromMilliseconds(100))
                 .Select(l => (int) l)
-                .Select(i => new Message() {Value = BitConverter.GetBytes(i)})
+                .Select(i => new Message {Value = BitConverter.GetBytes(i)})
                 .Take(count)
                 .Subscribe(msg=> { producer.Send(msg); sentList.Add(BitConverter.ToInt32(msg.Value, 0)); });
 
@@ -321,7 +318,7 @@ namespace tests
                     current++;
                     if (current == 18)
                     {
-                        await Task.Factory.StartNew(() => VagrantBrokerUtil.StopBrokerLeaderForPartition(router, consumer.Topic, msg.Partition), CancellationToken.None, TaskCreationOptions.None, TaskScheduler.Default);
+                        await Task.Factory.StartNew(() => VagrantBrokerUtil.StopBrokerLeaderForPartition(consumer.Router, consumer.Topic, msg.Partition), CancellationToken.None, TaskCreationOptions.None, TaskScheduler.Default);
                     }
                     received.OnNext(msg);
                     _log.Info("Got: {0}", BitConverter.ToInt32(msg.Value, 0));
@@ -330,8 +327,11 @@ namespace tests
             _log.Info("Waiting for receiver complete");
             var receivedList = await received.Select(msg => BitConverter.ToInt32(msg.Value, 0)).Take(count).TakeUntil(DateTime.Now.AddSeconds(60)).ToList().ToTask();
 
+            // get the offsets for comparison later
+            var parts = await consumer.Router.FetchPartitionsInfo(topic);
+
             _log.Info("Done waiting for receiver. Closing producer.");
-            await producer.Close();
+            await producer.Close(TimeSpan.FromSeconds(5));
             _log.Info("Producer closed, disposing consumer subscription.");
             consumerSubscription.Dispose();
             _log.Info("Consumer subscription disposed. Closing consumer.");
@@ -344,7 +344,6 @@ namespace tests
                 _log.Error("Did not receive all messages. Messages received: {0}",string.Join(",",receivedList.OrderBy(i=>i)));
                 _log.Error("Did not receive all messages. Messages sent but NOT received: {0}", string.Join(",", sentList.Except(receivedList).OrderBy(i => i)));
 
-                var parts = await router.FetchPartitionsInfo(topic);
                 _log.Error("Sum of offsets fetched: {0}", parts.Select(p => p.Tail-p.Head).Sum());
                 _log.Error("Offsets fetched: [{0}]", string.Join(",", parts.Select(p => p.ToString())));
             }
@@ -362,15 +361,13 @@ namespace tests
             const int count = 200;
             var topic = "part33." + _rnd.Next();
             VagrantBrokerUtil.CreateTopic(topic, 6, 3);
-            var router = new Router(_seedAddresses);
+
+            var producer = new Publisher(new PublisherConfiguration(_seedAddresses,topic));
+
             _log.Debug("Connecting");
-            await router.ConnectAsync();
+            await producer.ConnectAsync();
 
             _log.Debug("Filling out {0}", topic);
-            var producer = new Publisher(topic);
-
-            producer.Connect(router);
-
             // when we get a confirm back, add to list actually sent.
             var actuallySentList = new List<int>(200);
             producer.OnSuccess += msgs => actuallySentList.AddRange(msgs.Select(msg => BitConverter.ToInt32(msg.Value, 0)));
@@ -378,18 +375,20 @@ namespace tests
             var sentList = await Observable.Interval(TimeSpan.FromMilliseconds(100))
                 .Select(l => (int)l)
                 .Do(l => { if(l==30) Task.Factory.StartNew(() => VagrantBrokerUtil.StopBroker("broker2"), CancellationToken.None, TaskCreationOptions.None, TaskScheduler.Default); })
-                .Select(i => new Message() { Value = BitConverter.GetBytes(i) })
+                .Select(i => new Message { Value = BitConverter.GetBytes(i) })
                 .Take(count)
                 .Do(producer.Send)
                 .Select(msg => BitConverter.ToInt32(msg.Value, 0))
                 .ToList();
 
 
+            var parts = await producer.Router.FetchPartitionsInfo(topic);
+
             _log.Info("Done waiting for sending. Closing producer.");
-            await producer.Close();
+            await producer.Close(TimeSpan.FromSeconds(5));
             _log.Info("Producer closed.");
 
-            var parts = await router.FetchPartitionsInfo(topic);
+
             _log.Info("Sum of offsets: {0}", parts.Select(p => p.Tail - p.Head).Sum());
             _log.Info("Offsets: [{0}]", string.Join(",", parts.Select(p => p.ToString())));
 
@@ -414,26 +413,27 @@ namespace tests
             const int count = 8000;
             var topic = "part33." + _rnd.Next();
             VagrantBrokerUtil.CreateTopic(topic, 6, 3);
-            var router = new Router(_seedAddresses);
+
+            var producer = new Publisher(new PublisherConfiguration(_seedAddresses,topic));
             _log.Debug("Connecting");
-            await router.ConnectAsync();
-            var producer = new Publisher(topic);
-            producer.Connect(router);
+            await producer.ConnectAsync();
 
             _log.Debug("Filling out {0} with {1} messages", topic, count);
             var sentList = await Enumerable.Range(0, count)
-                .Select(i => new Message() { Value = BitConverter.GetBytes(i) })
+                .Select(i => new Message { Value = BitConverter.GetBytes(i) })
                 .ToObservable()
                 .Do(producer.Send)
                 .Select(msg => BitConverter.ToInt32(msg.Value, 0))
                 .ToList();
 
             await Task.Delay(TimeSpan.FromSeconds(1));
+
+            var parts = await producer.Router.FetchPartitionsInfo(topic);
+
             _log.Info("Done sending messages. Closing producer.");
-            await producer.Close();
+            await producer.Close(TimeSpan.FromSeconds(5));
             _log.Info("Producer closed, starting consumer subscription.");
 
-            var parts = await router.FetchPartitionsInfo(topic);
             var messagesInTopic = (int)parts.Select(p => p.Tail - p.Head).Sum();
             _log.Info("Topic offsets indicate publisher sent {0} messages.", messagesInTopic);
 
@@ -448,7 +448,7 @@ namespace tests
                     current++;
                     if (current == 18)
                     {
-                        await Task.Factory.StartNew(() => VagrantBrokerUtil.StopBrokerLeaderForPartition(router, consumer.Topic, msg.Partition), CancellationToken.None, TaskCreationOptions.None, TaskScheduler.Default);
+                        await Task.Factory.StartNew(() => VagrantBrokerUtil.StopBrokerLeaderForPartition(consumer.Router, consumer.Topic, msg.Partition), CancellationToken.None, TaskCreationOptions.None, TaskScheduler.Default);
                     }
                     received.OnNext(msg);
                     //_log.Info("Got: {0}", BitConverter.ToInt32(msg.Value, 0));
@@ -482,22 +482,19 @@ namespace tests
         [Test]
         public async void CleanShutdownTest()
         {
-            var broker = new Router(_seedAddresses);
-            await broker.ConnectAsync();
             const string topic = "shutdown.test";
 
-            var producer = new Publisher(topic) {
+            // set producer long batching period, 20 sec
+            var producer = new Publisher(new PublisherConfiguration(_seedAddresses, topic, TimeSpan.FromSeconds(20), int.MaxValue))
+            {
                 OnTempError = tmpErrored => { },
                 OnPermError = (e, messages) => Console.WriteLine("Publisher error: {0}", e.Message),
                 OnShutdownDirty = dirtyShutdown => Console.WriteLine("Dirty shutdown"), 
                 OnSuccess = success => { },
-                BatchTime = TimeSpan.FromSeconds(2)
             };
-            producer.Connect(broker);
 
-            // set producer long batching period, 20 sec
-            producer.BatchTime = TimeSpan.FromSeconds(20);
-            producer.BatchSize = int.MaxValue;
+            _log.Debug("Connecting");
+            await producer.ConnectAsync();
 
             // start listener at the end of queue and accumulate received messages
             var received = new HashSet<string>();
@@ -521,9 +518,7 @@ namespace tests
             // shutdown producer in 5 sec
             await Task.Delay(5000);
             producerSubscription.Dispose();
-            await producer.Close();
-
-            await broker.Close(TimeSpan.FromSeconds(4));
+            await producer.Close(TimeSpan.FromSeconds(4));
 
             // how to make sure nothing is sent after shutdown? listen to logger?  have connection events?
 
@@ -548,16 +543,9 @@ namespace tests
         [Test]
         public async void KeyedMessagesPreserveOrder()
         {
-            var routerProducer = new Router(_seedAddresses);
-            await routerProducer.ConnectAsync();
-            
             // create a topic with 3 partitions
-            // TODO: how to skip initialization if topic already exists? Add router.GetAllTopics().Any(...)??? Or make it part of provisioning script?
-            const string topicName = "part33";
-            if(routerProducer.GetAllTopics().All(t => t != topicName))
-            {
-                VagrantBrokerUtil.CreateTopic(topicName, 3, 3);
-            }
+            var topicName = "part33." + _rnd.Next();
+            VagrantBrokerUtil.CreateTopic(topicName, 3, 3);
             
             // create listener in a separate connection/broker
             var receivedMsgs = new List<ReceivedMessage>();
@@ -573,8 +561,8 @@ namespace tests
             });
 
             // sender is configured with 50ms batch period
-            var producer = new Publisher(topicName) { BatchTime = TimeSpan.FromMilliseconds(50)};
-            producer.Connect(routerProducer);
+            var producer = new Publisher(new PublisherConfiguration(_seedAddresses,topicName,TimeSpan.FromMilliseconds(50)));
+            await producer.ConnectAsync();
 
             //
             // generate messages with 100ms interval in 10 threads
@@ -615,7 +603,7 @@ namespace tests
             _log.Info("Closing senders intervals");
             senders.ForEach(s => s.Dispose());
             _log.Info("Closing producer");
-            producer.Close().Wait();
+            await producer.Close(TimeSpan.FromSeconds(5));
 
             // wait for 3 sec for listener to catch up
             _log.Info("Waiting for additional 3sec");
@@ -650,11 +638,9 @@ namespace tests
             Assert.AreEqual(10, keysSent.Count(), "Expected 10 unique keys 0-9");
             Assert.AreEqual(keysSent.Count(), keysReceived.Count(), "Keys count does not match");
             // compare order within each key
-            var notInOrder = Enumerable.Zip(
-                keysSent.OrderBy(k => k.Key),
-                keysReceived.OrderBy(k => k.Key),
-                (s, r) => new { s, r, ok = s.Msgs.SequenceEqual(r.Msgs) }
-            ).Where(_ => !_.ok).ToArray();
+            var notInOrder = keysSent
+                .OrderBy(k => k.Key)
+                .Zip(keysReceived.OrderBy(k => k.Key), (s, r) => new { s, r, ok = s.Msgs.SequenceEqual(r.Msgs) }).Where(_ => !_.ok).ToArray();
 
             if (notInOrder.Any())
             {
@@ -677,27 +663,25 @@ namespace tests
         [Test]
         public async void ExplicitOffset()
         {
-            var router = new Router(_seedAddresses);
-            await router.ConnectAsync();
-
             // create new topic with 3 partitions
-            const string topic = "part33";
-            if(!router.GetAllTopics().Contains(topic))
-                VagrantBrokerUtil.CreateTopic(topic,3,3);
+            var topic = "part33." + _rnd.Next();
+            VagrantBrokerUtil.CreateTopic(topic,3,3);
 
             // fill it out with 10K messages
-            var producer = new Publisher(topic);
-            producer.Connect(router);
+            var producer = new Publisher(new PublisherConfiguration(_seedAddresses,topic));
+            await producer.ConnectAsync();
+
             _log.Info("Sending data");
             Enumerable.Range(1, 10 * 1000).
                 Select(i => new Message { Value = BitConverter.GetBytes(i) }).
                 ForEach(producer.Send);
 
-            _log.Debug("Closing producer");
-            await producer.Close();
-
             // consume tail-300 for each partition
-            var offsets = (await router.FetchPartitionsInfo(topic)).ToDictionary(p => p.Partition);
+            var offsets = (await producer.Router.FetchPartitionsInfo(topic)).ToDictionary(p => p.Partition);
+
+            _log.Debug("Closing producer");
+            await producer.Close(TimeSpan.FromSeconds(5));
+            
             var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, ConsumerStartLocation.SpecifiedLocations, partitionOffsetProvider: p => offsets[p].Tail - 300));
             await consumer.ConnectAsync();
             var messages = consumer.OnMessageArrived.
@@ -721,24 +705,21 @@ namespace tests
         [Test]
         public async void ReadFromHead()
         {
-            var router = new Router(_seedAddresses);
-            await router.ConnectAsync();
-            var count = 100;
-
+            const int count = 100;
             var topic = "part32." + _rnd.Next();
-            await router.ConnectAsync();
             VagrantBrokerUtil.CreateTopic(topic,3,2);
 
             // fill it out with 100 messages
-            var producer = new Publisher(topic);
-            producer.Connect(router);
+            var producer = new Publisher(new PublisherConfiguration(_seedAddresses,topic));
+            await producer.ConnectAsync();
+
             _log.Info("Sending data");
             Enumerable.Range(1, count).
                 Select(i => new Message { Value = BitConverter.GetBytes(i) }).
                 ForEach(producer.Send);
 
             _log.Debug("Closing producer");
-            await producer.Close();
+            await producer.Close(TimeSpan.FromSeconds(5));
 
             // read starting from the head
             var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, ConsumerStartLocation.TopicHead));
@@ -768,21 +749,19 @@ namespace tests
         [Test]
         public async void ReadOffsets()
         {
-            var router = new Router(_seedAddresses);
             var sentEvents = new Subject<Message>();
             var topic = "part12." + _rnd.Next();
-            await router.ConnectAsync();
-            
             VagrantBrokerUtil.CreateTopic(topic,1,2);
 
+            var publisher = new Publisher(new PublisherConfiguration(_seedAddresses,topic)) { OnSuccess = e => e.ForEach(sentEvents.OnNext)};
+            await publisher.ConnectAsync();
+
             // read offsets of empty queue
-            var parts = await router.FetchPartitionsInfo(topic);
+            var parts = await publisher.Router.FetchPartitionsInfo(topic);
             Assert.AreEqual(1, parts.Length, "Expected just one partition");
             Assert.AreEqual(0L, parts[0].Head, "Expected start at 0");
             Assert.AreEqual(0L, parts[0].Tail, "Expected end at 0");
 
-            var publisher = new Publisher(topic) { OnSuccess = e => e.ForEach(sentEvents.OnNext)};
-            publisher.Connect(router);
 
             // send 100 messages
             Enumerable.Range(1, 100).
@@ -791,11 +770,12 @@ namespace tests
             _log.Info("Waiting for 100 sent messages");
             sentEvents.Subscribe(msg => _log.Debug("Sent {0}", BitConverter.ToInt32(msg.Value, 0)));
             await sentEvents.Take(100).ToTask();
-            _log.Info("Closing publisher");
-            await publisher.Close();
 
             // re-read offsets after messages published
-            parts = await router.FetchPartitionsInfo(topic);
+            parts = await publisher.Router.FetchPartitionsInfo(topic);
+
+            _log.Info("Closing publisher");
+            await publisher.Close(TimeSpan.FromSeconds(5));
 
             Assert.AreEqual(1, parts.Length, "Expected just one partition");
             Assert.AreEqual(0, parts[0].Partition, "Expected the only partition with Id=0");

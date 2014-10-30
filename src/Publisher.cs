@@ -1,19 +1,17 @@
 ﻿using System;
-using System.Reactive.Concurrency;
 using System.Reactive.Linq;
 using System.Threading.Tasks;
 using System.Threading.Tasks.Dataflow;
-using kafka4net.Utils;
 
 namespace kafka4net
 {
     public class Publisher
     {
-        internal readonly string Topic;
-        public short Acks = 1;
-        public int TimeoutMs = 1000;
-        public TimeSpan BatchTime = TimeSpan.FromMilliseconds(500);
-        public int BatchSize = 1000;
+        private static readonly ILogger _log = Logger.GetLogger();
+
+        public readonly PublisherConfiguration Configuration;
+        public string Topic { get { return Configuration.Topic; } }
+        public Router Router { get { return _router; } }
 
         public Action<Message[]> OnTempError;
         public Action<Exception, Message[]> OnPermError;
@@ -21,28 +19,24 @@ namespace kafka4net
         public Action<Message[]> OnSuccess;
 
         //public MessageCodec Codec = MessageCodec.CodecNone;
-        readonly TaskCompletionSource<bool> _completion = new TaskCompletionSource<bool>();
-        private BufferBlock<Message> _sendBuffer;
-        static readonly ILogger _log = Logger.GetLogger();
-        private EventLoopScheduler _scheduler;
+        private readonly TaskCompletionSource<bool> _completion = new TaskCompletionSource<bool>();
+        private readonly BufferBlock<Message> _sendBuffer;
+        private readonly Router _router;
 
-        public Publisher(string topic)
+        public Publisher(PublisherConfiguration publisherConfiguration)
         {
-            Topic = topic;
-        }
-
-        public void Connect(Router router)
-        {
-            _scheduler = router.Scheduler;
+            Configuration = publisherConfiguration;
+            _router = new Router(publisherConfiguration.SeedBrokers);
             _sendBuffer = new BufferBlock<Message>();
 
+            // start up the subscription to the buffer and call SendBatch on the router when a batch is ready.
             _sendBuffer.AsObservable().
-                Buffer(BatchTime, BatchSize).
+                Buffer(Configuration.BatchFlushTime, Configuration.BatchFlushSize).
                 Where(b => b.Count > 0). // apparently, Buffer will trigger empty batches too, skip them
-                ObserveOn(_scheduler).  // Important! this needs to be AFTER Buffer call, because buffer execute on timer thread
-                                        // and will ignore ObserveOn
+                ObserveOn(_router.Scheduler).  // Important! this needs to be AFTER Buffer call, because buffer execute on timer thread
+                // and will ignore ObserveOn
                 // TODO: how to check result? Make it failsafe?
-                Subscribe(batch => router.SendBatch(this, batch), // TODO: how to check result? Make it failsafe?
+                Subscribe(batch => _router.SendBatch(this, batch), // TODO: how to check result? Make it failsafe?
                 // How to prevent overlap?
                 // Make sure publisher.OnError are fired
                     e =>
@@ -57,25 +51,31 @@ namespace kafka4net
                     });
         }
 
+        public Task ConnectAsync()
+        {
+            return _router.ConnectAsync();
+        }
+
         public void Send(Message msg)
         {
             _sendBuffer.Post(msg);
         }
 
-        public async Task Close()
+        public async Task Close(TimeSpan timeout)
         {
             _log.Debug("Closing...");
             _sendBuffer.Complete();
             
             //await _sendBuffer.Completion; // apparently it wont wait till sequence is complete
             await _completion.Task.ConfigureAwait(false);
-            
+
+            await _router.Close(timeout);
             _log.Info("Close complete");
         }
 
         public override string ToString()
         {
-            return string.Format("'{0}' Batch time: {1} Batch Size: {2}", Topic, BatchTime, BatchSize);
+            return string.Format("'{0}' Batch flush time: {1} Batch flush size: {2}", Topic, Configuration.BatchFlushTime, Configuration.BatchFlushSize);
         }
     }
 }

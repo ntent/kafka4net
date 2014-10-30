@@ -67,9 +67,9 @@ namespace kafka4net
                     _router.Close(TimeSpan.FromSeconds(1));
                 };
             }).
-                // allow multiple consumers to share the same subscription
-                Publish().
-                RefCount();
+            // allow multiple consumers to share the same subscription
+            Publish().
+            RefCount();
         }
 
         /// <summary>

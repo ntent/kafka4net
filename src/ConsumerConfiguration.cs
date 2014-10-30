@@ -1,6 +1,6 @@
 ﻿using System;
 
-namespace kafka4net.ConsumerImpl
+namespace kafka4net
 {
     /// <summary>
     /// Where to begin consuming. 
