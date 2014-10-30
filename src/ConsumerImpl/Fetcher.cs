@@ -49,7 +49,7 @@ namespace kafka4net.ConsumerImpl
 
             _consumerConfig = consumerConfig;
 
-            _fetchResponses = FetchLoop();
+            _fetchResponses = FetchLoop().Publish().RefCount();
 
             if(_log.IsDebugEnabled)
                 _log.Debug("Created new fetcher #{0} for broker: {1}", _id, _broker);

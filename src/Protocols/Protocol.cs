@@ -5,6 +5,7 @@ using System.Linq;
 using System.Net.Sockets;
 using System.Reactive.Linq;
 using System.Reactive.Threading.Tasks;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using kafka4net.Metadata;
@@ -111,22 +112,30 @@ namespace kafka4net.Protocols
                     if (client.Available > 0)
                         _log.Debug("Still available {0} bytes", client.Available);
 
-                    // TODO: check read==size && read > 4
-                    var correlationId = BigEndianConverter.ToInt32(body);
-                    //_log.Debug("<-{0}\n {1}", correlationId, FormatBytes(body));
-                    //_log.Debug("<-{0}", correlationId);
-
-                    // find correlated action
-                    Action<byte[]> handler;
-                    // TODO: if correlation id is not found, there is a chance of corrupt 
-                    // connection. Maybe recycle the connection?
-                    if (!_corelationTable.TryGetValue(correlationId, out handler))
+                    int correlationId = -1;
+                    try
                     {
-                        _log.Error("Unknown correlationId: " + correlationId);
-                        continue;
+                        // TODO: check read==size && read > 4
+                        correlationId = BigEndianConverter.ToInt32(body);
+                        //_log.Debug("<-{0}\n {1}", correlationId, FormatBytes(body));
+                        //_log.Debug("<-{0}", correlationId);
+
+                        // find correlated action
+                        Action<byte[]> handler;
+                        // TODO: if correlation id is not found, there is a chance of corrupt 
+                        // connection. Maybe recycle the connection?
+                        if (!_corelationTable.TryRemove(correlationId, out handler))
+                        {
+                            _log.Error("Unknown correlationId: " + correlationId);
+                            continue;
+                        }
+                        handler(body);
                     }
-                    handler(body);
-                    // TODO: remove id from correlation table
+                    catch (Exception ex)
+                    {
+                        _log.Error(ex, "Error with handling message. Message bytes:\r\n{0}", FormatBytes(body));
+                        throw;
+                    }
                 }
                 catch (Exception e)
                 {
@@ -318,11 +327,11 @@ namespace kafka4net.Protocols
             }
         }
 
-        //static string FormatBytes(byte[] buff)
-        //{
-        //    return buff.Aggregate(new StringBuilder(), (builder, b) => builder.Append(b.ToString("x2")), 
-        //        str => str.ToString());
-        //}
+        private static string FormatBytes(byte[] buff)
+        {
+            return buff.Aggregate(new StringBuilder(), (builder, b) => builder.Append(b.ToString("x2")),
+                str => str.ToString());
+        }
 
     }
 }

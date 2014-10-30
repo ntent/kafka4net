@@ -304,8 +304,7 @@ namespace kafka4net
                     try
                     {
                         // get partition list
-                        await GetOrFetchMetaForTopic(topic);
-                        var parts = _topicPartitionMap[topic].
+                        var parts = (await GetOrFetchMetaForTopic(topic)).
                             Select(p => new OffsetRequest.PartitionData {
                                 Id = p.Id,
                                 Time = (long)ConsumerStartLocation.TopicTail

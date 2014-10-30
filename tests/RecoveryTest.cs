@@ -288,8 +288,12 @@ namespace tests
 
         }
 
+
+        /// <summary>
+        /// Test listener and producer recovery together
+        /// </summary>
         [Test]
-        public async void ListenerRecoveryTest()
+        public async void ProducerAndListenerRecoveryTest()
         {
             const int count = 200;
             var topic = "part33." + _rnd.Next();
@@ -324,11 +328,15 @@ namespace tests
                 });
 
             _log.Info("Waiting for receiver complete");
-            var receivedList = await received.Select(msg => BitConverter.ToInt32(msg.Value, 0)).Take(count).TakeUntil(DateTime.Now.AddSeconds(80)).ToList().ToTask();
+            var receivedList = await received.Select(msg => BitConverter.ToInt32(msg.Value, 0)).Take(count).TakeUntil(DateTime.Now.AddSeconds(60)).ToList().ToTask();
 
+            _log.Info("Done waiting for receiver. Closing producer.");
             await producer.Close();
+            _log.Info("Producer closed, disposing consumer subscription.");
             consumerSubscription.Dispose();
+            _log.Info("Consumer subscription disposed. Closing consumer.");
             await consumer.CloseAsync(TimeSpan.FromSeconds(5));
+            _log.Info("Consumer closed.");
 
             if (sentList.Count != receivedList.Count)
             {
@@ -337,10 +345,85 @@ namespace tests
                 _log.Error("Did not receive all messages. Messages sent but NOT received: {0}", string.Join(",", sentList.Except(receivedList).OrderBy(i => i)));
 
                 var parts = await router.GetPartitionsInfo(topic);
-                _log.Error("Offsets fetched: [{0}]", string.Join(",",parts.Select(p=>p.ToString())));
+                _log.Error("Sum of offsets fetched: {0}", parts.Select(p => p.Tail-p.Head).Sum());
+                _log.Error("Offsets fetched: [{0}]", string.Join(",", parts.Select(p => p.ToString())));
             }
 
             Assert.AreEqual(sentList.Count, receivedList.Count);
+
+        }
+
+        /// <summary>
+        /// Test just listener recovery isolated from producer
+        /// </summary>
+        [Test]
+        public async void ListenerRecoveryTest()
+        {
+            const int count = 8000;
+            var topic = "part33." + _rnd.Next();
+            VagrantBrokerUtil.CreateTopic(topic, 6, 3);
+            var router = new Router(_seedAddresses);
+            _log.Debug("Connecting");
+            await router.ConnectAsync();
+            var producer = new Publisher(topic);
+            producer.Connect(router);
+
+            _log.Debug("Filling out {0} with {1} messages", topic, count);
+            var sentList = await Enumerable.Range(0, count)
+                .Select(i => new Message() { Value = BitConverter.GetBytes(i) })
+                .ToObservable()
+                .Do(producer.Send)
+                .Select(msg => BitConverter.ToInt32(msg.Value, 0))
+                .ToList();
+
+            await Task.Delay(TimeSpan.FromSeconds(1));
+            _log.Info("Done sending messages. Closing producer.");
+            await producer.Close();
+            _log.Info("Producer closed, starting consumer subscription.");
+
+            var parts = await router.GetPartitionsInfo(topic);
+            var messagesInTopic = (int)parts.Select(p => p.Tail - p.Head).Sum();
+            _log.Info("Topic offsets indicate publisher sent {0} messages.", messagesInTopic);
+
+
+            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, ConsumerStartLocation.TopicHead, maxBytesPerFetch: 4 * 8));
+            await consumer.ConnectAsync();
+            var current = 0;
+            var received = new ReplaySubject<ReceivedMessage>();
+            var consumerSubscription = consumer.
+                Subscribe(async msg =>
+                {
+                    current++;
+                    if (current == 18)
+                    {
+                        await Task.Factory.StartNew(() => VagrantBrokerUtil.StopBrokerLeaderForPartition(router, consumer.Topic, msg.Partition), CancellationToken.None, TaskCreationOptions.None, TaskScheduler.Default);
+                    }
+                    received.OnNext(msg);
+                    //_log.Info("Got: {0}", BitConverter.ToInt32(msg.Value, 0));
+                });
+
+            _log.Info("Waiting for receiver complete");
+            var receivedList = await received.Select(msg => BitConverter.ToInt32(msg.Value, 0)).Take(messagesInTopic).TakeUntil(DateTime.Now.AddSeconds(60)).ToList().ToTask();
+
+            parts = await consumer.Router.GetPartitionsInfo(topic);
+
+            _log.Info("Receiver complete. Disposing Subscription");
+            consumerSubscription.Dispose();
+            _log.Info("Consumer subscription disposed. Closing consumer.");
+            await consumer.CloseAsync(TimeSpan.FromSeconds(5));
+            _log.Info("Consumer closed.");
+
+            _log.Error("Sum of offsets fetched: {0}", parts.Select(p => p.Tail - p.Head).Sum());
+            _log.Error("Offsets fetched: [{0}]", string.Join(",", parts.Select(p => p.ToString())));
+
+            if (messagesInTopic != receivedList.Count)
+            {
+                // log some debug info.
+                _log.Error("Did not receive all messages. Messages sent but NOT received: {0}", string.Join(",", sentList.Except(receivedList).OrderBy(i => i)));
+
+            }
+
+            Assert.AreEqual(messagesInTopic, receivedList.Count);
 
         }
 

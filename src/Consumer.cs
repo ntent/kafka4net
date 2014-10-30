@@ -65,6 +65,11 @@ namespace kafka4net
         }
 
         /// <summary>
+        ///  Provides access to the router for this consumer
+        /// </summary>
+        public Router Router { get { return _router; } }
+
+        /// <summary>
         /// Subscribes an observer to this consumer's stream of messages.
         /// </summary>
         /// <param name="observer">The observer of the messages.</param>
