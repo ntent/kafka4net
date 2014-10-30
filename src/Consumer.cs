@@ -47,13 +47,12 @@ namespace kafka4net
                 await _router.ConnectAsync();
 
                 // subscribe to all partitions
-                var parts = (await BuildTopicPartitionsAsync()).ToArray();
-                _log.Debug("{0} Discovered {1} partitions, subscribing");
-                parts.ForEach(part =>
+                (await BuildTopicPartitionsAsync()).ForEach(part =>
                 {
                     var partSubscription = part.Subscribe(this);
                     _partitionsSubscription.Add(partSubscription);
                 });
+                _log.Debug("Subscribed to partitions");
 
                 // Relay messages from partition to consumer's output
                 OnMessageArrivedInput.Subscribe(observer);
@@ -67,6 +66,7 @@ namespace kafka4net
                     _router.Close(TimeSpan.FromSeconds(1));
                 };
             }).
+                SubscribeOn(_router.Scheduler).
             // allow multiple consumers to share the same subscription
             Publish().
             RefCount();
