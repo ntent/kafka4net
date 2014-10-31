@@ -30,7 +30,8 @@ namespace kafka4net
         {
             Disconnected,
             Connecting,
-            Connected
+            Connected,
+            Closed // closed means we already closed down, cannot reconnect.
         }
 
         private static readonly Random _rnd = new Random();
@@ -121,6 +122,10 @@ namespace kafka4net
         {
             await await Scheduler.Ask(async () =>
             {
+                // we cannot reconnect if we have closed already.
+                if (_state == ClusterState.Closed)
+                    throw new BrokerException("Cluster is already closed. Cannot reconnect. Please create a new Cluster.");
+
                 if (_state != ClusterState.Disconnected)
                     return;
 
@@ -143,6 +148,9 @@ namespace kafka4net
         /// <returns></returns>
         public async Task CloseAsync(TimeSpan timeout)
         {
+            if (_state == ClusterState.Disconnected || _state == ClusterState.Closed)
+                return;
+
             _log.Debug("#{0} Closing...", _id);
             _cancel.Cancel();
             _topicResolutionQueue.Complete();
@@ -168,6 +176,8 @@ namespace kafka4net
             {
                 _log.Debug("#{0} Closed", _id);
             }
+
+            _state = ClusterState.Disconnected;
         }
 
         //public TopicMeta[] GetTopics()
@@ -179,7 +189,7 @@ namespace kafka4net
         public string[] GetAllTopics()
         {
             if (_state != ClusterState.Connected)
-                throw new BrokerException("Broker is not connected");
+                throw new BrokerException("Cluster is not connected");
 
             if (_metadata == null)
                 return new string[0];
@@ -197,6 +207,8 @@ namespace kafka4net
         /// <returns></returns>
         public async Task<PartitionOffsetInfo[]> FetchPartitionOffsetsAsync(string topic)
         {
+            if (_state != ClusterState.Connected)
+                throw new BrokerException("Cluster is not connected");
 
             var ret = await await Scheduler.Ask(async () => {
                 var numAttempts = -1;
@@ -641,95 +653,84 @@ namespace kafka4net
             {
                 _log.Debug("#{0} SendBatchAsync messages: {1}", _id, batch.Count);
 
-                if (_cancel.IsCancellationRequested)
-                    throw new BrokerException("Can not send, Cluster is closed");
+                if (_cancel.IsCancellationRequested || _state == ClusterState.Disconnected || _state == ClusterState.Closed)
+                    throw new BrokerException("Can not send, Cluster is not connected.");
 
-                if (_state == ClusterState.Connecting || _state == ClusterState.Disconnected)
+                if (_state == ClusterState.Connecting)
                 {
                     // group by producer to send errors in batches
                     //foreach (var pubGroup in batch.GroupBy(_ => _.Item1))
                     //{
                     //    var producer = pubGroup.Key;
-                    switch (_state)
-                    {
-                        case ClusterState.Disconnected:
-                            // TODO: make OnPermError accepting IList or IEnumerable?
-                            if (producer.OnPermError != null)
-                                producer.OnPermError(new BrokerException("Cluster is not connected"), batch.ToArray());
-                            else
-                                _log.Fatal("Error in SendBatchAsync. ClusterState is Disconnected, and no OnPermError handler available. batch of {0} items is being lost!", batch.Count);
-                            break;
-                        case ClusterState.Connecting:
-                            // TODO:
-                            //pubGroup.ToList().ForEach(_delayedMessages.Enqueue);
-                            break;
-                    }
+
+                        // TODO: How do we handle connecting state?
+                        //pubGroup.ToList().ForEach(_delayedMessages.Enqueue);
+
                     //}
-                    _log.Debug("SendBatchAsync complete");
+                    _log.Error("SendBatchAsync Cluster Connecting, how should this be handled!?");
                     return;
                 }
 
-                if (_state == ClusterState.Connected)
-                {
-                    // BNF:
-                    // ProduceRequest => RequiredAcks Timeout [TopicName [Partition MessageSetSize MessageSet]]
-                    //      RequiredAcks => int16
-                    //      Timeout => int32
-                    //      Partition => int32
-                    //      MessageSetSize => int32
-                    var waitingList = new List<Tuple<Producer, PartitionMeta, Message>>();
-                    var requests = (
-                        from msg in
-                            (
-                                // extend message with broker and partition info
-                                from msg in batch
-                                let brokerPart = FindBrokerAndPartition(msg, producer, waitingList)
-                                // Messages without known partition are sent to retry by FindBrokerAndPartition()
-                                // so just skip them here
-                                where brokerPart != null
-                                select new { Msg = msg, Broker = brokerPart.Item1, Part = brokerPart.Item2 }
-                                )
-                        // Group by broker to send one batch per physical connection
-                        group msg by msg.Broker
-                            into routeGrp
-                            select new ProduceRequest
-                            {
-                                Broker = routeGrp.Key,
-                                RequiredAcks = producer.Configuration.RequiredAcks,
-                                Timeout = (int)producer.Configuration.ProduceRequestTimeoutMs,
-                                TopicData = new[] 
-                                {
-                                    new TopicData {
-                                        TopicName = producer.Topic,
-                                        PartitionsData = (
-                                            from msg in routeGrp
-                                            // group messages belonging to the same partition
-                                            group msg by msg.Part
-                                            into partitionGrp
-                                            select new PartitionData {
-                                                Pub = producer,
-                                                OriginalMessages = partitionGrp.Select(m => m.Msg).ToArray(),
-                                                Partition = partitionGrp.Key.Id,
-                                                Messages = (
-                                                    from msg in partitionGrp
-                                                    select new MessageData {
-                                                        Key = msg.Msg.Key,
-                                                        Value = msg.Msg.Value
-                                                    }
-                                                )
+                if (_state != ClusterState.Connected) throw new Exception("Unknown state: " + _state);
+
+                // BNF:
+                // ProduceRequest => RequiredAcks Timeout [TopicName [Partition MessageSetSize MessageSet]]
+                //      RequiredAcks => int16
+                //      Timeout => int32
+                //      Partition => int32
+                //      MessageSetSize => int32
+                var waitingList = new List<Tuple<Producer, PartitionMeta, Message>>();
+                var requests = (
+                    from msg in
+                        (
+                            // extend message with broker and partition info
+                            from msg in batch
+                            let brokerPart = FindBrokerAndPartition(msg, producer, waitingList)
+                            // Messages without known partition are sent to retry by FindBrokerAndPartition()
+                            // so just skip them here
+                            where brokerPart != null
+                            select new { Msg = msg, Broker = brokerPart.Item1, Part = brokerPart.Item2 }
+                            )
+                    // Group by broker to send one batch per physical connection
+                    group msg by msg.Broker
+                    into routeGrp
+                    select new ProduceRequest
+                    {
+                        Broker = routeGrp.Key,
+                        RequiredAcks = producer.Configuration.RequiredAcks,
+                        Timeout = (int)producer.Configuration.ProduceRequestTimeoutMs,
+                        TopicData = new[] 
+                        {
+                            new TopicData {
+                                TopicName = producer.Topic,
+                                PartitionsData = (
+                                    from msg in routeGrp
+                                    // group messages belonging to the same partition
+                                    group msg by msg.Part
+                                    into partitionGrp
+                                    select new PartitionData {
+                                        Pub = producer,
+                                        OriginalMessages = partitionGrp.Select(m => m.Msg).ToArray(),
+                                        Partition = partitionGrp.Key.Id,
+                                        Messages = (
+                                            from msg in partitionGrp
+                                            select new MessageData {
+                                                Key = msg.Msg.Key,
+                                                Value = msg.Msg.Value
                                             }
-                                        )
+                                            )
                                     }
-                                }
+                                    )
                             }
+                        }
+                    }
                     ).ToArray(); // materialize to fill out waitingList
 
-                    PutMessagesIntoWaitingQueue(waitingList);
+                PutMessagesIntoWaitingQueue(waitingList);
 
-                    await _protocol.Produce(requests);
-                    _log.Debug("#{0} SendBatchAsync complete", _id);
-                    return;
-                }
+                await _protocol.Produce(requests);
+                _log.Debug("#{0} SendBatchAsync complete", _id);
+                return;
 
                 throw new Exception("Unknown state: " + _state);
             }
