@@ -15,24 +15,26 @@ using kafka4net.Utils;
 
 namespace kafka4net.Protocols
 {
-    class Protocol
+    internal class Protocol
     {
-        private readonly Router _router;
-        static readonly ILogger _log = Logger.GetLogger();
-        readonly Tuple<string, int>[] _seedAddresses;
-        // It is possible to have id per connection, but it's just simpler code and debug/tracing when it's global
-        static int _correlationId;
-        readonly ConcurrentDictionary<int,Action<byte[]>> _corelationTable = new ConcurrentDictionary<int, Action<byte[]>>();
+        private static readonly ILogger _log = Logger.GetLogger();
 
-        public Protocol(Router router, string seedConnections)
+        private readonly Cluster _cluster;
+        private readonly Tuple<string, int>[] _seedAddresses;
+
+        // It is possible to have id per connection, but it's just simpler code and debug/tracing when it's global
+        private static int _correlationId;
+        private readonly ConcurrentDictionary<int,Action<byte[]>> _corelationTable = new ConcurrentDictionary<int, Action<byte[]>>();
+
+        internal Protocol(Cluster cluster, string seedConnections)
         {
-            _router = router;
+            _cluster = cluster;
             _seedAddresses = Connection.ParseAddress(seedConnections);
         }
 
-        public async Task<MetadataResponse> ConnectAsync()
+        internal async Task<MetadataResponse> ConnectAsync()
         {
-            var meta = await StartInitialConnect();
+            var meta = await StartInitialConnectAsync();
             if (meta == null)
             {
                 //_log.FatalFormat("Could not connect to any of seed addresses");
@@ -47,10 +49,10 @@ namespace kafka4net.Protocols
         /// topics configuration.
         /// </summary>
         /// <returns></returns>
-        async Task<MetadataResponse> StartInitialConnect()
+        private async Task<MetadataResponse> StartInitialConnectAsync()
         {
             return await _seedAddresses.
-                Select(addr => Observable.StartAsync<MetadataResponse>(async cancel =>
+                Select(addr => Observable.StartAsync(async cancel =>
                 {
                     var client = new TcpClient { NoDelay = true };
                     //cancel.Register(client.Close);
@@ -67,7 +69,7 @@ namespace kafka4net.Protocols
                 ToTask();
         }
 
-        internal async void CorrelateResponseLoop(TcpClient client, CancellationToken cancel)
+        internal async Task CorrelateResponseLoop(TcpClient client, CancellationToken cancel)
         {
             _log.Debug("Starting reading loop from socket {0}", client.Client.RemoteEndPoint);
             // TODO: if corrup message, dump bin log of 100 bytes for further investigation
@@ -152,7 +154,7 @@ namespace kafka4net.Protocols
             }
         }
 
-        async Task<T> SendAndCorrelate<T>(Func<int, byte[]> serialize, Func<byte[], T> deserialize, TcpClient tcp, CancellationToken cancel)
+        private async Task<T> SendAndCorrelateAsync<T>(Func<int, byte[]> serialize, Func<byte[], T> deserialize, TcpClient tcp, CancellationToken cancel)
         {
             var correlationId = Interlocked.Increment(ref _correlationId);
 
@@ -186,8 +188,8 @@ namespace kafka4net.Protocols
 
         internal async Task<ProducerResponse> ProduceRaw(ProduceRequest request, CancellationToken cancel)
         {
-            var client = await request.Broker.Conn.GetClient();
-            var response = await SendAndCorrelate(
+            var client = await request.Broker.Conn.GetClientAsync();
+            var response = await SendAndCorrelateAsync(
                 id => Serializer.Serialize(request, id),
                 Serializer.GetProducerResponse,
                 client, cancel);
@@ -210,9 +212,9 @@ namespace kafka4net.Protocols
                 try
                 {
                     var conn = request.Broker.Conn;
-                    var client = await conn.GetClient();
+                    var client = await conn.GetClientAsync();
                     _log.Debug("Sending ProduceRequest to {0}, Request: {1}", conn, request);
-                    response = await SendAndCorrelate(
+                    response = await SendAndCorrelateAsync(
                         id => Serializer.Serialize(request, id),
                         Serializer.GetProducerResponse,
                         client,
@@ -224,7 +226,7 @@ namespace kafka4net.Protocols
                 }
                 catch (SocketException e)
                 {
-                    _router.OnTransportError(request, e);
+                    _cluster.OnTransportError(request, e);
                     return;
                 }
 
@@ -265,11 +267,11 @@ namespace kafka4net.Protocols
 
         internal async Task<MetadataResponse> MetadataRequest(TopicRequest request, BrokerMeta broker = null)
         {
-            var tcp = await (broker != null ? broker.Conn.GetClient() : _router.GetAnyClient());
+            var tcp = await (broker != null ? broker.Conn.GetClientAsync() : _cluster.GetAnyClientAsync());
             _log.Debug("Sending MetadataRequest to {0}", tcp.Client.RemoteEndPoint);
 
             // TODO: handle result
-            return await SendAndCorrelate(
+            return await SendAndCorrelateAsync(
                 id => Serializer.Serialize(request, id),
                 Serializer.DeserializeMetadataResponse,
                 tcp, CancellationToken.None);
@@ -277,10 +279,10 @@ namespace kafka4net.Protocols
 
         internal async Task<OffsetResponse> GetOffsets(OffsetRequest req, Connection conn)
         {
-            var tcp = await conn.GetClient();
+            var tcp = await conn.GetClientAsync();
             if(_log.IsDebugEnabled)
                 _log.Debug("Sending OffsetRequest to {0}. request: {1}", tcp.Client.RemoteEndPoint, req);
-            return await SendAndCorrelate(
+            return await SendAndCorrelateAsync(
                 id => Serializer.Serialize(req, id),
                 Serializer.DeserializeOffsetResponse,
                 tcp, CancellationToken.None);
@@ -295,8 +297,8 @@ namespace kafka4net.Protocols
             var timeout = Math.Max(5000, req.MaxWaitTime + 3000);
             var cancel = new CancellationTokenSource(timeout);
 
-            var tcp = await conn.GetClient();
-            var response = await SendAndCorrelate(
+            var tcp = await conn.GetClientAsync();
+            var response = await SendAndCorrelateAsync(
                 id => Serializer.Serialize(req, id),
                 Serializer.DeserializeFetchResponse,
                 tcp, cancel.Token);
@@ -307,12 +309,12 @@ namespace kafka4net.Protocols
             return response;
         }
 
-        // TODO: move to router
+        // TODO: move to Cluster
         Task<MetadataResponse> LoadAllTopicsMeta(TcpClient client)
         {
             _log.Debug("Loading all metadata...");
             var request = new TopicRequest();
-            return SendAndCorrelate(c => Serializer.Serialize(request, c), Serializer.DeserializeMetadataResponse, client, CancellationToken.None);
+            return SendAndCorrelateAsync(c => Serializer.Serialize(request, c), Serializer.DeserializeMetadataResponse, client, CancellationToken.None);
         }
 
         static void SafeCallback(Action action)

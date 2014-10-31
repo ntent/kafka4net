@@ -7,16 +7,18 @@ using kafka4net.Protocols;
 
 namespace kafka4net
 {
-    class Connection
+    internal class Connection
     {
-        readonly string _host;
-        readonly int _port;
-        private readonly Protocol _protocol;
-        TcpClient _client;
-        public ConnState State;
-        static readonly ILogger _log = Logger.GetLogger();
+        private static readonly ILogger _log = Logger.GetLogger();
 
-        public Connection(string host, int port, Protocol protocol)
+        public ConnState State;
+
+        private readonly string _host;
+        private readonly int _port;
+        private readonly Protocol _protocol;
+        private TcpClient _client;
+
+        internal Connection(string host, int port, Protocol protocol)
         {
             _host = host;
             _port = port;
@@ -24,7 +26,7 @@ namespace kafka4net
         }
 
 
-        public static Tuple<string, int>[] ParseAddress(string seedConnections)
+        internal static Tuple<string, int>[] ParseAddress(string seedConnections)
         {
             return seedConnections.Split(',').
                 Select(_ => _.Trim()).
@@ -50,7 +52,7 @@ namespace kafka4net
                 }).ToArray();
         }
 
-        public async Task<TcpClient> GetClient()
+        internal async Task<TcpClient> GetClientAsync()
         {
             try
             {
@@ -67,7 +69,7 @@ namespace kafka4net
                     State = ConnState.Connecting;
                     _client = new TcpClient();
                     await _client.ConnectAsync(_host, _port);
-                    // TODO: Who and when is going to cancell reading?
+                    // TODO: Who and when is going to cancel reading?
                     _protocol.CorrelateResponseLoop(_client, CancellationToken.None);
                     State = ConnState.Connected;
                     return _client;

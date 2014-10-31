@@ -159,7 +159,7 @@ namespace tests
             var producer = new Producer(new ProducerConfiguration(_seedAddresses, topic)) { OnSuccess = msgs => _log.Debug("Sent {0} messages", msgs.Length) };
             await producer.ConnectAsync();
 
-            if (!producer.Router.GetAllTopics().Contains(topic))
+            if (!producer.Cluster.GetAllTopics().Contains(topic))
                 VagrantBrokerUtil.CreateTopic(topic, 3, 3);
 
             var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic));
@@ -291,7 +291,7 @@ namespace tests
                     current++;
                     if (current == 18)
                     {
-                        await Task.Factory.StartNew(() => VagrantBrokerUtil.StopBrokerLeaderForPartition(consumer.Router, consumer.Topic, msg.Partition), CancellationToken.None, TaskCreationOptions.None, TaskScheduler.Default);
+                        await Task.Factory.StartNew(() => VagrantBrokerUtil.StopBrokerLeaderForPartition(consumer.Cluster, consumer.Topic, msg.Partition), CancellationToken.None, TaskCreationOptions.None, TaskScheduler.Default);
                     }
                     received.OnNext(msg);
                     _log.Info("Got: {0}", BitConverter.ToInt32(msg.Value, 0));
@@ -301,7 +301,7 @@ namespace tests
             var receivedList = await received.Select(msg => BitConverter.ToInt32(msg.Value, 0)).Take(count).TakeUntil(DateTime.Now.AddSeconds(60)).ToList().ToTask();
 
             // get the offsets for comparison later
-            var parts = await consumer.Router.FetchPartitionsInfo(topic);
+            var parts = await consumer.Cluster.FetchPartitionOffsetsAsync(topic);
 
             _log.Info("Done waiting for receiver. Closing producer.");
             await producer.Close(TimeSpan.FromSeconds(5));
@@ -355,7 +355,7 @@ namespace tests
                 .ToList();
 
 
-            var parts = await producer.Router.FetchPartitionsInfo(topic);
+            var parts = await producer.Cluster.FetchPartitionOffsetsAsync(topic);
 
             _log.Info("Done waiting for sending. Closing producer.");
             await producer.Close(TimeSpan.FromSeconds(5));
@@ -401,7 +401,7 @@ namespace tests
 
             await Task.Delay(TimeSpan.FromSeconds(1));
 
-            var parts = await producer.Router.FetchPartitionsInfo(topic);
+            var parts = await producer.Cluster.FetchPartitionOffsetsAsync(topic);
 
             _log.Info("Done sending messages. Closing producer.");
             await producer.Close(TimeSpan.FromSeconds(5));
@@ -421,7 +421,7 @@ namespace tests
                     current++;
                     if (current == 18)
                     {
-                        await Task.Factory.StartNew(() => VagrantBrokerUtil.StopBrokerLeaderForPartition(consumer.Router, consumer.Topic, msg.Partition), CancellationToken.None, TaskCreationOptions.None, TaskScheduler.Default);
+                        await Task.Factory.StartNew(() => VagrantBrokerUtil.StopBrokerLeaderForPartition(consumer.Cluster, consumer.Topic, msg.Partition), CancellationToken.None, TaskCreationOptions.None, TaskScheduler.Default);
                     }
                     received.OnNext(msg);
                     //_log.Info("Got: {0}", BitConverter.ToInt32(msg.Value, 0));
@@ -430,7 +430,7 @@ namespace tests
             _log.Info("Waiting for receiver complete");
             var receivedList = await received.Select(msg => BitConverter.ToInt32(msg.Value, 0)).Take(messagesInTopic).TakeUntil(DateTime.Now.AddSeconds(60)).ToList().ToTask();
 
-            parts = await consumer.Router.FetchPartitionsInfo(topic);
+            parts = await consumer.Cluster.FetchPartitionOffsetsAsync(topic);
 
             _log.Info("Receiver complete. Disposing Subscription");
             consumerSubscription.Dispose();
@@ -660,7 +660,7 @@ namespace tests
             _log.Info("Producer sent {0} messages.",sentMsgs.Count);
 
             // consume tail-300 for each partition
-            var offsets = (await producer.Router.FetchPartitionsInfo(topic)).ToDictionary(p => p.Partition);
+            var offsets = (await producer.Cluster.FetchPartitionOffsetsAsync(topic)).ToDictionary(p => p.Partition);
 
             _log.Debug("Closing producer");
             await producer.Close(TimeSpan.FromSeconds(5));
@@ -740,7 +740,7 @@ namespace tests
             await producer.ConnectAsync();
 
             // read offsets of empty queue
-            var parts = await producer.Router.FetchPartitionsInfo(topic);
+            var parts = await producer.Cluster.FetchPartitionOffsetsAsync(topic);
             Assert.AreEqual(1, parts.Length, "Expected just one partition");
             Assert.AreEqual(0L, parts[0].Head, "Expected start at 0");
             Assert.AreEqual(0L, parts[0].Tail, "Expected end at 0");
@@ -755,7 +755,7 @@ namespace tests
             await sentEvents.Take(100).ToTask();
 
             // re-read offsets after messages published
-            parts = await producer.Router.FetchPartitionsInfo(topic);
+            parts = await producer.Cluster.FetchPartitionOffsetsAsync(topic);
 
             _log.Info("Closing producer");
             await producer.Close(TimeSpan.FromSeconds(5));

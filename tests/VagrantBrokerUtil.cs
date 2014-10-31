@@ -50,9 +50,9 @@ namespace tests
             _log.Info("Stopped broker {0}", broker);
         }
 
-        public static void StopBrokerLeaderForPartition(Router router, string topic, int partition)
+        public static void StopBrokerLeaderForPartition(Cluster cluster, string topic, int partition)
         {
-            var brokerMeta = router.FindBrokerMetaForPartitionId(topic, partition);
+            var brokerMeta = cluster.FindBrokerMetaForPartitionId(topic, partition);
             var brokerName = GetBrokerNameFromIp(brokerMeta.Host);
             StopBroker(brokerName);
             

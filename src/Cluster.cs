@@ -24,12 +24,22 @@ namespace kafka4net
     /// <summary>
     /// Manage connections, metadata and makes routing decisions.
     /// </summary>
-    public class Router
+    public class Cluster
     {
-        private readonly Protocol _protocol;
-        private BrokerState _state = BrokerState.Disconnected;
+        internal enum ClusterState
+        {
+            Disconnected,
+            Connecting,
+            Connected
+        }
+
         private static readonly Random _rnd = new Random();
         private static readonly ILogger _log = Logger.GetLogger();
+
+        private readonly Protocol _protocol;
+
+        private ClusterState _state = ClusterState.Disconnected;
+        internal ClusterState State { get { return _state; } }
 
         private readonly MetadataResponse _metadata = new MetadataResponse { Brokers = new BrokerMeta[0], Topics = new TopicMeta[0]};
         
@@ -43,7 +53,7 @@ namespace kafka4net
         // Single Threaded Scheduler to handle all async methods in the library
         internal readonly EventLoopScheduler Scheduler = new EventLoopScheduler(ts => new Thread(ts) { Name = "Kafka4net-scheduler", IsBackground = true });
 
-        // Router ID (unique number for each router instance. used in debugging messages.)
+        // Cluster ID (unique number for each Cluster instance. used in debugging messages.)
         private readonly CountObservable _inBatchCount = new CountObservable();
         private static int _idCount;
         private readonly int _id = Interlocked.Increment(ref _idCount);
@@ -51,39 +61,26 @@ namespace kafka4net
         //
         // message waiting structures
         //
-        private readonly Dictionary<string,List<Tuple<Producer,Message>>> _noTopicMessageQueue = new Dictionary<string, List<Tuple<Producer, Message>>>();
+        private class WaitQueueRecord
+        {
+            internal List<Message> Messages = new List<Message>();
+            internal Producer Pub;
+        }
+        private readonly Dictionary<string, List<Tuple<Producer, Message>>> _noTopicMessageQueue = new Dictionary<string, List<Tuple<Producer, Message>>>();
         private readonly ActionBlock<string> _topicResolutionQueue;
         private readonly  Dictionary<string,Dictionary<PartitionMeta,WaitQueueRecord>> _waitingMessages = new Dictionary<string, Dictionary<PartitionMeta, WaitQueueRecord>>();
         
         // Monitor for recovering partitions when they enter an error state.
         PartitionRecoveryMonitor _partitionRecoveryMonitor;
 
-
-        readonly List<Consumer> _consumers = new List<Consumer>(); 
-
-        /// <summary>
-        /// Latest state of all partitions.
-        /// Recovery functions can publish recoveries, sending functions can post failures,
-        /// and routing functions can await for good status to come back
-        /// Structure: Topic/Partition/ErrorCode.
-        /// </summary>
-        private readonly ISubject<Tuple<string, int, ErrorCode>, Tuple<string, int, ErrorCode>> _partitionStateChangesSubject;
-        public IObservable<Tuple<string, int, ErrorCode>> PartitionStateChanges { get { return _partitionStateChangesSubject.AsObservable(); } } 
-
-        /// <summary>
-        /// Observable list of Brokers. 
-        /// </summary>
-        private readonly ISubject<BrokerMeta,BrokerMeta> _newBrokerSubject;
-        internal IObservable<BrokerMeta> NewBrokers { get { return _newBrokerSubject.AsObservable(); } } 
-        
-        readonly CancellationTokenSource _cancel = new CancellationTokenSource();
+        private readonly CancellationTokenSource _cancel = new CancellationTokenSource();
         private readonly Task<Task> _partitionRecoveryTask;
 
         /// <summary>
         /// Create broker in disconnected state. Requires ConnectAsync or ConnectAsync call.
         /// Attempt to send message in disconnected state will cause exception.
         /// </summary>
-        private Router() 
+        private Cluster() 
         {
             // Init synchronization context of scheduler thread
             Scheduler.Schedule(() => SynchronizationContext.SetSynchronizationContext(new RxSyncContextFromScheduler(Scheduler)));
@@ -101,12 +98,55 @@ namespace kafka4net
             _inBatchCount.Subscribe(c => _log.Debug("#{0} InBatchCount: {1}", _id, c));
         }
 
-        public async Task Close(TimeSpan timeout)
+        /// <summary>
+        /// ConnectAsync and fetch list of brokers and metadata.
+        /// </summary>
+        /// <param name="seedBrokers">Comma separated list of seed brokers. Port numbers are optional.
+        /// <example>192.168.56.10,192.168.56.20:8081,broker3.local.net:8181</example>
+        /// </param>
+        public Cluster(string seedBrokers) : this()
+        {
+            _protocol = new Protocol(this, seedBrokers);
+            _state = ClusterState.Disconnected;
+        }
+
+
+        #region Public Accessible Methods
+
+        /// <summary>
+        /// Connect to the cluster. Connects to all seed addresses, and fetches initial metadata for the cluster.
+        /// </summary>
+        /// <returns></returns>
+        public async Task ConnectAsync()
+        {
+            await await Scheduler.Ask(async () =>
+            {
+                if (_state != ClusterState.Disconnected)
+                    return;
+
+                _state = ClusterState.Connecting;
+                var initMeta = await _protocol.ConnectAsync();
+                MergeTopicMeta(initMeta);
+                _state = ClusterState.Connected;
+
+                // start up a recovery monitor to watch for recovered partitions
+                _partitionRecoveryMonitor = new PartitionRecoveryMonitor(this, _protocol, _cancel.Token);
+                // Merge metadata that recovery monitor discovers
+                _partitionRecoveryMonitor.NewMetadataEvents.Subscribe(MergeTopicMeta, ex => _log.Error(ex, "Error thrown by RecoveryMonitor.NewMetadataEvents!"));
+            });
+        }
+
+        /// <summary>
+        /// Close all resources related to the cluster. Attempts to do so in a graceful manner, flushing
+        /// </summary>
+        /// <param name="timeout"></param>
+        /// <returns></returns>
+        public async Task CloseAsync(TimeSpan timeout)
         {
             _log.Debug("#{0} Closing...", _id);
             _cancel.Cancel();
             _topicResolutionQueue.Complete();
-            
+
             var success = await Task.WhenAll(new[] { 
                 _partitionRecoveryMonitor.Completion, 
                 _topicResolutionQueue.Completion,
@@ -116,12 +156,12 @@ namespace kafka4net
             if (!success)
             {
                 _log.Error("Timed out");
-                if(!_partitionRecoveryMonitor.Completion.IsCompleted)
+                if (!_partitionRecoveryMonitor.Completion.IsCompleted)
                     _log.Error("_partitionRecoveryMonitor timed out");
-                if(!_topicResolutionQueue.Completion.IsCompleted)
+                if (!_topicResolutionQueue.Completion.IsCompleted)
                     _log.Error("_topicResolutionQueue timed out");
                 var batchesInProgress = _inBatchCount.FirstAsync().ToTask().Result;
-                if(batchesInProgress != 0)
+                if (batchesInProgress != 0)
                     _log.Error("There are {0} batches in progress. Timed out", batchesInProgress);
             }
             else
@@ -130,157 +170,20 @@ namespace kafka4net
             }
         }
 
-        /// <summary>
-        /// Compose a Subject that tracks the ready state for each topic/partiion. Always replay the most recent state for any topic/partition
-        /// </summary>
-        /// <returns></returns>
-        private ISubject<BrokerMeta,BrokerMeta> BuildnewBrokersSubject()
+        //public TopicMeta[] GetTopics()
+        //{
+        //    return _metadata.Topics;
+        //}
+
+        /// <summary>Get list of all topics which are already cached. Does not issue a metadata request.</summary>
+        public string[] GetAllTopics()
         {
-            var subj = new Subject<BrokerMeta>();
-            var pipeline =
-                // group by BrokerMeta
-                subj.GroupBy(e => e).
-                // select 
-                Select(g =>
-                {
-                    // we only want one per Broker
-                    var gg = g.DistinctUntilChanged().Replay(1, Scheduler);
-                    gg.Connect();
-                    return gg;
-                }).
-                Replay(Scheduler);
-            pipeline.Connect();
-            var pipeline2 = pipeline.Merge();
-            return Subject.Create(subj, pipeline2);
-        }
-
-        /// <summary>
-        /// Compose a Subject that tracks the ready state for each topic/partiion. Always replay the most recent state for any topic/partition
-        /// </summary>
-        /// <returns></returns>
-        private ISubject<Tuple<string, int, ErrorCode>, Tuple<string, int, ErrorCode>> BuildPartitionStateChangeSubject()
-        {
-            var subj = new Subject<Tuple<string, int, ErrorCode>>();
-            var pipeline = 
-                // group by topic and partition
-                subj.GroupBy(e => new { e.Item1, e.Item2 }).
-                // select 
-                Select(g =>
-                {
-                    // we only want the distinct groups (one per topic/partition)
-                    var gg = g.DistinctUntilChanged().Replay(1, Scheduler); 
-                    gg.Connect(); 
-                    return gg;
-                }).
-                Replay(Scheduler);
-            pipeline.Connect();
-            var pipeline2 = pipeline.Merge();
-            return Subject.Create(subj, pipeline2);
-        }
-
-        /// <summary>
-        /// Allow publishing of a new partition state detected by a component (likely the TopicPartition)
-        /// </summary>
-        /// <param name="state"></param>
-        public void SendPartitionStateChange(Tuple<string, int, ErrorCode> state)
-        {
-            _partitionStateChangesSubject.OnNext(state);
-        }
-
-        /// <summary>
-        /// Gets an observable sequence of any changes to the Fetcher for a specific topic/partition
-        /// </summary>
-        /// <param name="topic"></param>
-        /// <param name="partitionId"></param>
-        /// <param name="consumerConfiguration"></param>
-        /// <returns></returns>
-        internal IObservable<Fetcher> GetFetcherChanges(string topic, int partitionId, ConsumerConfiguration consumerConfiguration)
-        {
-            return PartitionStateChanges
-                .Where(t => t.Item1 == topic && t.Item2 == partitionId)
-                .Do(psc => _log.Info("GetFetcherChages saw new partition state {0}-{1}-{2}", psc.Item1, psc.Item2, psc.Item3),
-                    ex => _log.Fatal(ex, "GetFetcherChages saw ERROR from PartitionStateChanges"))
-                .Select(state =>
-                {
-                    // if the state is not ready, return NULL for the fetcher.
-                    if (state.Item3 != ErrorCode.NoError)
-                        return (Fetcher)null;
-
-                    // get or create the correct Fetcher for this topic/partition
-                    var broker = FindBrokerMetaForPartitionId(state.Item1, state.Item2);
-
-                    var fetcher = _activeFetchers.GetOrAdd(broker, b =>
-                    {
-                        // all new fetchers need to be "watched" for errors.
-                        var f = new Fetcher(this, b, _protocol, consumerConfiguration, _cancel.Token);
-                        // subscribe to error and complete notifications, and remove from active fetchers
-                        f.ReceivedMessages.Subscribe(_ => { },
-                            err =>
-                            {
-                                _log.Warn("Received error from fetcher {0}. Removing from active fetchers.", f);
-                                Fetcher ef;
-                                _activeFetchers.TryRemove(broker, out ef);
-                            },
-                            () =>
-                            {
-                                _log.Info("Received complete from fetcher {0}. Removing from active fetchers.", f);
-                                Fetcher ef;
-                                _activeFetchers.TryRemove(broker, out ef);
-                            });
-                        return f;
-                    });
-
-                    return fetcher;
-
-                })
-                .Do(f => _log.Info("GetFetcherChanges returning {1} fetcher {0}", f, f==null?"null":"new"),
-                    ex => _log.Error(ex, "GetFetcherChages saw ERROR returning new fetcher."),
-                    ()=> _log.Error("GetFetcherChanges saw COMPLETE from returning new fetcher."));
-        }
-
-
-        /// <summary>
-        /// ConnectAsync and fetch list of brokers and metadata.
-        /// </summary>
-        /// <param name="seedBrokers">Comma separated list of seed brokers. Port numbers are optional.
-        /// <example>192.168.56.10,192.168.56.20:8081,broker3.local.net:8181</example>
-        /// </param>
-        public Router(string seedBrokers) : this()
-        {
-            _protocol = new Protocol(this, seedBrokers);
-            _state = BrokerState.Disconnected;
-        }
-
-        #region External callable
-
-        internal BrokerState State { get { return _state; } }
-
-        public async Task ConnectAsync()
-        {
-            await await Scheduler.Ask(async () =>
-            {
-                if (_state != BrokerState.Disconnected)
-                    return;
-
-                _state = BrokerState.Connecting;
-                var initMeta = await _protocol.ConnectAsync();
-                MergeTopicMeta(initMeta);
-                _state = BrokerState.Connected;
-
-                // start up a recovery monitor to watch for recovered partitions
-                _partitionRecoveryMonitor = new PartitionRecoveryMonitor(this, _protocol, _cancel.Token);
-                // Merge metadata that recovery monitor discovers
-                _partitionRecoveryMonitor.NewMetadataEvents.Subscribe(MergeTopicMeta, ex => _log.Error(ex, "Error thrown by RecoveryMonitor.NewMetadataEvents!"));
-            });
-        }
-
-        /// <summary>Get topics which are already cached. Does not issue metadata request.</summary>
-        public Task<TopicMeta[]> GetTopics()
-        {
-            if(_state != BrokerState.Connected)
+            if (_state != ClusterState.Connected)
                 throw new BrokerException("Broker is not connected");
 
-            return Scheduler.Ask(() => _metadata.Topics);
+            if (_metadata == null)
+                return new string[0];
+            return Scheduler.Ask(() => _metadata.Topics.Select(t => t.TopicName).ToArray()).Result;
         }
 
         /// <summary>
@@ -290,9 +193,9 @@ namespace kafka4net
         /// This function will force fetch requests, i.e. it does not use cached metadata.
 		/// Subtracting Head from Tail will yield the size of the topic.
         /// </summary>
-        /// <param name="topic"></param>
+        /// <param name="topic">topic name for which to retrieve offsets for</param>
         /// <returns></returns>
-        public async Task<PartitionInfo[]> FetchPartitionsInfo(string topic)
+        public async Task<PartitionInfo[]> FetchPartitionOffsetsAsync(string topic)
         {
 
             var ret = await await Scheduler.Ask(async () => {
@@ -305,7 +208,7 @@ namespace kafka4net
                     try
                     {
                         // get partition list
-                        var parts = (await GetOrFetchMetaForTopic(topic)).
+                        var parts = (await GetOrFetchMetaForTopicAsync(topic)).
                             Select(p => new OffsetRequest.PartitionData {
                                 Id = p.Id,
                                 Time = (long)ConsumerStartLocation.TopicTail
@@ -368,13 +271,205 @@ namespace kafka4net
             return ret;
         }
 
+
+        #endregion Public Accessible Methods
+
+
+        #region PartitionStateChanges and FetcherChanges observables
+
+        /// <summary>
+        /// Latest state of all partitions.
+        /// Recovery functions can publish recoveries, sending functions can post failures,
+        /// and routing functions can await for good status to come back
+        /// Structure: Topic/Partition/ErrorCode.
+        /// </summary>
+        internal IObservable<Tuple<string, int, ErrorCode>> PartitionStateChanges { get { return _partitionStateChangesSubject.AsObservable(); } }
+        private readonly ISubject<Tuple<string, int, ErrorCode>, Tuple<string, int, ErrorCode>> _partitionStateChangesSubject;
+
+        /// <summary>
+        /// Allow notification of a new partition state detected by a component
+        /// </summary>
+        /// <param name="state"></param>
+        internal void NotifyPartitionStateChange(Tuple<string, int, ErrorCode> state)
+        {
+            _partitionStateChangesSubject.OnNext(state);
+        }
+
+        /// <summary>
+        /// Compose the Subject that tracks the ready state for each topic/partiion. Always replay the most recent state for any topic/partition
+        /// </summary>
+        /// <returns></returns>
+        private ISubject<Tuple<string, int, ErrorCode>, Tuple<string, int, ErrorCode>> BuildPartitionStateChangeSubject()
+        {
+            var subj = new Subject<Tuple<string, int, ErrorCode>>();
+            var pipeline =
+                // group by topic and partition
+                subj.GroupBy(e => new { e.Item1, e.Item2 }).
+                // select 
+                Select(g =>
+                {
+                    // we only want the distinct groups (one per topic/partition)
+                    var gg = g.DistinctUntilChanged().Replay(1, Scheduler);
+                    gg.Connect();
+                    return gg;
+                }).
+                Replay(Scheduler);
+            pipeline.Connect();
+            var pipeline2 = pipeline.Merge();
+            return Subject.Create(subj, pipeline2);
+        }
+
+        /// <summary>
+        /// Gets an observable sequence of any changes to the Fetcher for a specific topic/partition. 
+        /// </summary>
+        /// <param name="topic"></param>
+        /// <param name="partitionId"></param>
+        /// <param name="consumerConfiguration"></param>
+        /// <returns></returns>
+        internal IObservable<Fetcher> GetFetcherChanges(string topic, int partitionId, ConsumerConfiguration consumerConfiguration)
+        {
+            return PartitionStateChanges
+                .Where(t => t.Item1 == topic && t.Item2 == partitionId)
+                .Do(psc => _log.Info("GetFetcherChages saw new partition state {0}-{1}-{2}", psc.Item1, psc.Item2, psc.Item3),
+                    ex => _log.Fatal(ex, "GetFetcherChages saw ERROR from PartitionStateChanges"))
+                .Select(state =>
+                {
+                    // if the state is not ready, return NULL for the fetcher.
+                    if (state.Item3 != ErrorCode.NoError)
+                        return (Fetcher)null;
+
+                    // get or create the correct Fetcher for this topic/partition
+                    var broker = FindBrokerMetaForPartitionId(state.Item1, state.Item2);
+
+                    var fetcher = _activeFetchers.GetOrAdd(broker, b =>
+                    {
+                        // all new fetchers need to be "watched" for errors.
+                        var f = new Fetcher(this, b, _protocol, consumerConfiguration, _cancel.Token);
+                        // subscribe to error and complete notifications, and remove from active fetchers
+                        f.ReceivedMessages.Subscribe(_ => { },
+                            err =>
+                            {
+                                _log.Warn("Received error from fetcher {0}. Removing from active fetchers.", f);
+                                Fetcher ef;
+                                _activeFetchers.TryRemove(broker, out ef);
+                            },
+                            () =>
+                            {
+                                _log.Info("Received complete from fetcher {0}. Removing from active fetchers.", f);
+                                Fetcher ef;
+                                _activeFetchers.TryRemove(broker, out ef);
+                            });
+                        return f;
+                    });
+
+                    return fetcher;
+
+                })
+                .Do(f => _log.Info("GetFetcherChanges returning {1} fetcher {0}", f, f == null ? "null" : "new"),
+                    ex => _log.Error(ex, "GetFetcherChages saw ERROR returning new fetcher."),
+                    () => _log.Error("GetFetcherChanges saw COMPLETE from returning new fetcher."));
+        }
+
+
+        #endregion PartitionStateChanges and FetcherChanges observables
+
+        #region NewBrokers observable
+
+        /// <summary>
+        /// Observable list of Brokers. Uses a grouped replay subject to ensure all brokers known to the cluster are returned when subscribed to.
+        /// </summary>        
+        internal IObservable<BrokerMeta> NewBrokers { get { return _newBrokerSubject.AsObservable(); } }
+        private readonly ISubject<BrokerMeta, BrokerMeta> _newBrokerSubject;
+        /// <summary>
+        /// Compose a Subject that tracks each broker in the cluster. Always replay all known brokers.
+        /// </summary>
+        /// <returns></returns>
+        private ISubject<BrokerMeta, BrokerMeta> BuildnewBrokersSubject()
+        {
+            var subj = new Subject<BrokerMeta>();
+            var pipeline =
+                // group by BrokerMeta
+                subj.GroupBy(e => e).
+                // select 
+                Select(g =>
+                {
+                    // we only want one per Broker
+                    var gg = g.DistinctUntilChanged().Replay(1, Scheduler);
+                    gg.Connect();
+                    return gg;
+                }).
+                Replay(Scheduler);
+            pipeline.Connect();
+            var pipeline2 = pipeline.Merge();
+            return Subject.Create(subj, pipeline2);
+        }
+
+        #endregion NewBrokers observable
+
+        #region Metadata Management
+
+        internal BrokerMeta FindBrokerMetaForPartitionId(string topic, int partition)
+        {
+            // TODO: how to handle not found exceptions, downed partitions?
+            var partMeta = _topicPartitionMap[topic].Single(p => p.Id == partition);
+            var brokerMeta = _partitionBrokerMap[partMeta];
+            return brokerMeta;
+        }
+
+
+        /// <summary>Find partition and connection for given message key/topic.
+        /// If topic meta does not exist, send message to the topic resolution queue
+        /// </summary>
+        /// <param name="waitingList">If partition is not found, null will be returned but message is enqueued onto this list for further resolution.</param>
+        /// <returns>Null if metadata for this topic not found</returns>
+        private Tuple<BrokerMeta, PartitionMeta> FindBrokerAndPartition(Message msg, Producer pub, List<Tuple<Producer, PartitionMeta, Message>> waitingList)
+        {
+            PartitionMeta[] parts;
+            var topic = pub.Topic;
+
+            if (!_topicPartitionMap.TryGetValue(topic, out parts))
+            {
+                EnqueueToTopicResolutionQueue(msg, pub, topic);
+                return null;
+            }
+
+            var index = msg.Key == null ?
+                _rnd.Next(parts.Length) :
+                Fletcher32HashOptimized(msg.Key) % parts.Length;
+
+            var part = parts[index];
+            var broker = _partitionBrokerMap[part];
+
+            if (broker.Conn.State == ConnState.Connecting || part.ErrorCode == ErrorCode.LeaderNotAvailable)
+            {
+                waitingList.Add(Tuple.Create(pub, part, msg));
+                return null;
+            }
+
+            return Tuple.Create(broker, part);
+        }
+
+        internal async Task<TcpClient> GetAnyClientAsync()
+        {
+            // Two awaits, one for scheduler and one for Conn.GetClientAsync
+            return await await Scheduler.Ask(() =>
+            {
+                // TODO: would it be a good idea to query all brokers and return the 1st successful response?
+                // This way we do not fail the whole driver if first broker is down
+                var tcp = _metadata.Brokers.
+                    Select(b => b.Conn.GetClientAsync()).
+                    First();
+                return tcp;
+            });
+        }
+
         /// <summary>Get cached metadata for topic, or request, wait and cache it</summary>
-        internal async Task<PartitionMeta[]> GetOrFetchMetaForTopic(string topic)
+        internal async Task<PartitionMeta[]> GetOrFetchMetaForTopicAsync(string topic)
         {
             if (!_topicPartitionMap.ContainsKey(topic))
             {
                 _log.Debug("Topic '{0}' does not exists. Starting pooling...", topic);
-                var meta = await PoolMeta(topic);
+                var meta = await FetchMetaWithRetryAsync(topic);
                 _log.Debug("Got topic metadata");
                 MergeTopicMeta(meta);
             }
@@ -385,11 +480,9 @@ namespace kafka4net
         }
 
 
-        #endregion
-
         /// <summary>Will fetch topic metadata and check error status. If error
         /// might be intermitten, will keep retrying. If permanent error happen, BrokerException is thrown.</summary>
-        private async Task<MetadataResponse> PoolMeta(string topic)
+        private async Task<MetadataResponse> FetchMetaWithRetryAsync(string topic)
         {
             // TODO: add timeout
             _log.Debug("Start topic '{0}' pooling", topic);
@@ -398,9 +491,9 @@ namespace kafka4net
             {
                 try
                 {
-                    _log.Debug("PoolMeta: sending MetadataRequest...");
+                    _log.Debug("FetchMetaWithRetryAsync: sending MetadataRequest...");
                     var meta = await _protocol.MetadataRequest(new TopicRequest { Topics = new[] { topic } });
-                    _log.Debug("PoolMeta: got MetadataResponse {0}", meta);
+                    _log.Debug("FetchMetaWithRetryAsync: got MetadataResponse {0}", meta);
                     var errorCode = meta.Topics.Single().TopicErrorCode;
                     switch (errorCode)
                     {
@@ -426,25 +519,132 @@ namespace kafka4net
             return null;
         } 
 
-        internal BrokerMeta FindBrokerMetaForPartitionId(string topic, int partition)
+
+        void RebuildBrokerIndexes(MetadataResponse clusterMeta = null)
         {
-            // TODO: how to handle not found exceptions, downed partitions?
-            var partMeta = _topicPartitionMap[topic].Single(p => p.Id == partition);
-            var brokerMeta = _partitionBrokerMap[partMeta];
-            return brokerMeta;
+            // By default refresh current metadata
+            if (clusterMeta == null)
+                clusterMeta = _metadata;
+
+            _topicPartitionMap = clusterMeta.Topics.ToDictionary(t => t.TopicName, t => t.Partitions);
+            _partitionBrokerMap = (
+                from partition in
+                    (
+                        from topic in clusterMeta.Topics
+                        from partition in topic.Partitions
+                        select partition
+                    )
+                group partition by partition.Leader
+                    into leaderGrp
+                    join brokerConn in
+                        (
+                            from broker in clusterMeta.Brokers
+                            select new { broker, conn = new Connection(broker.Host, broker.Port, _protocol) }
+                        ) on leaderGrp.Key equals brokerConn.broker.NodeId
+                    // flatten broker->partition[] into partition->broker
+                    from partition in leaderGrp
+                    select new { partition, broker = brokerConn }
+                ).ToDictionary(p => p.partition, p =>
+                {
+                    p.broker.broker.Conn = p.broker.conn;
+                    return p.broker.broker;
+                });
         }
 
-        internal async Task SendBatch(Producer producer, IList<Message> batch)
+        private void MergeTopicMeta(MetadataResponse topicMeta)
+        {
+            // append new topics
+            var newTopics = topicMeta.Topics.Except(_metadata.Topics, TopicMeta.NameComparer);
+            _metadata.Topics = _metadata.Topics.Concat(newTopics).ToArray();
+
+            // update existing topics
+            (
+                from updatedTopic in topicMeta.Topics
+                where _metadata.Topics.Any(t => t.TopicName == updatedTopic.TopicName)
+                // assume no new partition can happen (kafka does not allow re-partitioning)
+                from oldPart in _metadata.Topics.Single(t => t.TopicName == updatedTopic.TopicName).Partitions
+                from updatedPart in updatedTopic.Partitions
+                where updatedPart.Id == oldPart.Id
+                select new { oldPart, updatedPart }
+            ).ForEach(_ =>
+            {
+                if (_.oldPart.ErrorCode != _.updatedPart.ErrorCode)
+                    _.oldPart.ErrorCode = _.updatedPart.ErrorCode;
+                if (!_.oldPart.Isr.SequenceEqual(_.updatedPart.Isr))
+                    _.oldPart.Isr = _.updatedPart.Isr;
+                if (_.oldPart.Leader != _.updatedPart.Leader)
+                {
+                    _log.Info("Partition changed leader {0}->{1}", _.oldPart, _.updatedPart);
+                    _.oldPart.Leader = _.updatedPart.Leader;
+                }
+                if (!_.oldPart.Replicas.SequenceEqual(_.updatedPart.Replicas))
+                    _.oldPart.Replicas = _.updatedPart.Replicas;
+            });
+
+            // add new brokers
+            var newBrokers = topicMeta.Brokers.Except(_metadata.Brokers, BrokerMeta.NodeIdComparer).ToArray();
+            _metadata.Brokers = _metadata.Brokers.Concat(newBrokers).ToArray();
+
+            RebuildBrokerIndexes(_metadata);
+
+            // broadcast any new brokers
+            newBrokers.ForEach(b => _newBrokerSubject.OnNext(b));
+
+            // broadcast the current partition state for all partitions.
+            topicMeta.Topics.SelectMany(t => t.Partitions.Select(part => new Tuple<string, int, ErrorCode>(t.TopicName, part.Id, part.ErrorCode))).ForEach(tp => _partitionStateChangesSubject.OnNext(tp));
+
+        }
+
+        #endregion Metadata Management
+
+        #region Producer Support
+
+        //internal async Task SendBrokerBatch(BrokerMeta broker, IList<Tuple<PartitionMeta, Func<bool>, IList<Message>>> batches)
+        //{
+        //    var pr = new ProduceRequest
+        //    {
+        //        Broker = broker,
+        //        RequiredAcks = producer.Configuration.RequiredAcks,
+        //        Timeout = (int)producer.Configuration.ProduceRequestTimeoutMs,
+        //        TopicData = new[] 
+        //        {
+        //            new TopicData {
+        //                TopicName = producer.Topic,
+        //                PartitionsData = (
+        //                    from msg in routeGrp
+        //                    // group messages belonging to the same partition
+        //                    group msg by msg.Part
+        //                    into partitionGrp
+        //                    select new PartitionData {
+        //                        Pub = producer,
+        //                        OriginalMessages = partitionGrp.Select(m => m.Msg).ToArray(),
+        //                        Partition = partitionGrp.Key.Id,
+        //                        Messages = (
+        //                            from msg in partitionGrp
+        //                            select new MessageData {
+        //                                Key = msg.Msg.Key,
+        //                                Value = msg.Msg.Value
+        //                            }
+        //                        )
+        //                    }
+        //                )
+        //            }
+        //        }
+        //    }
+
+        //}
+
+        internal async Task SendBatchAsync(Producer producer, IList<Message> batch)
         {
             _inBatchCount.Incr();
             try
             {
-                _log.Debug("#{0} SendBatch messages: {1}", _id, batch.Count);
+                _log.Debug("#{0} SendBatchAsync messages: {1}", _id, batch.Count);
 
                 if (_cancel.IsCancellationRequested)
-                    throw new BrokerException("Can not send, router is closed");
+                    throw new BrokerException("Can not send, Cluster is closed");
 
-                if (_state == BrokerState.Connecting || _state == BrokerState.Disconnected)
+                if (_state == ClusterState.Connecting || _state == ClusterState.Disconnected)
                 {
                     // group by producer to send errors in batches
                     //foreach (var pubGroup in batch.GroupBy(_ => _.Item1))
@@ -452,24 +652,24 @@ namespace kafka4net
                     //    var producer = pubGroup.Key;
                     switch (_state)
                     {
-                        case BrokerState.Disconnected:
+                        case ClusterState.Disconnected:
                             // TODO: make OnPermError accepting IList or IEnumerable?
                             if (producer.OnPermError != null)
-                                producer.OnPermError(new BrokerException("Router is not connected"), batch.ToArray());
+                                producer.OnPermError(new BrokerException("Cluster is not connected"), batch.ToArray());
                             else
-                                _log.Fatal("Error in SendBatch. BrokerState is Disconnected, and no OnPermError handler available. batch of {0} items is being lost!", batch.Count);
+                                _log.Fatal("Error in SendBatchAsync. ClusterState is Disconnected, and no OnPermError handler available. batch of {0} items is being lost!", batch.Count);
                             break;
-                        case BrokerState.Connecting:
+                        case ClusterState.Connecting:
                             // TODO:
                             //pubGroup.ToList().ForEach(_delayedMessages.Enqueue);
                             break;
                     }
                     //}
-                    _log.Debug("SendBatch complete");
+                    _log.Debug("SendBatchAsync complete");
                     return;
                 }
 
-                if (_state == BrokerState.Connected)
+                if (_state == ClusterState.Connected)
                 {
                     // BNF:
                     // ProduceRequest => RequiredAcks Timeout [TopicName [Partition MessageSetSize MessageSet]]
@@ -527,7 +727,7 @@ namespace kafka4net
                     PutMessagesIntoWaitingQueue(waitingList);
 
                     await _protocol.Produce(requests);
-                    _log.Debug("#{0} SendBatch complete", _id);
+                    _log.Debug("#{0} SendBatchAsync complete", _id);
                     return;
                 }
 
@@ -536,38 +736,6 @@ namespace kafka4net
             finally {
                 _inBatchCount.Decr();
             }
-        }
-
-        /// <summary>Find partition and connection for given message key/topic.
-        /// If topic meta does not exist, send message to the topic resolution queue
-        /// </summary>
-        /// <param name="waitingList">If partition is not found, null will be returned but message is enqueued onto this list for further resolution.</param>
-        /// <returns>Null if metadata for this topic not found</returns>
-        private Tuple<BrokerMeta,PartitionMeta> FindBrokerAndPartition(Message msg, Producer pub, List<Tuple<Producer,PartitionMeta,Message>> waitingList)
-        {
-            PartitionMeta[] parts;
-            var topic = pub.Topic;
-
-            if (!_topicPartitionMap.TryGetValue(topic, out parts))
-            {
-                EnqueueToTopicResolutionQueue(msg, pub, topic);
-                return null;
-            }
-
-            var index = msg.Key == null ?
-                _rnd.Next(parts.Length) :
-                Fletcher32HashOptimized(msg.Key) % parts.Length;
-
-            var part = parts[index];
-            var broker = _partitionBrokerMap[part];
-            
-            if (broker.Conn.State == ConnState.Connecting || part.ErrorCode == ErrorCode.LeaderNotAvailable)
-            {
-                waitingList.Add(Tuple.Create(pub, part, msg));
-                return null;
-            }
-
-            return Tuple.Create(broker, part);
         }
 
         /// <summary>Optimized Fletcher32 checksum implementation.
@@ -597,80 +765,6 @@ namespace kafka4net
             return (sum2 << 16 | sum1);
         }
 
-        void RebuildBrokerIndexes(MetadataResponse clusterMeta = null)
-        {
-            // By default refresh current metadata
-            if (clusterMeta == null)
-                clusterMeta = _metadata;
-
-            _topicPartitionMap = clusterMeta.Topics.ToDictionary(t => t.TopicName, t => t.Partitions);
-            _partitionBrokerMap = (
-                from partition in
-                    (
-                        from topic in clusterMeta.Topics
-                        from partition in topic.Partitions
-                        select partition
-                    )
-                group partition by partition.Leader
-                into leaderGrp
-                join brokerConn in
-                (
-                    from broker in clusterMeta.Brokers
-                    select new {broker, conn = new Connection(broker.Host, broker.Port, _protocol)}
-                ) on leaderGrp.Key equals brokerConn.broker.NodeId
-                // flatten broker->partition[] into partition->broker
-                from partition in leaderGrp
-                select new {partition, broker = brokerConn}
-                ).ToDictionary(p => p.partition, p =>
-                {
-                    p.broker.broker.Conn = p.broker.conn;
-                    return p.broker.broker;
-                });
-        }
-
-        private void MergeTopicMeta(MetadataResponse topicMeta)
-        {
-            // append new topics
-            var newTopics = topicMeta.Topics.Except(_metadata.Topics, TopicMeta.NameComparer);
-            _metadata.Topics = _metadata.Topics.Concat(newTopics).ToArray();
-            
-            // update existing topics
-            (
-                from updatedTopic in topicMeta.Topics
-                where _metadata.Topics.Any(t => t.TopicName == updatedTopic.TopicName)
-                // assume no new partition can happen (kafka does not allow re-partitioning)
-                from oldPart in _metadata.Topics.Single(t => t.TopicName == updatedTopic.TopicName).Partitions
-                from updatedPart in updatedTopic.Partitions
-                where updatedPart.Id == oldPart.Id
-                select new { oldPart, updatedPart}
-            ).ForEach(_ => {
-                if (_.oldPart.ErrorCode != _.updatedPart.ErrorCode)
-                    _.oldPart.ErrorCode = _.updatedPart.ErrorCode;
-                if (!_.oldPart.Isr.SequenceEqual(_.updatedPart.Isr))
-                    _.oldPart.Isr = _.updatedPart.Isr;
-                if (_.oldPart.Leader != _.updatedPart.Leader)
-                {
-                    _log.Info("Partition changed leader {0}->{1}", _.oldPart, _.updatedPart);
-                    _.oldPart.Leader = _.updatedPart.Leader;
-                }
-                if (!_.oldPart.Replicas.SequenceEqual(_.updatedPart.Replicas))
-                    _.oldPart.Replicas = _.updatedPart.Replicas;
-            });
-
-            // add new brokers
-            var newBrokers = topicMeta.Brokers.Except(_metadata.Brokers, BrokerMeta.NodeIdComparer).ToArray();
-            _metadata.Brokers = _metadata.Brokers.Concat(newBrokers).ToArray();
-
-            RebuildBrokerIndexes(_metadata);
-
-            // broadcast any new brokers
-            newBrokers.ForEach(b => _newBrokerSubject.OnNext(b));
-
-            // broadcast the current partition state for all partitions.
-            topicMeta.Topics.SelectMany(t=>t.Partitions.Select(part=>new Tuple<string,int,ErrorCode>(t.TopicName,part.Id,part.ErrorCode))).ForEach(tp=>_partitionStateChangesSubject.OnNext(tp));
-            
-        }
-
         // TODO: is called from ActionBlock but acess dictionaries. Unsafe!!!
         // TODO: unify with partition recovery flow
         async Task ResolveTopic(string topic)
@@ -687,11 +781,11 @@ resend:
                             var delayedMessages = _noTopicMessageQueue[topic];
                             _noTopicMessageQueue.Remove(topic);
                             MergeTopicMeta(topicMeta);
-                            // Issue out-of timer SendBatch to catch up all
-                            // TODO: make sure SendBatch from the main data stream is 
+                            // Issue out-of timer SendBatchAsync to catch up all
+                            // TODO: make sure SendBatchAsync from the main data stream is 
                             // handled in kafka-broker thread
                             foreach(var delayedMessage in delayedMessages.GroupBy(t => t.Item1, t => t.Item2))
-                                await SendBatch(delayedMessage.Key, delayedMessage.ToArray());
+                                await SendBatchAsync(delayedMessage.Key, delayedMessage.ToArray());
                             // TODO: how to *prepend* messages to the queue?
                         });
                         break;
@@ -735,20 +829,6 @@ resend:
                 {
                     _noTopicMessageQueue[topic].Add(Tuple.Create(pub, msg));
                 }
-            });
-        }
-
-        internal async Task<TcpClient> GetAnyClient()
-        {
-            // Two awaits, one for scheduler and one for Conn.GetClient
-            return await await Scheduler.Ask(() =>
-            {
-                // TODO: would it be a good idea to query all brokers and return the 1st successful response?
-                // This way we do not fail the whole driver if first broker is down
-                var tcp = _metadata.Brokers.
-                    Select(b => b.Conn.GetClient()).
-                    First();
-                return tcp;
             });
         }
 
@@ -982,24 +1062,7 @@ resend:
             });
         }
 
-        internal enum BrokerState
-        {
-            Disconnected,
-            Connecting,
-            Connected
-        }
-
-        class WaitQueueRecord {
-            public List<Message> Messages = new List<Message>();
-            public Producer Pub;
-        }
-
-        public string[] GetAllTopics()
-        {
-            if(_metadata == null)
-                return new string[0];
-            return Scheduler.Ask(() => _metadata.Topics.Select(t => t.TopicName).ToArray()).Result;
-        }
+        #endregion Producer Support
 
     }
 }

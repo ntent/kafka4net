@@ -27,7 +27,7 @@ namespace kafka4net.ConsumerImpl
         private static int _nextId;
         private readonly int _id = Interlocked.Increment(ref _nextId);
 
-        private readonly Router _router;
+        private readonly Cluster _cluster;
         private readonly BrokerMeta _broker;
         private readonly Protocol _protocol;
         private readonly CancellationToken _cancel;
@@ -40,9 +40,9 @@ namespace kafka4net.ConsumerImpl
         private readonly IObservable<FetchResponse> _fetchResponses;
 
 
-        public Fetcher(Router router, BrokerMeta broker, Protocol protocol, ConsumerConfiguration consumerConfig, CancellationToken cancel)
+        public Fetcher(Cluster cluster, BrokerMeta broker, Protocol protocol, ConsumerConfiguration consumerConfig, CancellationToken cancel)
         {
-            _router = router;
+            _cluster = cluster;
             _broker = broker;
             _protocol = protocol;
             _cancel = cancel;
@@ -189,10 +189,10 @@ namespace kafka4net.ConsumerImpl
                         
                         fetch = await _protocol.Fetch(fetchRequest, _broker.Conn);
 
-                        // if any TopicPartitions have an error, fail them with the router.
+                        // if any TopicPartitions have an error, fail them with the Cluster.
                         fetch.Topics.SelectMany(t=> t.Partitions.Select(p => new Tuple<string, int, ErrorCode>(t.Topic, p.Partition, p.ErrorCode)))
                             .Where(ps => ps.Item3 != ErrorCode.NoError)
-                            .ForEach(ps => _router.SendPartitionStateChange(ps));
+                            .ForEach(ps => _cluster.NotifyPartitionStateChange(ps));
                         
                         if (_log.IsDebugEnabled)
                             _log.Debug("#{0}: got FetchResponse: {1}", _id, fetch);

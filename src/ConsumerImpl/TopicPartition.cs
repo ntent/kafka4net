@@ -10,7 +10,7 @@ namespace kafka4net.ConsumerImpl
     {
         private static readonly ILogger _log = Logger.GetLogger();
         private Consumer _subscribedConsumer;
-        private readonly Router _router;
+        private readonly Cluster _cluster;
         private readonly string _topic;
         private readonly int _partitionId;
         private readonly PartitionFetchState _partitionFetchState;
@@ -19,9 +19,9 @@ namespace kafka4net.ConsumerImpl
         private IDisposable _fetcherChangesSubscription;
         private IDisposable _currentfetcherSubscription;
 
-        public TopicPartition(Router router, string topic, int partitionId, long initialOffset)
+        public TopicPartition(Cluster cluster, string topic, int partitionId, long initialOffset)
         {
-            _router = router;
+            _cluster = cluster;
             _topic = topic;
             _partitionId = partitionId;
             _partitionFetchState = new PartitionFetchState(
@@ -60,7 +60,7 @@ namespace kafka4net.ConsumerImpl
 
             // subscribe to fetcher changes for this partition.
             // We will immediately get a call with the "current" fetcher if it is available, and connect to it then.
-            _fetcherChangesSubscription = _router
+            _fetcherChangesSubscription = _cluster
                 .GetFetcherChanges(_topic, _partitionId, consumer.Configuration)
                 .Subscribe(OnNewFetcher,OnFetcherChangesError,OnFetcherChangesComplete);
 
@@ -126,7 +126,7 @@ namespace kafka4net.ConsumerImpl
             _log.Warn("{0} Recieved Error from Fetcher. Waiting for new or updated Fetcher. Message: {1}", this, error.Message);
             _currentfetcherSubscription.Dispose();
             _currentfetcherSubscription = null;
-            _router.SendPartitionStateChange(new Tuple<string, int, ErrorCode>(Topic, PartitionId, ErrorCode.FetcherException));
+            _cluster.NotifyPartitionStateChange(new Tuple<string, int, ErrorCode>(Topic, PartitionId, ErrorCode.FetcherException));
         }
 
         public void OnCompleted()
@@ -173,7 +173,7 @@ namespace kafka4net.ConsumerImpl
             if (objTopicPartition == null)
                 return false;
 
-            return _router == objTopicPartition._router && _topic == objTopicPartition._topic && _partitionId == objTopicPartition._partitionId;
+            return _cluster == objTopicPartition._cluster && _topic == objTopicPartition._topic && _partitionId == objTopicPartition._partitionId;
         }
 
         public override int GetHashCode()

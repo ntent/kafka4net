@@ -38,7 +38,7 @@ namespace kafka4net.Internal
         static int _idGenerator;
         readonly int _id;
 
-        public PartitionRecoveryMonitor(Router router, Protocol protocol, CancellationToken cancel)
+        public PartitionRecoveryMonitor(Cluster cluster, Protocol protocol, CancellationToken cancel)
         {
             _protocol = protocol;
             _cancel = cancel;
@@ -47,7 +47,7 @@ namespace kafka4net.Internal
             _log.Debug("Created PartitionRecoveryMonitor {0}", this);
 
             // listen for new brokers
-            router.NewBrokers.Subscribe(
+            cluster.NewBrokers.Subscribe(
                 broker =>
                 {
                     // check and add this broker
@@ -59,7 +59,7 @@ namespace kafka4net.Internal
                 );
 
             // listen for any topic status changes and keep our "failed" list updated
-            router.PartitionStateChanges.Subscribe(
+            cluster.PartitionStateChanges.Subscribe(
                 state =>
                 {
                     var key = new Tuple<string, int>(state.Item1, state.Item2);

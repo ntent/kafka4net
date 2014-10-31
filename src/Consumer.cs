@@ -26,7 +26,7 @@ namespace kafka4net
         internal ConsumerConfiguration Configuration { get; private set; }
         internal string Topic { get { return Configuration.Topic; } }
 
-        private readonly Router _router;
+        private readonly Cluster _cluster;
         private readonly Dictionary<int, TopicPartition> _topicPartitions = new Dictionary<int, TopicPartition>(); 
 
         // we should only ever subscribe once, and we want to keep that around to check if it was disposed when we are disposed
@@ -39,12 +39,12 @@ namespace kafka4net
         public Consumer(ConsumerConfiguration consumerConfig)
         {
             Configuration = consumerConfig;
-            _router = new Router(consumerConfig.SeedBrokers);
+            _cluster = new Cluster(consumerConfig.SeedBrokers);
 
             OnMessageArrived = Observable.Create<ReceivedMessage>(async observer =>
             {
-                _log.Debug("Connecting router");
-                await _router.ConnectAsync();
+                _log.Debug("Connecting Cluster");
+                await _cluster.ConnectAsync();
 
                 // subscribe to all partitions
                 (await BuildTopicPartitionsAsync()).ForEach(part =>
@@ -63,42 +63,42 @@ namespace kafka4net
                     _partitionsSubscription.Dispose();
                     _topicPartitions.Clear();
                     // Do not wait for broker closure. Seems impossible in synchronous unsubscribe.
-                    _router.Close(TimeSpan.FromSeconds(1));
+                    _cluster.CloseAsync(TimeSpan.FromSeconds(1));
                 };
             }).
-                SubscribeOn(_router.Scheduler).
+                SubscribeOn(_cluster.Scheduler).
             // allow multiple consumers to share the same subscription
             Publish().
             RefCount();
         }
 
         /// <summary>
-        /// Pass connection method through from Router
+        /// Pass connection method through from Cluster
         /// </summary>
         /// <returns></returns>
         public Task ConnectAsync()
         {
-            return _router.ConnectAsync();
+            return _cluster.ConnectAsync();
         }
 
         /// <summary>
-        /// Ensures the subscription is disposed and closes the consumer's router.
+        /// Ensures the subscription is disposed and closes the consumer's Cluster.
         /// </summary>
         /// <param name="timeout"></param>
         /// <returns></returns>
         public async Task CloseAsync(TimeSpan timeout)
         {
-            await await _router.Scheduler.Ask(() =>
+            await await _cluster.Scheduler.Ask(() =>
             {
                 if (_partitionsSubscription != null && ! _partitionsSubscription.IsDisposed)
                     _partitionsSubscription.Dispose();
-                return _router.Close(timeout);
+                return _cluster.CloseAsync(timeout);
             });
         }
 
-        ///  Provides access to the router for this consumer
+        ///  Provides access to the Cluster for this consumer
         /// </summary>
-        public Router Router { get { return _router; } }
+        public Cluster Cluster { get { return _cluster; } }
 
         /// <summary>
         /// <summary>For every patition, resolve offsets and build TopicPartition object</summary>
@@ -107,19 +107,19 @@ namespace kafka4net
             // two code paths here. If we have specified locations to start from, just get the partition metadata, and build the TopicPartitions
             if (Configuration.StartLocation == ConsumerStartLocation.SpecifiedLocations)
             {
-                var partitionMeta = await _router.GetOrFetchMetaForTopic(Topic);
+                var partitionMeta = await _cluster.GetOrFetchMetaForTopicAsync(Topic);
                 return partitionMeta
                     .Where(pm => !_topicPartitions.ContainsKey(pm.Id))
                     .Select(part =>
                     {
-                        var tp = new TopicPartition(_router, Topic, part.Id, Configuration.PartitionOffsetProvider(part.Id));
+                        var tp = new TopicPartition(_cluster, Topic, part.Id, Configuration.PartitionOffsetProvider(part.Id));
                         _topicPartitions.Add(tp.PartitionId, tp);
                         return tp;
                     });
             }
 
             // no offsets provided. Need to issue an offset request to get start/end locations and use them for consuming
-            var partitions = await _router.FetchPartitionsInfo(Topic);
+            var partitions = await _cluster.FetchPartitionOffsetsAsync(Topic);
 
             if (_log.IsDebugEnabled)
                 _log.Debug("Consumer for topic {0} got time->offset resolved for location {1}. parts: [{2}]", Topic, Configuration.StartLocation, string.Join(",", partitions.OrderBy(p=>p.Partition).Select(p => string.Format("{0}:{1}", p.Partition, Configuration.StartLocation == ConsumerStartLocation.TopicHead ? p.Head : p.Tail))));
@@ -128,7 +128,7 @@ namespace kafka4net
                 .Where(pm => !_topicPartitions.ContainsKey(pm.Partition))
                 .Select(part => 
                 {
-                    var tp = new TopicPartition(_router, Topic, part.Partition, Configuration.StartLocation == ConsumerStartLocation.TopicHead ? part.Head : part.Tail);
+                    var tp = new TopicPartition(_cluster, Topic, part.Partition, Configuration.StartLocation == ConsumerStartLocation.TopicHead ? part.Head : part.Tail);
                     _topicPartitions.Add(tp.PartitionId, tp);
                     return tp;
                 });
@@ -156,10 +156,10 @@ namespace kafka4net
 
             try
             {
-                // close and release the connections in the Router.
-                if (_router != null && _router.State != Router.BrokerState.Disconnected)
-                    _router.Close(TimeSpan.FromSeconds(5)).
-                        ContinueWith(t => _log.Error(t.Exception, "Error when closing router"), TaskContinuationOptions.OnlyOnFaulted);
+                // close and release the connections in the Cluster.
+                if (_cluster != null && _cluster.State != Cluster.ClusterState.Disconnected)
+                    _cluster.CloseAsync(TimeSpan.FromSeconds(5)).
+                        ContinueWith(t => _log.Error(t.Exception, "Error when closing Cluster"), TaskContinuationOptions.OnlyOnFaulted);
             }
             // ReSharper disable once EmptyGeneralCatchClause
             catch(Exception e)
