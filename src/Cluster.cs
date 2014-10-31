@@ -195,7 +195,7 @@ namespace kafka4net
         /// </summary>
         /// <param name="topic">topic name for which to retrieve offsets for</param>
         /// <returns></returns>
-        public async Task<PartitionInfo[]> FetchPartitionOffsetsAsync(string topic)
+        public async Task<PartitionOffsetInfo[]> FetchPartitionOffsetsAsync(string topic)
         {
 
             var ret = await await Scheduler.Ask(async () => {
@@ -242,7 +242,7 @@ namespace kafka4net
 
                         return (
                             from part in partitions
-                            select new PartitionInfo { 
+                            select new PartitionOffsetInfo { 
                                 Partition = part.Partition,
                                 Head = part.Offsets.Length == 1 ? part.Offsets[0] : part.Offsets[1], 
                                 Tail = part.Offsets[0]

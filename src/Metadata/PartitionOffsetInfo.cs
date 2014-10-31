@@ -1,6 +1,6 @@
-﻿namespace kafka4net
+﻿namespace kafka4net.Metadata
 {
-    public class PartitionInfo
+    public class PartitionOffsetInfo
     {
         public int Partition;
         /// <summary>If queue is empty than -1</summary>

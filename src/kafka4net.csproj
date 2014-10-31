@@ -52,10 +52,10 @@
     </Reference>
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="Metadata\PartitionOffsetInfo.cs" />
     <Compile Include="ProducerConfiguration.cs" />
     <Compile Include="ConsumerConfiguration.cs" />
     <Compile Include="ConsumerImpl\TopicPartitionOffsets.cs" />
-    <Compile Include="PartitionInfo.cs" />
     <Compile Include="ConsumerImpl\TopicPartition.cs" />
     <Compile Include="Protocols\Requests\FetchRequest.cs" />
     <Compile Include="Protocols\Requests\MessageData.cs" />
