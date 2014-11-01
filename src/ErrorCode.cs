@@ -27,7 +27,7 @@
         /// broker communication</summary>
         BrokerNotAvailable = 8,
         ///<summary>Unused</summary>
-        Unused = 9,
+        ReplicaNotAvailable = 9,
         ///<summary>The server has a configurable maximum message size to avoid unbounded memory allocation. 
         /// This error is thrown if the client attempt to produce a message larger than this maximum.</summary>
         MessageSizeTooLarge = 10,

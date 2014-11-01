@@ -16,9 +16,7 @@ namespace kafka4net.ConsumerImpl
 {
     /// <summary>
     /// Manages group of partitions to be fetched from single physical broker (connection).
-    /// As different consumers can have same topic, but different wait time and maxBytes param,
-    /// new fetcher will be created for each such a group.
-    /// One fetcher can contain partitions from multiple topics as long as they share the same params.
+    /// One fetcher can contain multiple TopicPartitions subscribed.
     /// </summary>
     internal class Fetcher : IDisposable
     {

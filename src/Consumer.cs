@@ -96,11 +96,11 @@ namespace kafka4net
             });
         }
 
+        /// <summary>
         ///  Provides access to the Cluster for this consumer
         /// </summary>
         public Cluster Cluster { get { return _cluster; } }
 
-        /// <summary>
         /// <summary>For every patition, resolve offsets and build TopicPartition object</summary>
         internal async Task<IEnumerable<TopicPartition>> BuildTopicPartitionsAsync()
         {
