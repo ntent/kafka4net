@@ -2,6 +2,7 @@
 
 # Executed as root
 
+ap-get update
 apt-get install -y openjdk-7-jre-headless
 
 kafka_url='http://www.eng.lsu.edu/mirrors/apache/kafka/0.8.1.1/kafka_2.10-0.8.1.1.tgz'
