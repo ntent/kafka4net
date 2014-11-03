@@ -27,6 +27,7 @@ namespace kafka4net
             BatchFlushSize = 1000;
             BatchFlushTime = TimeSpan.FromMilliseconds(500);
             ProduceRequestTimeout = TimeSpan.FromSeconds(1);
+            Partitioner = new FletcherHashedMessagePartitioner();
         }
 
         /// <summary>
@@ -62,6 +63,7 @@ namespace kafka4net
         public int BatchFlushSize { get; private set; }
         public TimeSpan ProduceRequestTimeout { get; private set; }
         public int ProduceRequestTimeoutMs { get { return (int)Math.Floor(ProduceRequestTimeout.TotalMilliseconds); } }
+        public IMessagePartitioner Partitioner { get; private set; }
 
     }
 }
