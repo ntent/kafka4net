@@ -514,6 +514,102 @@ namespace tests
         //}
 
         [Test]
+        public async void ConsumerFollowsRebalancingPartitions()
+        {
+
+            // create a topic
+            var topic = "topic33." + _rnd.Next();
+            VagrantBrokerUtil.CreateTopic(topic,11,3);
+
+            // Stop two brokers to let leadership shift to broker1.
+            VagrantBrokerUtil.StopBroker("broker2");
+            VagrantBrokerUtil.StopBroker("broker3");
+
+            await Task.Delay(TimeSpan.FromSeconds(5));
+
+            // now start back up
+            VagrantBrokerUtil.StartBroker("broker2");
+            VagrantBrokerUtil.StartBroker("broker3");
+
+            // wait a little for everything to start
+            await Task.Delay(TimeSpan.FromSeconds(5));
+
+            // we should have all of them with leader 1
+            var cluster = new Cluster(_seedAddresses);
+            var partitionMeta = await cluster.GetOrFetchMetaForTopicAsync(topic);
+
+            // make sure they're all on a single leader
+            Assert.True(partitionMeta.GroupBy(p=>p.Leader).Count()==1);
+
+            // now publish messages
+            const int count = 8000;
+            var producer = new Producer(new ProducerConfiguration(_seedAddresses, topic));
+            _log.Debug("Connecting");
+            await producer.ConnectAsync();
+
+            _log.Debug("Filling out {0} with {1} messages", topic, count);
+            var sentList = await Enumerable.Range(0, count)
+                .Select(i => new Message { Value = BitConverter.GetBytes(i) })
+                .ToObservable()
+                .Do(producer.Send)
+                .Select(msg => BitConverter.ToInt32(msg.Value, 0))
+                .ToList();
+
+            await Task.Delay(TimeSpan.FromSeconds(1));
+
+            var parts = await producer.Cluster.FetchPartitionOffsetsAsync(topic);
+
+            _log.Info("Done sending messages. Closing producer.");
+            await producer.Close(TimeSpan.FromSeconds(5));
+            _log.Info("Producer closed, starting consumer subscription.");
+
+            var messagesInTopic = (int)parts.Select(p => p.Tail - p.Head).Sum();
+            _log.Info("Topic offsets indicate producer sent {0} messages.", messagesInTopic);
+
+
+            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, ConsumerStartLocation.TopicHead, maxBytesPerFetch: 4 * 8));
+            await consumer.ConnectAsync();
+            var current = 0;
+            var received = new ReplaySubject<ReceivedMessage>();
+            var consumerSubscription = consumer.OnMessageArrived.
+                Subscribe(async msg =>
+                {
+                    current++;
+                    if (current == 18)
+                    {
+                        await Task.Factory.StartNew(VagrantBrokerUtil.RebalanceLeadership, CancellationToken.None, TaskCreationOptions.None, TaskScheduler.Default);
+                    }
+                    received.OnNext(msg);
+                    //_log.Info("Got: {0}", BitConverter.ToInt32(msg.Value, 0));
+                });
+
+            _log.Info("Waiting for receiver complete");
+            var receivedList = await received.Select(msg => BitConverter.ToInt32(msg.Value, 0)).Take(messagesInTopic).TakeUntil(DateTime.Now.AddSeconds(60)).ToList().ToTask();
+
+            parts = await consumer.Cluster.FetchPartitionOffsetsAsync(topic);
+
+            _log.Info("Receiver complete. Disposing Subscription");
+            consumerSubscription.Dispose();
+            _log.Info("Consumer subscription disposed. Closing consumer.");
+            await consumer.CloseAsync(TimeSpan.FromSeconds(5));
+            _log.Info("Consumer closed.");
+
+            _log.Error("Sum of offsets fetched: {0}", parts.Select(p => p.Tail - p.Head).Sum());
+            _log.Error("Offsets fetched: [{0}]", string.Join(",", parts.Select(p => p.ToString())));
+
+            if (messagesInTopic != receivedList.Count)
+            {
+                // log some debug info.
+                _log.Error("Did not receive all messages. Messages sent but NOT received: {0}", string.Join(",", sentList.Except(receivedList).OrderBy(i => i)));
+
+            }
+
+            Assert.AreEqual(messagesInTopic, receivedList.Count);
+
+
+        }
+
+        [Test]
         public async void KeyedMessagesPreserveOrder()
         {
             // create a topic with 3 partitions

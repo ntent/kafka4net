@@ -38,6 +38,14 @@ namespace tests
             _log.Info("Created topic: '{0}'", topicName);
         }
 
+        public static void RebalanceLeadership()
+        {
+            _log.Info("Rebalancing Leadership");
+            const string rebalanceScript = "ssh -c '/opt/kafka_2.10-0.8.1.1/bin/kafka-preferred-replica-election.sh --zookeeper 192.168.56.2' broker1";
+            Vagrant(rebalanceScript);
+            _log.Info("Rebalanced Leadership");
+        }
+
         public static void RestartBrokers()
         {
             BrokerIpToName.Where(np=>!IsBrokerResponding(np.Key)).ForEach(np=>StartBroker(np.Value));
