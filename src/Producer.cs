@@ -36,16 +36,29 @@ namespace kafka4net
         // TODO: the Queue in here needs to eventually be wrapped with logic to have size bounds
         private readonly Dictionary<int, Queue<Message[]>> _allPartitionQueues = new Dictionary<int, Queue<Message[]>>();
 
-        public Producer(ProducerConfiguration producerConfiguration)
+        public Producer(Cluster cluster, ProducerConfiguration producerConfiguration)
         {
             Configuration = producerConfiguration;
-            _cluster = new Cluster(producerConfiguration.SeedBrokers);
+            _cluster = cluster;
+
             _sendMessagesSubject = new Subject<Message>();
         }
 
+        /// <summary>
+        /// 
+        /// </summary>
+        /// <param name="seedBrokers">Comma separated list of seed brokers. Port numbers are optional.
+        /// <example>192.168.56.10,192.168.56.20:8081,broker3.local.net:8181</example>
+        /// </param>
+        /// <param name="producerConfiguration"></param>
+        public Producer(string seedBrokers, ProducerConfiguration producerConfiguration)
+            : this(new Cluster(seedBrokers), producerConfiguration) { }
+
+
         public async Task ConnectAsync()
         {
-            await _cluster.ConnectAsync();
+            if (_cluster.State != Cluster.ClusterState.Connected)
+                await _cluster.ConnectAsync();
 
 
             // Buffered Observable Notifies on "release" of a batch to send.
@@ -132,8 +145,6 @@ namespace kafka4net
             // wait for sending to complete 
             await _sendLoopTask.ConfigureAwait(false);
 
-            // close down the cluster
-            await _cluster.CloseAsync(timeout);
             _log.Info("Close complete");
         }
 
