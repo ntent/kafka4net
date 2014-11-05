@@ -911,6 +911,79 @@ namespace tests
 
         }
 
+        [Test]
+        public async void SchedulerThreadIsIsolatedFromUserCode()
+        {
+            var threadId = Thread.CurrentThread.ManagedThreadId;
+            _log.Info("Test Runner is using thread {0}",threadId);
+
+            var topic = "topic." + _rnd.Next();
+            VagrantBrokerUtil.CreateTopic(topic,6,3);
+
+            var cluster = new Cluster(_seedAddresses);
+            await cluster.ConnectAsync();
+            Assert.AreEqual(threadId,Thread.CurrentThread.ManagedThreadId);
+
+            await cluster.FetchPartitionOffsetsAsync(topic);
+            Assert.AreEqual(threadId, Thread.CurrentThread.ManagedThreadId);
+
+            var topics = cluster.GetAllTopics();
+            Assert.AreEqual(threadId, Thread.CurrentThread.ManagedThreadId);
+
+            // now create a producer
+            var producer = new Producer(cluster, new ProducerConfiguration(topic));
+            await producer.ConnectAsync();
+            Assert.AreEqual(threadId, Thread.CurrentThread.ManagedThreadId);
+
+            // create a producer that also creates a cluster
+            var producerWithCluster = new Producer(_seedAddresses, new ProducerConfiguration(topic));
+            await producerWithCluster.ConnectAsync();
+            Assert.AreEqual(threadId, Thread.CurrentThread.ManagedThreadId);
+
+            // TODO: Subscribe and check thread on notification observables!
+
+            // run them both for a little while (~5 seconds)
+            var msgs = await Observable.Interval(TimeSpan.FromMilliseconds(100))
+                .Do(l =>
+                {
+                    producer.Send(new Message { Value = BitConverter.GetBytes(l) });
+                    producer.Send(new Message { Value = BitConverter.GetBytes(l) });
+
+                }).Take(50);
+            Assert.AreEqual(threadId, Thread.CurrentThread.ManagedThreadId);
+
+            // now consumer(s)
+            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses,topic,ConsumerStartLocation.TopicHead));
+            await consumer.ConnectAsync();
+            Assert.AreEqual(threadId, Thread.CurrentThread.ManagedThreadId);
+
+
+            var messageSubscription = consumer.OnMessageArrived
+                .Do(msg=> Assert.AreEqual(threadId, Thread.CurrentThread.ManagedThreadId), exception => Assert.AreEqual(threadId, Thread.CurrentThread.ManagedThreadId), () => Assert.AreEqual(threadId, Thread.CurrentThread.ManagedThreadId) )
+                .Take(50)
+                .TakeUntil(DateTime.Now.AddSeconds(5))
+                .Subscribe(msg=> Assert.AreEqual(threadId, Thread.CurrentThread.ManagedThreadId), exception => Assert.AreEqual(threadId, Thread.CurrentThread.ManagedThreadId), () => Assert.AreEqual(threadId, Thread.CurrentThread.ManagedThreadId) );
+
+            await Task.Delay(TimeSpan.FromSeconds(6));
+            Assert.AreEqual(threadId, Thread.CurrentThread.ManagedThreadId);
+            messageSubscription.Dispose();
+            Assert.AreEqual(threadId, Thread.CurrentThread.ManagedThreadId);
+
+            // now close down
+            await producer.Close(TimeSpan.FromSeconds(5));
+            Assert.AreEqual(threadId, Thread.CurrentThread.ManagedThreadId);
+
+            await producerWithCluster.Close(TimeSpan.FromSeconds(5));
+            Assert.AreEqual(threadId, Thread.CurrentThread.ManagedThreadId);
+
+            await consumer.CloseAsync(TimeSpan.FromSeconds(5));
+            Assert.AreEqual(threadId, Thread.CurrentThread.ManagedThreadId);
+
+            await cluster.CloseAsync(TimeSpan.FromSeconds(5));
+            Assert.AreEqual(threadId, Thread.CurrentThread.ManagedThreadId);
+
+        }
+
         // if last leader is down, all in-buffer messages are errored and the new ones
         // are too.
 
