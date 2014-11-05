@@ -46,30 +46,34 @@ namespace kafka4net
         
         //
         // indexed metadata
-        // TODO: are kafka topics case-sensitive?
         private Dictionary<string,PartitionMeta[]> _topicPartitionMap = new Dictionary<string, PartitionMeta[]>();
         private Dictionary<PartitionMeta, BrokerMeta> _partitionBrokerMap = new Dictionary<PartitionMeta, BrokerMeta>();
         private readonly ConcurrentDictionary<BrokerMeta, Fetcher> _activeFetchers = new ConcurrentDictionary<BrokerMeta, Fetcher>();
 
         // Single Threaded Scheduler to handle all async methods in the library
-        internal readonly EventLoopScheduler Scheduler = new EventLoopScheduler(ts => new Thread(ts) { Name = "Kafka4net-scheduler", IsBackground = true });
+        internal readonly EventLoopScheduler Scheduler = new EventLoopScheduler(ts => new Thread(ts) { Name = "kafka-scheduler", IsBackground = true });
 
-        // Cluster ID (unique number for each Cluster instance. used in debugging messages.)
+        [Obsolete]
         private readonly CountObservable _inBatchCount = new CountObservable();
+        // Cluster ID (unique number for each Cluster instance. used in debugging messages.)
         private static int _idCount;
         private readonly int _id = Interlocked.Increment(ref _idCount);
 
         //
         // message waiting structures
         //
+        [Obsolete]
         private class WaitQueueRecord
         {
             internal List<Message> Messages = new List<Message>();
             internal Producer Pub;
         }
+        [Obsolete]
         private readonly Dictionary<string, List<Tuple<Producer, Message>>> _noTopicMessageQueue = new Dictionary<string, List<Tuple<Producer, Message>>>();
+        [Obsolete]
         private readonly ActionBlock<string> _topicResolutionQueue;
-        private readonly  Dictionary<string,Dictionary<PartitionMeta,WaitQueueRecord>> _waitingMessages = new Dictionary<string, Dictionary<PartitionMeta, WaitQueueRecord>>();
+        [Obsolete]
+        private readonly Dictionary<string, Dictionary<PartitionMeta, WaitQueueRecord>> _waitingMessages = new Dictionary<string, Dictionary<PartitionMeta, WaitQueueRecord>>();
         
         // Monitor for recovering partitions when they enter an error state.
         PartitionRecoveryMonitor _partitionRecoveryMonitor;
@@ -342,7 +346,7 @@ namespace kafka4net
         {
             return PartitionStateChanges
                 .Where(t => t.Item1 == topic && t.Item2 == partitionId)
-                .Do(psc => _log.Info("GetFetcherChages saw new partition state {0}-{1}-{2}", psc.Item1, psc.Item2, psc.Item3),
+                .Do(psc => _log.Debug("GetFetcherChages saw new partition state {0}-{1}-{2}", psc.Item1, psc.Item2, psc.Item3),
                     ex => _log.Fatal(ex, "GetFetcherChages saw ERROR from PartitionStateChanges"))
                 .Select(state =>
                 {
@@ -611,41 +615,47 @@ namespace kafka4net
 
         #region Producer Support
 
-        //internal async Task SendBrokerBatch(BrokerMeta broker, IList<Tuple<PartitionMeta, Func<bool>, IList<Message>>> batches)
-        //{
-        //    var pr = new ProduceRequest
-        //    {
-        //        Broker = broker,
-        //        RequiredAcks = producer.Configuration.RequiredAcks,
-        //        Timeout = (int)producer.Configuration.ProduceRequestTimeoutMs,
-        //        TopicData = new[] 
-        //        {
-        //            new TopicData {
-        //                TopicName = producer.Topic,
-        //                PartitionsData = (
-        //                    from msg in routeGrp
-        //                    // group messages belonging to the same partition
-        //                    group msg by msg.Part
-        //                    into partitionGrp
-        //                    select new PartitionData {
-        //                        Pub = producer,
-        //                        OriginalMessages = partitionGrp.Select(m => m.Msg).ToArray(),
-        //                        Partition = partitionGrp.Key.Id,
-        //                        Messages = (
-        //                            from msg in partitionGrp
-        //                            select new MessageData {
-        //                                Key = msg.Msg.Key,
-        //                                Value = msg.Msg.Value
-        //                            }
-        //                        )
-        //                    }
-        //                )
-        //            }
-        //        }
-        //    }
+        internal async Task<ProducerResponse> SendBatchAsync(int leader, IEnumerable<Message> batch, Producer producer)
+        {
+            // TODO: do state checking. Introduce this.Connected task to wait if needed
 
-        //}
+            var request = new ProduceRequest
+            {
+                Broker = _metadata.Brokers.First(b => b.NodeId == leader),
+                RequiredAcks = producer.Configuration.RequiredAcks,
+                Timeout = producer.Configuration.ProduceRequestTimeoutMs,
+                TopicData = new[] 
+                {
+                    new TopicData {
+                        TopicName = producer.Topic,
+                        PartitionsData = (
+                            from msg in batch
+                            // group messages belonging to the same partition
+                            group msg by msg.PartitionId
+                            into partitionGrp
+                            select new PartitionData {
+                                Pub = producer,
+                                OriginalMessages = partitionGrp.ToArray(),
+                                Partition = partitionGrp.Key,
+                                Messages = (
+                                    from msg in partitionGrp
+                                    select new MessageData {
+                                        Key = msg.Key,
+                                        Value = msg.Value
+                                    }
+                                    )
+                            }
+                            )
+                    }
+                }
+            };
+            
+            var response = await _protocol.Produce(request);
+            _log.Debug("#{0} SendBatchAsync complete", _id);
+            return response;
+        }
 
+        [Obsolete]
         internal async Task SendBatchAsync(Producer producer, IList<Message> batch)
         {
             _inBatchCount.Incr();
@@ -768,6 +778,7 @@ namespace kafka4net
 
         // TODO: is called from ActionBlock but acess dictionaries. Unsafe!!!
         // TODO: unify with partition recovery flow
+        [Obsolete]
         async Task ResolveTopic(string topic)
         {
             var req = new TopicRequest { Topics = new[] { topic } };

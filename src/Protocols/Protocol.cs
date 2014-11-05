@@ -200,6 +200,32 @@ namespace kafka4net.Protocols
             return response;
         }
 
+        internal async Task<ProducerResponse> Produce(ProduceRequest request)
+        {
+            ProducerResponse response;
+            try
+            {
+                var conn = request.Broker.Conn;
+                var client = await conn.GetClientAsync();
+                _log.Debug("Sending ProduceRequest to {0}, Request: {1}", conn, request);
+                response = await SendAndCorrelateAsync(
+                    id => Serializer.Serialize(request, id),
+                    Serializer.GetProducerResponse,
+                    client,
+                    CancellationToken.None
+                );
+                _log.Debug("Got ProduceResponse: {0}", response);
+
+                return response;
+            }
+            catch (SocketException e)
+            {
+                _cluster.OnTransportError(request, e);
+                throw;
+            }
+        }
+
+        [Obsolete]
         internal Task Produce(IEnumerable<ProduceRequest> requests)
         {
             // Avoid multiple enumeration of "requests"
