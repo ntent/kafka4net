@@ -2,6 +2,7 @@
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
+using System.Linq.Expressions;
 using System.Net.Sockets;
 using System.Reactive.Linq;
 using System.Reactive.Threading.Tasks;
@@ -56,7 +57,7 @@ namespace kafka4net.Protocols
                 {
                     var client = new TcpClient { NoDelay = true };
                     //cancel.Register(client.Close);
-                    await client.ConnectAsync((string) addr.Item1, addr.Item2);
+                    await client.ConnectAsync(addr.Item1, addr.Item2);
                     //if (cancel.IsCancellationRequested)
                     //    return null;
                     _log.Debug("Connected to {0}:{1}", addr.Item1, addr.Item2);
@@ -141,7 +142,6 @@ namespace kafka4net.Protocols
                 }
                 catch (Exception e)
                 {
-                    // TODO: it seems exception here is not propagated all the way back to subscriber
                     _log.Error(e, "CorrelateResponseLoop error");
                 }
             }
@@ -202,93 +202,18 @@ namespace kafka4net.Protocols
 
         internal async Task<ProducerResponse> Produce(ProduceRequest request)
         {
-            ProducerResponse response;
-            try
-            {
-                var conn = request.Broker.Conn;
-                var client = await conn.GetClientAsync();
-                _log.Debug("Sending ProduceRequest to {0}, Request: {1}", conn, request);
-                response = await SendAndCorrelateAsync(
-                    id => Serializer.Serialize(request, id),
-                    Serializer.GetProducerResponse,
-                    client,
-                    CancellationToken.None
-                );
-                _log.Debug("Got ProduceResponse: {0}", response);
+            var conn = request.Broker.Conn;
+            var client = await conn.GetClientAsync();
+            _log.Debug("Sending ProduceRequest to {0}, Request: {1}", conn, request);
+            var response = await SendAndCorrelateAsync(
+                id => Serializer.Serialize(request, id),
+                Serializer.GetProducerResponse,
+                client,
+                CancellationToken.None
+            );
+            _log.Debug("Got ProduceResponse: {0}", response);
 
-                return response;
-            }
-            catch (SocketException e)
-            {
-                _cluster.OnTransportError(request, e);
-                throw;
-            }
-        }
-
-        [Obsolete]
-        internal Task Produce(IEnumerable<ProduceRequest> requests)
-        {
-            // Avoid multiple enumeration of "requests"
-            var materializedRequest = requests.ToArray();
-
-            // TODO: handle result
-            var tasks = materializedRequest.Select(async request =>
-            {
-                ProducerResponse response;
-                try
-                {
-                    var conn = request.Broker.Conn;
-                    var client = await conn.GetClientAsync();
-                    _log.Debug("Sending ProduceRequest to {0}, Request: {1}", conn, request);
-                    response = await SendAndCorrelateAsync(
-                        id => Serializer.Serialize(request, id),
-                        Serializer.GetProducerResponse,
-                        client,
-                        CancellationToken.None
-                    );
-                    _log.Debug("Got ProduceResponse: {0}", response);
-                    if (response.Topics.Any(t => t.Partitions.Any(p => p.ErrorCode != ErrorCode.NoError)))
-                        _log.Debug("_");
-                }
-                catch (SocketException e)
-                {
-                    _cluster.OnTransportError(request, e);
-                    return;
-                }
-
-                (
-                    from req in materializedRequest
-                    from topic in req.TopicData
-                    from part in topic.PartitionsData
-                    // correlate per-partition result errors to source per-partition messages
-                    join err in (
-                        from topic in response.Topics
-                        from part in topic.Partitions
-                        select new {topic.TopicName, part.Partition, part.ErrorCode}
-                    ) on new {topic.TopicName, part.Partition} equals new {err.TopicName, err.Partition}
-                    select new {topic.TopicName, part.Pub, part.OriginalMessages, err.ErrorCode, err.Partition }
-                 ).ForEach(p => {
-                     if (p.ErrorCode == ErrorCode.NoError)
-                     {
-                         if (p.Pub.OnSuccess != null)
-                             SafeCallback(() => p.Pub.OnSuccess(p.OriginalMessages));
-                     }
-                     else
-                     {
-                         // TODO: if its a temp error, route messages to delay queue
-                         // TODO: what if exception? What if recoverable exception (connection lost?)
-                         if(p.Pub.OnPermError != null) 
-                         {
-                             // TODO: create dedicated PartitionException
-                             var error = string.Format("Error sending data. Error code: {0}; topic: '{1}', partition: {2}", p.ErrorCode, p.TopicName, p.Partition);
-                             SafeCallback(() => p.Pub.OnPermError(new BrokerException(error), p.OriginalMessages));
-                         }
-                     }
-                 });
-
-            });
-
-            return Task.WhenAll(tasks);
+            return response;
         }
 
         internal async Task<MetadataResponse> MetadataRequest(TopicRequest request, BrokerMeta broker = null)
@@ -341,18 +266,6 @@ namespace kafka4net.Protocols
             _log.Debug("Loading all metadata...");
             var request = new TopicRequest();
             return SendAndCorrelateAsync(c => Serializer.Serialize(request, c), Serializer.DeserializeMetadataResponse, client, CancellationToken.None);
-        }
-
-        static void SafeCallback(Action action)
-        {
-            try
-            {
-                action();
-            }
-            catch (Exception e)
-            {
-                _log.Error("Error when executing callback. {0}\n{1}", e.Message, e.StackTrace);
-            }
         }
 
         private static string FormatBytes(byte[] buff)

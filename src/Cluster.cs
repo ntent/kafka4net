@@ -1,7 +1,6 @@
 ﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.IO;
 using System.Linq;
 using System.Net.Sockets;
 using System.Reactive.Concurrency;
@@ -53,33 +52,14 @@ namespace kafka4net
         // Single Threaded Scheduler to handle all async methods in the library
         internal readonly EventLoopScheduler Scheduler = new EventLoopScheduler(ts => new Thread(ts) { Name = "kafka-scheduler", IsBackground = true });
 
-        [Obsolete]
-        private readonly CountObservable _inBatchCount = new CountObservable();
         // Cluster ID (unique number for each Cluster instance. used in debugging messages.)
         private static int _idCount;
         private readonly int _id = Interlocked.Increment(ref _idCount);
 
-        //
-        // message waiting structures
-        //
-        [Obsolete]
-        private class WaitQueueRecord
-        {
-            internal List<Message> Messages = new List<Message>();
-            internal Producer Pub;
-        }
-        [Obsolete]
-        private readonly Dictionary<string, List<Tuple<Producer, Message>>> _noTopicMessageQueue = new Dictionary<string, List<Tuple<Producer, Message>>>();
-        [Obsolete]
-        private readonly ActionBlock<string> _topicResolutionQueue;
-        [Obsolete]
-        private readonly Dictionary<string, Dictionary<PartitionMeta, WaitQueueRecord>> _waitingMessages = new Dictionary<string, Dictionary<PartitionMeta, WaitQueueRecord>>();
-        
         // Monitor for recovering partitions when they enter an error state.
         PartitionRecoveryMonitor _partitionRecoveryMonitor;
 
         private readonly CancellationTokenSource _cancel = new CancellationTokenSource();
-        private readonly Task<Task> _partitionRecoveryTask;
 
         /// <summary>
         /// Create broker in disconnected state. Requires ConnectAsync or ConnectAsync call.
@@ -90,17 +70,9 @@ namespace kafka4net
             // Init synchronization context of scheduler thread
             Scheduler.Schedule(() => SynchronizationContext.SetSynchronizationContext(new RxSyncContextFromScheduler(Scheduler)));
 
-            _topicResolutionQueue = new ActionBlock<string>(t => ResolveTopic(t), 
-                new ExecutionDataflowBlockOptions { MaxDegreeOfParallelism = 5});
-
-            // This task watches for any partitions that recover or change states.
-            _partitionRecoveryTask = Task.Factory.StartNew(() => StartPartitionRecovery(), TaskCreationOptions.LongRunning);
-
             // build a subject that relays any changes to a partition's error state to anyone observing.
             _partitionStateChangesSubject = BuildPartitionStateChangeSubject();
             _newBrokerSubject = BuildnewBrokersSubject();
-
-            _inBatchCount.Subscribe(c => _log.Debug("#{0} InBatchCount: {1}", _id, c));
         }
 
         /// <summary>
@@ -157,12 +129,9 @@ namespace kafka4net
 
             _log.Debug("#{0} Closing...", _id);
             _cancel.Cancel();
-            _topicResolutionQueue.Complete();
 
             var success = await Task.WhenAll(new[] { 
                 _partitionRecoveryMonitor.Completion, 
-                _topicResolutionQueue.Completion,
-                _inBatchCount.FirstAsync(c => c == 0).ToTask()
             }).TimeoutAfter(timeout);
 
             if (!success)
@@ -170,11 +139,6 @@ namespace kafka4net
                 _log.Error("Timed out");
                 if (!_partitionRecoveryMonitor.Completion.IsCompleted)
                     _log.Error("_partitionRecoveryMonitor timed out");
-                if (!_topicResolutionQueue.Completion.IsCompleted)
-                    _log.Error("_topicResolutionQueue timed out");
-                var batchesInProgress = _inBatchCount.FirstAsync().ToTask().Result;
-                if (batchesInProgress != 0)
-                    _log.Error("There are {0} batches in progress. Timed out", batchesInProgress);
             }
             else
             {
@@ -320,7 +284,8 @@ namespace kafka4net
             var subj = new Subject<Tuple<string, int, ErrorCode>>();
             var pipeline =
                 // group by topic and partition
-                subj.GroupBy(e => new { e.Item1, e.Item2 }).
+                subj.Do(m => _log.Debug("Got partition change message {0}", m)).
+                GroupBy(e => new { e.Item1, e.Item2 }).
                 // select 
                 Select(g =>
                 {
@@ -430,39 +395,6 @@ namespace kafka4net
             var partMeta = _topicPartitionMap[topic].Single(p => p.Id == partition);
             var brokerMeta = _partitionBrokerMap[partMeta];
             return brokerMeta;
-        }
-
-
-        /// <summary>Find partition and connection for given message key/topic.
-        /// If topic meta does not exist, send message to the topic resolution queue
-        /// </summary>
-        /// <param name="waitingList">If partition is not found, null will be returned but message is enqueued onto this list for further resolution.</param>
-        /// <returns>Null if metadata for this topic not found</returns>
-        private Tuple<BrokerMeta, PartitionMeta> FindBrokerAndPartition(Message msg, Producer pub, List<Tuple<Producer, PartitionMeta, Message>> waitingList)
-        {
-            PartitionMeta[] parts;
-            var topic = pub.Topic;
-
-            if (!_topicPartitionMap.TryGetValue(topic, out parts))
-            {
-                EnqueueToTopicResolutionQueue(msg, pub, topic);
-                return null;
-            }
-
-            var index = msg.Key == null ?
-                _rnd.Next(parts.Length) :
-                Fletcher32HashOptimized(msg.Key) % parts.Length;
-
-            var part = parts[index];
-            var broker = _partitionBrokerMap[part];
-
-            if (broker.Conn.State == ConnState.Connecting || part.ErrorCode == ErrorCode.LeaderNotAvailable)
-            {
-                waitingList.Add(Tuple.Create(pub, part, msg));
-                return null;
-            }
-
-            return Tuple.Create(broker, part);
         }
 
         internal async Task<TcpClient> GetAnyClientAsync()
@@ -606,14 +538,16 @@ namespace kafka4net
             // broadcast any new brokers
             newBrokers.ForEach(b => _newBrokerSubject.OnNext(b));
 
+            
+
             // broadcast the current partition state for all partitions.
-            topicMeta.Topics.SelectMany(t => t.Partitions.Select(part => new Tuple<string, int, ErrorCode>(t.TopicName, part.Id, part.ErrorCode))).ForEach(tp => _partitionStateChangesSubject.OnNext(tp));
+            topicMeta.Topics.
+                SelectMany(t => t.Partitions.Select(part => new Tuple<string, int, ErrorCode>(t.TopicName, part.Id, part.ErrorCode))).
+                ForEach(tp => _partitionStateChangesSubject.OnNext(tp));
 
         }
 
         #endregion Metadata Management
-
-        #region Producer Support
 
         internal async Task<ProducerResponse> SendBatchAsync(int leader, IEnumerable<Message> batch, Producer producer)
         {
@@ -649,432 +583,18 @@ namespace kafka4net
                     }
                 }
             };
-            
-            var response = await _protocol.Produce(request);
+
+            ProducerResponse response;
+            try
+            {
+                response = await _protocol.Produce(request);
+            }
+            catch(Exception)
+            {
+                throw;
+            }
             _log.Debug("#{0} SendBatchAsync complete", _id);
             return response;
         }
-
-        [Obsolete]
-        internal async Task SendBatchAsync(Producer producer, IList<Message> batch)
-        {
-            _inBatchCount.Incr();
-            try
-            {
-                _log.Debug("#{0} SendBatchAsync messages: {1}", _id, batch.Count);
-
-                if (_cancel.IsCancellationRequested || _state == ClusterState.Disconnected || _state == ClusterState.Closed)
-                    throw new BrokerException("Can not send, Cluster is not connected.");
-
-                if (_state == ClusterState.Connecting)
-                {
-                    // group by producer to send errors in batches
-                    //foreach (var pubGroup in batch.GroupBy(_ => _.Item1))
-                    //{
-                    //    var producer = pubGroup.Key;
-
-                        // TODO: How do we handle connecting state?
-                        //pubGroup.ToList().ForEach(_delayedMessages.Enqueue);
-
-                    //}
-                    _log.Error("SendBatchAsync Cluster Connecting, how should this be handled!?");
-                    return;
-                }
-
-                if (_state != ClusterState.Connected) throw new Exception("Unknown state: " + _state);
-
-                // BNF:
-                // ProduceRequest => RequiredAcks Timeout [TopicName [Partition MessageSetSize MessageSet]]
-                //      RequiredAcks => int16
-                //      Timeout => int32
-                //      Partition => int32
-                //      MessageSetSize => int32
-                var waitingList = new List<Tuple<Producer, PartitionMeta, Message>>();
-                var requests = (
-                    from msg in
-                        (
-                            // extend message with broker and partition info
-                            from msg in batch
-                            let brokerPart = FindBrokerAndPartition(msg, producer, waitingList)
-                            // Messages without known partition are sent to retry by FindBrokerAndPartition()
-                            // so just skip them here
-                            where brokerPart != null
-                            select new { Msg = msg, Broker = brokerPart.Item1, Part = brokerPart.Item2 }
-                            )
-                    // Group by broker to send one batch per physical connection
-                    group msg by msg.Broker
-                    into routeGrp
-                    select new ProduceRequest
-                    {
-                        Broker = routeGrp.Key,
-                        RequiredAcks = producer.Configuration.RequiredAcks,
-                        Timeout = (int)producer.Configuration.ProduceRequestTimeoutMs,
-                        TopicData = new[] 
-                        {
-                            new TopicData {
-                                TopicName = producer.Topic,
-                                PartitionsData = (
-                                    from msg in routeGrp
-                                    // group messages belonging to the same partition
-                                    group msg by msg.Part
-                                    into partitionGrp
-                                    select new PartitionData {
-                                        Pub = producer,
-                                        OriginalMessages = partitionGrp.Select(m => m.Msg).ToArray(),
-                                        Partition = partitionGrp.Key.Id,
-                                        Messages = (
-                                            from msg in partitionGrp
-                                            select new MessageData {
-                                                Key = msg.Msg.Key,
-                                                Value = msg.Msg.Value
-                                            }
-                                            )
-                                    }
-                                    )
-                            }
-                        }
-                    }
-                    ).ToArray(); // materialize to fill out waitingList
-
-                PutMessagesIntoWaitingQueue(waitingList);
-
-                await _protocol.Produce(requests);
-                _log.Debug("#{0} SendBatchAsync complete", _id);
-                return;
-
-                throw new Exception("Unknown state: " + _state);
-            }
-            finally {
-                _inBatchCount.Decr();
-            }
-        }
-
-        /// <summary>Optimized Fletcher32 checksum implementation.
-        /// <see cref="http://en.wikipedia.org/wiki/Fletcher%27s_checksum#Fletcher-32"/></summary>
-        private uint Fletcher32HashOptimized(byte[] msg)
-        {
-            if (msg == null)
-                return 0;
-            var words = msg.Length;
-            int i = 0;
-            uint sum1 = 0xffff, sum2 = 0xffff;
-
-            while(words != 0)
-            {
-                var tlen = words > 359 ? 359 : words;
-                words -= tlen;
-                do
-                {
-                    sum2 += sum1 += msg[i++];
-                } while (--tlen != 0);
-                sum1 = (sum1 & 0xffff) + (sum1 >> 16);
-                sum2 = (sum2 & 0xffff) + (sum2 >> 16);
-            }
-            /* Second reduction step to reduce sums to 16 bits */
-            sum1 = (sum1 & 0xffff) + (sum1 >> 16);
-            sum2 = (sum2 & 0xffff) + (sum2 >> 16);
-            return (sum2 << 16 | sum1);
-        }
-
-        // TODO: is called from ActionBlock but acess dictionaries. Unsafe!!!
-        // TODO: unify with partition recovery flow
-        [Obsolete]
-        async Task ResolveTopic(string topic)
-        {
-            var req = new TopicRequest { Topics = new[] { topic } };
-            try 
-            {
-resend:
-                var topicMeta = await _protocol.MetadataRequest(req);
-                switch (topicMeta.Topics[0].TopicErrorCode)
-                {
-                    case ErrorCode.NoError:
-                        Scheduler.Schedule(async () => { 
-                            var delayedMessages = _noTopicMessageQueue[topic];
-                            _noTopicMessageQueue.Remove(topic);
-                            MergeTopicMeta(topicMeta);
-                            // Issue out-of timer SendBatchAsync to catch up all
-                            // TODO: make sure SendBatchAsync from the main data stream is 
-                            // handled in kafka-broker thread
-                            foreach(var delayedMessage in delayedMessages.GroupBy(t => t.Item1, t => t.Item2))
-                                await SendBatchAsync(delayedMessage.Key, delayedMessage.ToArray());
-                            // TODO: how to *prepend* messages to the queue?
-                        });
-                        break;
-                    case ErrorCode.LeaderNotAvailable:
-                        // TODO: limit retry by time
-                        while (true)
-                        {
-                            _log.Info("Leader not available for '{0}'. Will retry", topic);
-                            // TODO: progressive increase time of wait from 50ms..15sec
-                            await Task.Delay(TimeSpan.FromSeconds(1));
-                            goto resend;
-                        }
-                    default:
-                        var error = string.Format("Topic '{0}' can not be resolved. Error: {1}", topic, topicMeta.Topics[0].TopicErrorCode);
-                        throw new BrokerException(error);
-                }
-            }
-            catch (Exception e)
-            {
-                Scheduler.Schedule(() => {
-                    var failedMessages = _noTopicMessageQueue[topic];
-                    _noTopicMessageQueue.Remove(topic);
-                    failedMessages.
-                        GroupBy(m => m.Item1).
-                        Where(g => g.Key.OnPermError != null).
-                        ForEach(g => g.Key.OnPermError(e, g.Select(t => t.Item2).ToArray()));
-                });
-            }
-        }
-
-        internal void EnqueueToTopicResolutionQueue(Message msg, Producer pub, string topic)
-        {
-            Scheduler.Schedule(() =>
-            {
-                if (!_noTopicMessageQueue.ContainsKey(topic))
-                {
-                    _noTopicMessageQueue.Add(topic, new List<Tuple<Producer,Message>> { Tuple.Create(pub, msg) });
-                    _topicResolutionQueue.Post(topic);
-                }
-                else
-                {
-                    _noTopicMessageQueue[topic].Add(Tuple.Create(pub, msg));
-                }
-            });
-        }
-
-        /// <summary> 
-        /// In case of transport error, consider it temporary.
-        /// Mark broker as broken, start connection pooling and enqueue messages
-        /// into waiting queue.
-        /// </summary>
-        internal void OnTransportError(ProduceRequest request, SocketException e)
-        {
-            Scheduler.Schedule(() =>
-            {
-                // start connection pooling only 1st time
-                if (request.Broker.Conn.State == ConnState.Connected)
-                {
-                    _log.Debug("Switching broker into Connecting mode {0}", request.Broker);
-                    request.Broker.Conn.State = ConnState.Connecting;
-                    
-                    // set partition state to leader unavailable
-                    (
-                        from topic in request.TopicData
-                        from partMeta in _topicPartitionMap[topic.TopicName]
-                        select partMeta
-                    ).ForEach(p => p.ErrorCode = ErrorCode.LeaderNotAvailable);
-                    
-                    PutMessagesIntoWaitingQueue(request);
-                    FireTempError(request);
-                }
-                else if (request.Broker.Conn.State == ConnState.Connecting)
-                {
-                    // just add messages to the waiting queue, connection pooling is already started
-                    PutMessagesIntoWaitingQueue(request);
-                    FireTempError(request);
-                }
-                else
-                {
-                    // connection failed permanently, no sending is possible
-                    (
-                        from topic in request.TopicData
-                        from part in topic.PartitionsData
-                        where part.Pub.OnPermError != null
-                        select part
-                    ).ForEach(part => part.Pub.OnPermError(e, part.OriginalMessages));
-                }
-
-            });
-        }
-
-        private void PutMessagesIntoWaitingQueue(ProduceRequest request)
-        {
-            (
-                from topic in request.TopicData
-                from part in topic.PartitionsData
-                select new {topic.TopicName, part}
-            ).ForEach(msgs =>
-            {
-                Dictionary<PartitionMeta, WaitQueueRecord> part;
-                if(!_waitingMessages.TryGetValue(msgs.TopicName, out part))
-                    _waitingMessages.Add(msgs.TopicName, part = new Dictionary<PartitionMeta, WaitQueueRecord>());
-                WaitQueueRecord waitingMsgs;
-                var partMeta = _topicPartitionMap[msgs.TopicName].Single(p => p.Id == msgs.part.Partition);
-                if(!part.TryGetValue(partMeta, out waitingMsgs))
-                    part.Add(partMeta, waitingMsgs = new WaitQueueRecord());
-                waitingMsgs.Messages.AddRange(msgs.part.OriginalMessages);
-                waitingMsgs.Pub = msgs.part.Pub;
-            });
-        }
-
-        private void PutMessagesIntoWaitingQueue(List<Tuple<Producer,PartitionMeta,Message>> messages)
-        {
-            (
-                from message in messages
-                group message by new { message.Item2, message.Item1 }
-                    into msgGrp
-                    select new {Pub = msgGrp.Key.Item1, Part = msgGrp.Key.Item2, Messages = msgGrp.Select(m => m.Item3).ToArray()}
-
-            ).ForEach(msgGrp => {
-                Dictionary<PartitionMeta, WaitQueueRecord> part;
-                if (!_waitingMessages.TryGetValue(msgGrp.Pub.Topic, out part))
-                    _waitingMessages.Add(msgGrp.Pub.Topic, part = new Dictionary<PartitionMeta, WaitQueueRecord>());
-                WaitQueueRecord waitingMsgs;
-                var partMeta = msgGrp.Part;
-                if (!part.TryGetValue(partMeta, out waitingMsgs))
-                    part.Add(partMeta, waitingMsgs = new WaitQueueRecord());
-                waitingMsgs.Messages.AddRange(msgGrp.Messages);
-                waitingMsgs.Pub = msgGrp.Pub;            
-            });
-        }
-
-
-        private void FireTempError(ProduceRequest request)
-        {
-            (from topic in request.TopicData
-             from part in topic.PartitionsData
-             where part.Pub.OnTempError != null
-             select new {part.Pub, part.OriginalMessages}
-            ).ForEach(p => p.Pub.OnTempError(p.OriginalMessages));
-        }
-
-        async Task StartPartitionRecovery()
-        {
-            //
-            // Query all brokers in parallel. 
-            // Fetch metadata from first broker which responds.
-            // Re-fetch metadata from failed partition leader to make sure it is alive (unless it is the same just queried).
-
-            while (!_cancel.IsCancellationRequested)
-            {
-                var brokers = await Scheduler.Ask(() => _metadata.Brokers.ToArray());
-
-                foreach (var broker in brokers)
-                {
-                    // TODO: fail upon certain timeout
-                    try
-                    {
-                        // any topic which has partitions in non-draining state. Draining can stay in the queue for some time
-                        var topics = await Scheduler.Ask(() => _waitingMessages.Where(kv => kv.Value.Any(p => p.Key.ErrorCode != ErrorCode.Draining)).
-                            Select(kv => kv.Key).
-                            ToArray());
-                        if (topics.Length == 0)
-                        {
-                            await Task.Delay(1000);
-                            // TODO: we can complete this task, but how to avoid race condition
-                            // between adding new waiting messages and task completion?
-                            break;
-                        }
-
-                        _log.Info("Starting partition recovery. Broker: {0}", broker);
-
-                        var metaNew = await _protocol.MetadataRequest(new TopicRequest { Topics = topics }, broker);
-                        // if no exception, broker is back online. TODO: this is not thread-safe
-                        if(broker.Conn.State == ConnState.Connecting)
-                            broker.Conn.State = ConnState.Connected;
-
-                        Scheduler.Schedule(() =>
-                        {
-                            // find healed partitions, if any
-                            foreach (var metaTopicNew in metaNew.Topics.Where(t => t.TopicErrorCode == ErrorCode.NoError))
-                            {
-                                Dictionary<PartitionMeta, WaitQueueRecord> waitingParts;
-                                if (!_waitingMessages.TryGetValue(metaTopicNew.TopicName, out waitingParts))
-                                    continue;
-                                foreach (var metaPartSuccessNew in metaTopicNew.Partitions.Where(p => p.ErrorCode == ErrorCode.NoError))
-                                {
-                                    var waitingPart = waitingParts.Keys.SingleOrDefault(p => p.Id == metaPartSuccessNew.Id);
-                                    if (waitingPart == null)
-                                        continue;
-
-                                    // update meta of healed partitions
-                                    _log.Info("Recovered partition {0}->{1}", waitingPart, metaPartSuccessNew);
-                                    waitingPart.ErrorCode = ErrorCode.Draining;
-                                    waitingPart.Isr = metaPartSuccessNew.Isr;
-                                    waitingPart.Leader = metaPartSuccessNew.Leader;
-                                    waitingPart.Replicas = metaPartSuccessNew.Replicas;
-
-                                    if (waitingParts.Count == 0)
-                                    {
-                                        _waitingMessages.Remove(metaTopicNew.TopicName);
-                                        _log.Info("Topic '{0}' recovered", metaTopicNew.TopicName);
-                                    }
-
-                                    RebuildBrokerIndexes();
-                                }
-                            }
-
-                            // TODO: find unrecoverable errors and fail messages permanently
-
-                            RescanWaitingQueue();
-                        });
-
-
-                    }
-                    catch (Exception e)
-                    {
-                        _log.Debug("Recovery loop error: ", e.Message);
-                    }
-                    // TODO: progressive increase delay
-                    await Task.Delay(TimeSpan.FromSeconds(3));
-                }
-            }
-        }
-
-        private void RescanWaitingQueue()
-        {
-            // TODO: how to make sure this function is not called simulteounesly?
-            Scheduler.Schedule(async () => {
-                var recoveredParts = (from tkv in _waitingMessages
-                 from pkv in tkv.Value
-                 where pkv.Key.ErrorCode == ErrorCode.Draining
-                 select new { Topic = tkv.Key, Part = pkv.Key, pkv.Value.Pub, pkv.Value.Messages }).ToArray();
-
-                // resend
-                foreach(var recovered in recoveredParts) {
-                    var broker = _partitionBrokerMap[recovered.Part];
-                    var topicData = new TopicData {
-                        TopicName = recovered.Topic, 
-                        PartitionsData = new[]  {
-                            new PartitionData {
-                                Pub = recovered.Pub,
-                                Partition = recovered.Part.Id,
-                                OriginalMessages = recovered.Messages.ToArray(),
-                                Messages = recovered.Messages.Select(m => new MessageData {
-                                    Key = m.Key,
-                                    Value = m.Value
-                                }).ToArray()
-                            } 
-                        }
-                    };
-                    var response = await _protocol.ProduceRaw(new ProduceRequest {Broker = broker, RequiredAcks = recovered.Pub.Configuration.RequiredAcks, Timeout = recovered.Pub.Configuration.ProduceRequestTimeoutMs, TopicData = new[] {topicData}}, CancellationToken.None);
-
-                    var errorCode = response.Topics.Single().Partitions.Single().ErrorCode;
-                    if (errorCode == ErrorCode.NoError)
-                    {
-                        var recovered1 = recovered;  // just make compiler happy
-                        Scheduler.Schedule(() => {
-                            // remove from waiting
-                            _waitingMessages[recovered1.Topic].Remove(recovered1.Part);
-                        });
-
-                        if (recovered.Pub.OnSuccess != null)
-                            recovered.Pub.OnSuccess(recovered.Messages.ToArray());
-
-                        _log.Info("Resent success. Messages: {0}, Topic: '{1}', Broker: {2}, Part: {3}", recovered1.Messages.Count, recovered1.Topic, broker, recovered.Part.Id);
-                    }
-                    else
-                    {
-                        // do nothing, messages will remain in the waiting queue
-                        _log.Error("Failed to resend messages from waiting queue. Error: {0}, broker: {1}, messages: {2}", errorCode, broker, recovered.Messages.Count);
-                    }
-                }
-            });
-        }
-
-        #endregion Producer Support
-
     }
 }

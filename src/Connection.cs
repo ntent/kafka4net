@@ -70,7 +70,20 @@ namespace kafka4net
                     _client = new TcpClient();
                     await _client.ConnectAsync(_host, _port);
                     // TODO: Who and when is going to cancel reading?
-                    _protocol.CorrelateResponseLoop(_client, CancellationToken.None);
+                    var loopTask = _protocol.CorrelateResponseLoop(_client, CancellationToken.None);
+
+                    // Close connection in case of any exception. It is important, because in case of deserialization exception,
+                    // we are out of sync and can't continue.
+                    loopTask.ContinueWith(t => 
+                    { 
+                        _log.Debug(t.Exception, "CorrelationLoop errored. Closing connection");
+                        try
+                        {
+                            _client.Close();
+                        }
+                        finally { _client = null; }
+                    }, TaskContinuationOptions.OnlyOnFaulted);
+
                     State = ConnState.Connected;
                     return _client;
                 }

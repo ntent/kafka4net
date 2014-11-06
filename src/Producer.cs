@@ -50,6 +50,25 @@ namespace kafka4net
             await await _cluster.Scheduler.Ask(async () =>
             {
                 await _cluster.ConnectAsync();
+
+                // Recovery: subscribe to partition offline/online events
+                _cluster.PartitionStateChanges.
+                    Where(p => p.Item1 == Configuration.Topic).
+                    Synchronize(_allPartitionQueues).
+                    Subscribe(p =>
+                    {
+                        PartitionQueueInfo queue;
+                        if (!_allPartitionQueues.TryGetValue(p.Item2, out queue))
+                        {
+                            queue = new PartitionQueueInfo {Partition = p.Item2};
+                            _allPartitionQueues.Add(p.Item2, queue);
+                        }
+                        queue.IsOnline = p.Item3 == ErrorCode.NoError;
+                        
+                        if(_log.IsDebugEnabled)
+                            _log.Debug("Detected change in topic/partition '{0}'/{1}. Status: {2}", Configuration.Topic, p.Item2, p.Item3);
+                    });
+
                 // get all of the partitions for this topic. Allows the MessagePartitioner to select a partition.
                 var topicPartitions = await _cluster.GetOrFetchMetaForTopicAsync(Configuration.Topic);
                 _log.Debug("Producer found {0} partitions for '{1}'", topicPartitions.Length, Configuration.Topic);
@@ -60,15 +79,22 @@ namespace kafka4net
                     GroupBy(m => m.PartitionId).
                     Subscribe(part =>
                     {
-                        var queue = new PartitionQueueInfo { Partition = part.Key };
+                        PartitionQueueInfo queue;
                         lock (_allPartitionQueues)
                         {
-                            _allPartitionQueues.Add(part.Key, queue);
+                            // partition queue might be created if metadata broadcast fired already
+                            if (!_allPartitionQueues.TryGetValue(part.Key, out queue))
+                            {
+                                queue = new PartitionQueueInfo { Partition = part.Key };
+                                _allPartitionQueues.Add(part.Key, queue);
+                            }
+                            queue.IsOnline = topicPartitions.First(p => p.Id == part.Key).ErrorCode == ErrorCode.NoError;
                         }
 
                         part.
                             // TODO: buffer incoming messages, because configuration means incoming characteristics?
                             Buffer(Configuration.BatchFlushTime, Configuration.BatchFlushSize).
+                            Where(b => b.Count > 0).
                             Synchronize(_allPartitionQueues).
                             Do(batch =>
                             {
@@ -82,8 +108,8 @@ namespace kafka4net
                                     lock (_allPartitionQueues)
                                         Monitor.Pulse(_allPartitionQueues);
                                 },
-                                e => _log.Error(e, "Error in batch pipeline"),
-                                () => _log.Debug("Batch pipeline complete")
+                                e => _log.Error(e, "Error in batch pipeline. Partition {0}", part.Key),
+                                () => _log.Debug("Batch pipeline complete. Partition {0}", part.Key)
                             );
 
                         _log.Debug("{0} added new partition queue", this);
@@ -92,15 +118,14 @@ namespace kafka4net
                 );
 
                 // start the send loop task
-                _sendLoopTask = Task.Run((Func<Task>) SendLoop);
-
-                _sendLoopTask.ContinueWith(t =>
-                {
-                    if (t.IsFaulted)
-                        _log.Fatal(t.Exception, "SendLoop failed");
-                    else
-                        _log.Debug("SendLoop {0}", t.Status);
-                });
+                _sendLoopTask = Task.Run((Func<Task>)SendLoop).
+                    ContinueWith(t =>
+                    {
+                        if (t.IsFaulted)
+                            _log.Fatal(t.Exception, "SendLoop failed");
+                        else
+                            _log.Debug("SendLoop complete with status: {0}", t.Status);
+                    });
             });
         }
 
@@ -136,18 +161,24 @@ namespace kafka4net
             _log.Info("Close complete");
         }
 
+        /// <summary>
+        /// Note that this function is scheduled on TaskPool, because it uses Monitor.Wait and would block if ran on scheduler thread
+        /// </summary>
+        /// <returns></returns>
         async Task SendLoop()
         {
             _log.Debug("Starting SendLoop for {0}", this);
-            var partsMeta = await _cluster.GetOrFetchMetaForTopicAsync(Configuration.Topic);
 
             while (true)
             {
                 PartitionQueueInfo[] queuesToBeSent;
-                lock(_allPartitionQueues)
+                var partsMeta = await await _cluster.Scheduler.Ask(() => _cluster.GetOrFetchMetaForTopicAsync(Configuration.Topic));
+                
+                lock (_allPartitionQueues)
                 {
-                    if (_allPartitionQueues.Values.All(q => q.InProgress || q.Queue.Count == 0))
+                    if (_allPartitionQueues.Values.All(q => !q.IsReadyForServing))
                     {
+                        // TODO: bug: if messages are accumulating in buffer, this will quit. Wait for buffer drainage
                         if (_cancellation.Token.IsCancellationRequested)
                         {
                             _log.Debug("Cancel detected. Quitting SendLoop");
@@ -164,7 +195,7 @@ namespace kafka4net
                     }
 
                     queuesToBeSent = _allPartitionQueues.Values.
-                        Where(q => !q.InProgress && q.Queue.Count != 0).
+                        Where(q => q.IsReadyForServing).
                         ToArray();
 
                     if(queuesToBeSent.Length == 0)
@@ -179,12 +210,12 @@ namespace kafka4net
                 // Do sending outside of _allPartitionQueues lock
                 //
 
-                queuesToBeSent.
+                var sendTasks = queuesToBeSent.
                     Select(q => new {partsMeta.First(m => m.Id == q.Partition).Leader, Queue = q}).
                     // leader,queue -> leader,queue[]
                     GroupBy(q => q.Leader, (i, queues) => new {Leader = i, Queues = queues.Select(q1 => q1.Queue).ToArray()}).
                     Select(queues => new { queues.Leader, Messages = queues.Queues.SelectMany(q => q.Queue.Peek()) }).
-                    ForEach(async brokerBatch =>
+                    Select(async brokerBatch =>
                     {
                         try
                         {
@@ -229,7 +260,8 @@ namespace kafka4net
                             }
                         }
                     });
-
+                
+                await Task.WhenAll(sendTasks);
             }
         }
 
@@ -243,6 +275,9 @@ namespace kafka4net
             public readonly Queue<Message[]> Queue = new Queue<Message[]>();
             public int Partition;
             public bool InProgress;
+            public bool IsOnline;
+
+            public bool IsReadyForServing { get { return !InProgress && IsOnline && Queue.Count > 0; } }
         }
     }
 }
