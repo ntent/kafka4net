@@ -64,9 +64,12 @@ namespace kafka4net
                             _allPartitionQueues.Add(p.Item2, queue);
                         }
                         queue.IsOnline = p.Item3 == ErrorCode.NoError;
-                        
-                        if(_log.IsDebugEnabled)
-                            _log.Debug("Detected change in topic/partition '{0}'/{1}. Status: {2}", Configuration.Topic, p.Item2, p.Item3);
+                        Monitor.Pulse(_allPartitionQueues);
+
+                        if (_log.IsDebugEnabled)
+                        {
+                            _log.Debug("Detected change in topic/partition '{0}'/{1}/{2}. Triggered queue event", Configuration.Topic, p.Item2, p.Item3);
+                        }
                     });
 
                 // get all of the partitions for this topic. Allows the MessagePartitioner to select a partition.
@@ -184,9 +187,9 @@ namespace kafka4net
                             _log.Debug("Cancel detected. Quitting SendLoop");
                             break;
                         }
-                        _log.Debug("Waiting for queue event {0}", this);
+                        _log.Debug("Waiting for queue event {0}", Configuration.Topic);
                         Monitor.Wait(_allPartitionQueues);
-                        _log.Debug("Got queue event {0}", this);
+                        _log.Debug("Got queue event {0}", Configuration.Topic);
                     }
                     else
                     {
@@ -198,70 +201,73 @@ namespace kafka4net
                         Where(q => q.IsReadyForServing).
                         ToArray();
 
+                    _log.Debug("queuesToBeSent.Length {0}", queuesToBeSent.Length);
+
                     if(queuesToBeSent.Length == 0)
                         continue;
 
                     // while sill in lock, mark queues as in-progress to skip sending in next iteration
+                    _log.Debug("Locking queues: '{0}'/[{1}]", Configuration.Topic, string.Join(",", queuesToBeSent.Select(q => q.Partition)));
                     queuesToBeSent.ForEach(q => q.InProgress = true);
-                    _log.Debug("Locked queues: [{0}]", string.Join(",", queuesToBeSent.Select(q => q.Partition)));
                 }
 
                 //
                 // Do sending outside of _allPartitionQueues lock
                 //
 
-                var sendTasks = queuesToBeSent.
-                    Select(q => new {partsMeta.First(m => m.Id == q.Partition).Leader, Queue = q}).
-                    // leader,queue -> leader,queue[]
-                    GroupBy(q => q.Leader, (i, queues) => new {Leader = i, Queues = queues.Select(q1 => q1.Queue).ToArray()}).
-                    Select(queues => new { queues.Leader, Messages = queues.Queues.SelectMany(q => q.Queue.Peek()) }).
-                    Select(async brokerBatch =>
-                    {
-                        try
+                try
+                {
+                    var sendTasks = queuesToBeSent.
+                        Select(q => new { partsMeta.First(m => m.Id == q.Partition).Leader, Queue = q }).
+                        // leader,queue -> leader,queue[]
+                        GroupBy(q => q.Leader, (i, queues) => new { Leader = i, Queues = queues.Select(q1 => q1.Queue).ToArray() }).
+                        Select(queues => new { queues.Leader, queues.Queues, Messages = queues.Queues.SelectMany(q => q.Queue.Peek()) }).
+                        Select(async brokerBatch =>
                         {
-                            // TODO: should retry period be different?
-                            // TODO: freeze permanent errors and throw consumer exceptions upon sending to perm error partition
-                            var result = await _cluster.SendBatchAsync(brokerBatch.Leader, brokerBatch.Messages, this);
-                            if (result.Topics.All(t => t.Partitions.All(p => p.ErrorCode == ErrorCode.NoError)))
+                            try
                             {
-                                // no errors, dismiss batches from queues
+                                // TODO: freeze permanent errors and throw consumer exceptions upon sending to perm error partition
+                                var response = await _cluster.SendBatchAsync(brokerBatch.Leader, brokerBatch.Messages, this);
+                                
+                                // some errors, figure out which batches to dismiss from queues
+                                var failedResponsePartitions = new HashSet<int>(
+                                    response.Topics.
+                                    Where(t => t.TopicName == Configuration.Topic). // should contain response only for our topic, but just in case...
+                                    SelectMany(t => t.Partitions).
+                                    Where(p => p.ErrorCode != ErrorCode.NoError).
+                                    Select(p => p.Partition)
+                                );
+                                var successPartitionQueues = brokerBatch.Queues.
+                                    Where(q => !failedResponsePartitions.Contains(q.Partition)).
+                                    ToArray();
+
+                                Message[] successMessages;
                                 lock (_allPartitionQueues)
                                 {
-                                    var messageCount = queuesToBeSent.Sum(q => q.Queue.Dequeue().Length);
-                                    _log.Debug("Sent successfully and dequeued {0} messages, topic '{1}' brokerId {2}", messageCount, Configuration.Topic, brokerBatch.Leader);
+                                    successMessages = successPartitionQueues.SelectMany(q => q.Queue.Dequeue()).ToArray();
                                 }
+
+                                if (OnSuccess != null && successMessages.Length != 0)
+                                    OnSuccess(successMessages);
                             }
-                            else
+                            catch (Exception e)
                             {
-                                // some errors, figure out which batches to dismiss from queues
-                                var failedPartitions = result.Topics.SelectMany(t => t.Partitions).Where(p => p.ErrorCode != ErrorCode.NoError).ToArray();
-                                var messageCount = queuesToBeSent.
-                                    Where(q => failedPartitions.All(f => f.Partition != q.Partition)).
-                                    Sum(q => q.Queue.Dequeue().Length);
-                                if (_log.IsDebugEnabled)
-                                {
-                                    var errorList = failedPartitions.Select(p => string.Format("{0}->{1}", p.Partition, p.ErrorCode));
-                                    _log.Debug("Sent successfuly and dequeued {0} but there were errors: topic: '{1}' [{2}]",
-                                        messageCount, Configuration.Topic, string.Join(" ", errorList));
-                                }
+                                _log.Debug(e, "Exception while sending batch to topic '{0}' BrokerId {1}", Configuration.Topic, brokerBatch.Leader);
                             }
-                        }
-                        catch (Exception e)
-                        {
-                            _log.Debug(e, "Exception while sending batch to topic '{0}' BrokerId {1}", Configuration.Topic, brokerBatch.Leader);
-                        }
-                        finally
-                        {
-                            lock(_allPartitionQueues)
-                            {
-                                queuesToBeSent.ForEach(q => q.InProgress = false);
-                                // there might be more batches in unlocked queues, trigger event to check it
-                                Monitor.Pulse(_allPartitionQueues);
-                            }
-                        }
-                    });
-                
-                await Task.WhenAll(sendTasks);
+                        });
+
+                    await Task.WhenAll(sendTasks);
+                }
+                finally
+                {
+                    lock (_allPartitionQueues)
+                    {
+                        queuesToBeSent.ForEach(q => q.InProgress = false);
+
+                        if (_log.IsDebugEnabled)
+                            _log.Debug("Unlocked queue '{0}'/{1}", Configuration.Topic, string.Join(",", queuesToBeSent.Select(q => q.Partition)));
+                    }
+                }
             }
         }
 

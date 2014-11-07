@@ -47,6 +47,7 @@ namespace tests
             // disable Transport noise
             // config.LoggingRules.Add(new LoggingRule("kafka4net.Protocol.Transport", LogLevel.Info, fileTarget) { Final = true});
             //
+            config.LoggingRules.Add(new LoggingRule("PartitionRecoveryMonitor", LogLevel.Error, fileTarget) { Final = true });
             config.LoggingRules.Add(new LoggingRule("tests.*", LogLevel.Debug, consoleTarget) { Final = true, });
             //
             config.LoggingRules.Add(new LoggingRule("*", LogLevel.Info, consoleTarget));
@@ -332,8 +333,8 @@ namespace tests
         public async void ProducerRecoveryTest()
         {
             const int count = 200;
-            var topic = "part33." + _rnd.Next();
-            VagrantBrokerUtil.CreateTopic(topic, 6, 3);
+            var topic = "part62." + _rnd.Next();
+            VagrantBrokerUtil.CreateTopic(topic, 6, 2);
 
             var producer = new Producer(new ProducerConfiguration(_seedAddresses,topic));
 
@@ -355,12 +356,13 @@ namespace tests
                 .ToList();
 
 
-            var parts = await producer.Cluster.FetchPartitionOffsetsAsync(topic);
-
             _log.Info("Done waiting for sending. Closing producer.");
             await producer.Close(TimeSpan.FromSeconds(5));
             _log.Info("Producer closed.");
 
+            var c2 = new Cluster(_seedAddresses);
+            await c2.ConnectAsync();
+            var parts = await c2.FetchPartitionOffsetsAsync(topic);
 
             _log.Info("Sum of offsets: {0}", parts.Select(p => p.Tail - p.Head).Sum());
             _log.Info("Offsets: [{0}]", string.Join(",", parts.Select(p => p.ToString())));
@@ -372,8 +374,8 @@ namespace tests
                 _log.Error("Did not send all messages. Messages sent but NOT acknowledged: {0}", string.Join(",", sentList.Except(actuallySentList).OrderBy(i => i)));
             }
 
-            Assert.AreEqual(sentList.Count, actuallySentList.Count);
-            Assert.AreEqual(sentList.Count, parts.Select(p => p.Tail - p.Head).Sum());
+            Assert.AreEqual(sentList.Count, actuallySentList.Count, "Actually sent");
+            Assert.AreEqual(sentList.Count, parts.Select(p => p.Tail - p.Head).Sum(), "Offsets");
 
         }
 

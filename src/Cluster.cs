@@ -6,10 +6,8 @@ using System.Net.Sockets;
 using System.Reactive.Concurrency;
 using System.Reactive.Linq;
 using System.Reactive.Subjects;
-using System.Reactive.Threading.Tasks;
 using System.Threading;
 using System.Threading.Tasks;
-using System.Threading.Tasks.Dataflow;
 using kafka4net.ConsumerImpl;
 using kafka4net.Internal;
 using kafka4net.Metadata;
@@ -71,7 +69,7 @@ namespace kafka4net
             Scheduler.Schedule(() => SynchronizationContext.SetSynchronizationContext(new RxSyncContextFromScheduler(Scheduler)));
 
             // build a subject that relays any changes to a partition's error state to anyone observing.
-            _partitionStateChangesSubject = BuildPartitionStateChangeSubject();
+            BuildPartitionStateChangeSubject();
             _newBrokerSubject = BuildnewBrokersSubject();
         }
 
@@ -83,10 +81,31 @@ namespace kafka4net
         /// </param>
         public Cluster(string seedBrokers) : this()
         {
-            _protocol = new Protocol(this, seedBrokers);
+            _protocol = new Protocol(this, seedBrokers, HandleTransportError);
             _state = ClusterState.Disconnected;
         }
 
+        /// <summary>
+        /// Find which broker this tcp socket belongs to and send failure event for each involved partition.
+        /// This should turn attention of PartitionMonitor and start its recovery pooling.
+        /// </summary>
+        /// <param name="e"></param>
+        /// <param name="tcp"></param>
+        void HandleTransportError(Exception e, TcpClient tcp)
+        {
+            (
+                from broker in _metadata.Brokers
+                where broker.Conn.OwnsClient(tcp)
+                from topic in _metadata.Topics
+                from part in topic.Partitions
+                where part.Leader == broker.NodeId
+                select new {topic.TopicName, part}
+            ).ForEach(p =>
+            {
+                p.part.ErrorCode = ErrorCode.TransportError;
+                _partitionStateChangesSubject.OnNext(Tuple.Create(p.TopicName, p.part.Id, ErrorCode.TransportError));
+            });
+        }
 
         #region Public Accessible Methods
 
@@ -263,8 +282,9 @@ namespace kafka4net
         /// and routing functions can await for good status to come back
         /// Structure: Topic/Partition/ErrorCode.
         /// </summary>
-        internal IObservable<Tuple<string, int, ErrorCode>> PartitionStateChanges { get { return _partitionStateChangesSubject.AsObservable(); } }
-        private readonly ISubject<Tuple<string, int, ErrorCode>, Tuple<string, int, ErrorCode>> _partitionStateChangesSubject;
+        internal IObservable<Tuple<string, int, ErrorCode>> PartitionStateChanges { get { return _partitionStateChanges; } }
+        IObservable<Tuple<string, int, ErrorCode>> _partitionStateChanges;
+        private readonly ISubject<Tuple<string, int, ErrorCode>> _partitionStateChangesSubject = new Subject<Tuple<string, int, ErrorCode>>();
 
         /// <summary>
         /// Allow notification of a new partition state detected by a component
@@ -279,25 +299,16 @@ namespace kafka4net
         /// Compose the Subject that tracks the ready state for each topic/partiion. Always replay the most recent state for any topic/partition
         /// </summary>
         /// <returns></returns>
-        private ISubject<Tuple<string, int, ErrorCode>, Tuple<string, int, ErrorCode>> BuildPartitionStateChangeSubject()
+        private void BuildPartitionStateChangeSubject()
         {
-            var subj = new Subject<Tuple<string, int, ErrorCode>>();
-            var pipeline =
-                // group by topic and partition
-                subj.Do(m => _log.Debug("Got partition change message {0}", m)).
-                GroupBy(e => new { e.Item1, e.Item2 }).
-                // select 
-                Select(g =>
-                {
-                    // we only want the distinct groups (one per topic/partition)
-                    var gg = g.DistinctUntilChanged().Replay(1, Scheduler);
-                    gg.Connect();
-                    return gg;
-                }).
-                Replay(Scheduler);
-            pipeline.Connect();
-            var pipeline2 = pipeline.Merge();
-            return Subject.Create(subj, pipeline2);
+            _partitionStateChanges = _partitionStateChangesSubject.
+                GroupBy(t => new { t.Item1, t.Item2 }).
+                // Within partition, filter out repetition and remember the last result (for late subscribers)
+                Select(p => p.DistinctUntilChanged().Replay(1).RefCount()).
+                // remember all partitions state for late subscribers
+                Replay().RefCount().
+                // merge per-partition unique streams back into single stream
+                Merge();
         }
 
         /// <summary>
@@ -537,8 +548,6 @@ namespace kafka4net
 
             // broadcast any new brokers
             newBrokers.ForEach(b => _newBrokerSubject.OnNext(b));
-
-            
 
             // broadcast the current partition state for all partitions.
             topicMeta.Topics.
