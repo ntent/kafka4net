@@ -49,6 +49,8 @@ namespace kafka4net.ConsumerImpl
 
             _fetchResponses = FetchLoop().Publish().RefCount();
 
+            BuildReceivedMessages();
+
             if(_log.IsDebugEnabled)
                 _log.Debug("Created new fetcher #{0} for broker: {1}", _id, _broker);
         }
@@ -89,10 +91,10 @@ namespace kafka4net.ConsumerImpl
         /// <summary>
         /// Compose the FetchResponses into ReceivedMessages
         /// </summary>
-        internal IObservable<ReceivedMessage> ReceivedMessages { get { 
-            return _fetchResponses.SelectMany(response => {
-                _log.Debug("#{0} Received fetch message", _id);
-                
+        internal IObservable<ReceivedMessage> ReceivedMessages { get; private set; }
+        private void BuildReceivedMessages() {
+            ReceivedMessages = _fetchResponses.SelectMany(response => {
+                _log.Debug("#{0} Received fetch response", _id);
                 return (
                     from topic in response.Topics
                     from part in topic.Partitions where part.ErrorCode == ErrorCode.NoError
@@ -106,8 +108,9 @@ namespace kafka4net.ConsumerImpl
                         Offset = msg.Offset
                     });
             })
-            .Do(_ => { }, err => _log.Warn("Error received in ReceivedMessages stream from broker {0}. Message: {1}", _broker, err.Message), () => _log.Debug("ReceivedMessages stream for broker {0} is complete.", _broker));
-        }}
+            .Do(_ => { }, err => _log.Warn("Error received in ReceivedMessages stream from broker {0}. Message: {1}", _broker, err.Message), () => _log.Debug("ReceivedMessages stream for broker {0} is complete.", _broker))
+            .Publish().RefCount();
+        }
 
         internal Tuple<string, int>[] AllListeningPartitions
         {

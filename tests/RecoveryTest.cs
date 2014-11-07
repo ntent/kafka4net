@@ -197,7 +197,7 @@ namespace tests
             VagrantBrokerUtil.StopBroker("broker1");
 
             // post another 50 messages
-            var sender2 = Observable.Interval(TimeSpan.FromMilliseconds(100)).
+            var sender2 = Observable.Interval(TimeSpan.FromMilliseconds(200)).
                 Take(postCount2);
 
             sender2.Subscribe(
@@ -247,6 +247,8 @@ namespace tests
             Enumerable.Range(1, numMessages).
                 Select(i => new Message { Value = BitConverter.GetBytes(i) }).
                 ForEach(producer.Send);
+
+            await Task.Delay(TimeSpan.FromSeconds(2));
             await producer.Close(TimeSpan.FromSeconds(5));
 
             // wait another little while, and stop the producer.
@@ -538,13 +540,14 @@ namespace tests
 
             // we should have all of them with leader 1
             var cluster = new Cluster(_seedAddresses);
+            await cluster.ConnectAsync();
             var partitionMeta = await cluster.GetOrFetchMetaForTopicAsync(topic);
 
             // make sure they're all on a single leader
             Assert.True(partitionMeta.GroupBy(p=>p.Leader).Count()==1);
 
             // now publish messages
-            const int count = 8000;
+            const int count = 16000;
             var producer = new Producer(_seedAddresses, new ProducerConfiguration(topic));
             _log.Debug("Connecting");
             await producer.ConnectAsync();
@@ -586,7 +589,7 @@ namespace tests
                 });
 
             _log.Info("Waiting for receiver complete");
-            var receivedList = await received.Select(msg => BitConverter.ToInt32(msg.Value, 0)).Take(messagesInTopic).TakeUntil(DateTime.Now.AddSeconds(60)).ToList().ToTask();
+            var receivedList = await received.Select(msg => BitConverter.ToInt32(msg.Value, 0)).Take(messagesInTopic).TakeUntil(DateTime.Now.AddSeconds(120)).ToList().ToTask();
 
             parts = await consumer.Cluster.FetchPartitionOffsetsAsync(topic);
 

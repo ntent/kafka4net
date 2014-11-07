@@ -107,6 +107,12 @@ namespace kafka4net
             });
         }
 
+        private void CheckConnected()
+        {
+            if (_state != ClusterState.Connected)
+                throw new BrokerException("Cluster is not connected");
+        }
+
         #region Public Accessible Methods
 
         /// <summary>
@@ -175,8 +181,7 @@ namespace kafka4net
         /// <summary>Get list of all topics which are already cached. Does not issue a metadata request.</summary>
         public string[] GetAllTopics()
         {
-            if (_state != ClusterState.Connected)
-                throw new BrokerException("Cluster is not connected");
+            CheckConnected();
 
             if (_metadata == null)
                 return new string[0];
@@ -194,8 +199,7 @@ namespace kafka4net
         /// <returns></returns>
         public async Task<PartitionOffsetInfo[]> FetchPartitionOffsetsAsync(string topic)
         {
-            if (_state != ClusterState.Connected)
-                throw new BrokerException("Cluster is not connected");
+            CheckConnected();
 
             var ret = await await Scheduler.Ask(async () => {
                 var numAttempts = -1;
@@ -427,6 +431,8 @@ namespace kafka4net
         /// <summary>Get cached metadata for topic, or request, wait and cache it</summary>
         internal async Task<PartitionMeta[]> GetOrFetchMetaForTopicAsync(string topic)
         {
+            CheckConnected();
+
             if (!_topicPartitionMap.ContainsKey(topic))
             {
                 _log.Debug("Topic '{0}' does not exists. Starting pooling...", topic);
@@ -445,6 +451,8 @@ namespace kafka4net
         /// might be intermitten, will keep retrying. If permanent error happen, BrokerException is thrown.</summary>
         private async Task<MetadataResponse> FetchMetaWithRetryAsync(string topic)
         {
+            CheckConnected();
+
             // TODO: add timeout
             _log.Debug("Start topic '{0}' pooling", topic);
 
@@ -481,7 +489,7 @@ namespace kafka4net
         } 
 
 
-        void RebuildBrokerIndexes(MetadataResponse clusterMeta = null)
+        private void RebuildBrokerIndexes(MetadataResponse clusterMeta = null)
         {
             // By default refresh current metadata
             if (clusterMeta == null)
@@ -562,6 +570,7 @@ namespace kafka4net
 
         internal async Task<ProducerResponse> SendBatchAsync(int leader, IEnumerable<Message> batch, Producer producer)
         {
+            CheckConnected();
             // TODO: do state checking. Introduce this.Connected task to wait if needed
 
             var request = new ProduceRequest
