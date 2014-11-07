@@ -43,9 +43,8 @@
         /// <summary>The broker returns this error code if it receives an offset fetch or commit request for a consumer group that it is not a coordinator for</summary>
         NotCoordinatorForConsumerCode = 16,
 
-        /// <summary>This state is not Kafka error code but driver-set state, meaning that there are messages in the waiting queue for this partition and sending routine needs to drain
-        /// waiting queue first, to prevent possible message reordering, when fresh messages will go out before waiting ones.</summary>
-        Draining = 1000,
-        FetcherException = 1001
+        // Below are driver's error codes. They are not returned by kafka server but are "virtual" states, such as transport error for example.
+        FetcherException = 1001,
+        TransportError
     }
 }

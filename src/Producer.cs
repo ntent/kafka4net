@@ -1,11 +1,13 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reactive.Concurrency;
 using System.Reactive.Linq;
 using System.Reactive.Subjects;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Threading.Tasks.Dataflow;
+using kafka4net.Utils;
 
 namespace kafka4net
 {
@@ -30,11 +32,11 @@ namespace kafka4net
         // cancellation token used to notify all producer components to stop.
         private readonly CancellationTokenSource _cancellation = new CancellationTokenSource();
 
-        // the allPartitionQueues dictionary contains queues for all of the "PartitionBatches" indexed by topic/partition. 
+        // the _allPartitionQueues dictionary contains queues for all of the "PartitionBatches" indexed by topic/partition. 
         // the sending loop will send out of these queues as quickly as possible, however when there is an issue with 
-        // sending, these queues will back up (potentially on only certain partitions)
+        // sending, these queues will back up. Note that it ispossible when some partitions work and some are recovering abd backed up.
         // TODO: the Queue in here needs to eventually be wrapped with logic to have size bounds
-        private readonly Dictionary<int, Queue<Message[]>> _allPartitionQueues = new Dictionary<int, Queue<Message[]>>();
+        private readonly Dictionary<int,PartitionQueueInfo> _allPartitionQueues = new Dictionary<int, PartitionQueueInfo>();
 
         public Producer(Cluster cluster, ProducerConfiguration producerConfiguration)
         {
@@ -57,71 +59,90 @@ namespace kafka4net
 
         public async Task ConnectAsync()
         {
-            if (_cluster.State != Cluster.ClusterState.Connected)
-                await _cluster.ConnectAsync();
-
-
-            // Buffered Observable Notifies on "release" of a batch to send.
-            var bufferedBatches = _sendMessagesSubject
-                .AsObservable()
-                .Buffer(TimeSpan.FromSeconds(5), 10)
-                .Do(_ => { /* TODO: Notify of batch delivered */});
-
-            // get all of the partitions for this topic. Allows the MessagePartitioner to select a partition.
-            var topicPartitions = await _cluster.GetOrFetchMetaForTopicAsync(Configuration.Topic);
-
-            // topic partition batches takes a single batch, flattens it back out, and groups by topic and partition.
-            // this observable broadcasts "TopicPartitionMessageBatches" into the send buffer which then is pull-based for the sender loop.
-            var topicPartitionBatches = bufferedBatches
-                .Select(batchMessages => batchMessages.GroupBy(m => Configuration.Partitioner.GetMessagePartition(m, topicPartitions)));
-
-
-            // this subscription takes the incoming stream of sent messages and adds them to the appropriate queue for sending.
-            topicPartitionBatches.Subscribe(partitionGroupedBatches =>
+            await await _cluster.Scheduler.Ask(async () =>
             {
-                foreach (var partitionBatch in partitionGroupedBatches)
-                {
-                    var key = partitionBatch.Key.Id;
+				if (_cluster.State != Cluster.ClusterState.Connected)
+	                await _cluster.ConnectAsync();
 
-                    // first check and add a queue if necessary
-                    if (!_allPartitionQueues.ContainsKey(key))
+                // Recovery: subscribe to partition offline/online events
+                _cluster.PartitionStateChanges.
+                    Where(p => p.Item1 == Configuration.Topic).
+                    Synchronize(_allPartitionQueues).
+                    Subscribe(p =>
                     {
-                        _allPartitionQueues.Add(key, new Queue<Message[]>());
-                    }
+                        PartitionQueueInfo queue;
+                        if (!_allPartitionQueues.TryGetValue(p.Item2, out queue))
+                        {
+                            queue = new PartitionQueueInfo {Partition = p.Item2};
+                            _allPartitionQueues.Add(p.Item2, queue);
+                        }
+                        queue.IsOnline = p.Item3 == ErrorCode.NoError;
+                        Monitor.Pulse(_allPartitionQueues);
 
-                    var queue = _allPartitionQueues[key];
+                        if (_log.IsDebugEnabled)
+                        {
+                            _log.Debug("Detected change in topic/partition '{0}'/{1}/{2}. Triggered queue event", Configuration.Topic, p.Item2, p.Item3);
+                        }
+                    });
 
-                    // dump to the queue.
-                    queue.Enqueue(partitionBatch.ToArray());
-                }
+                // get all of the partitions for this topic. Allows the MessagePartitioner to select a partition.
+                var topicPartitions = await _cluster.GetOrFetchMetaForTopicAsync(Configuration.Topic);
+                _log.Debug("Producer found {0} partitions for '{1}'", topicPartitions.Length, Configuration.Topic);
 
+                _sendMessagesSubject.
+                    ObserveOn(_cluster.Scheduler).
+                    Do(msg => msg.PartitionId = Configuration.Partitioner.GetMessagePartition(msg, topicPartitions).Id).
+                    GroupBy(m => m.PartitionId).
+                    Subscribe(part =>
+                    {
+                        PartitionQueueInfo queue;
+                        lock (_allPartitionQueues)
+                        {
+                            // partition queue might be created if metadata broadcast fired already
+                            if (!_allPartitionQueues.TryGetValue(part.Key, out queue))
+                            {
+                                queue = new PartitionQueueInfo { Partition = part.Key };
+                                _allPartitionQueues.Add(part.Key, queue);
+                            }
+                            queue.IsOnline = topicPartitions.First(p => p.Id == part.Key).ErrorCode == ErrorCode.NoError;
+                        }
+
+                        part.
+                            // TODO: buffer incoming messages, because configuration means incoming characteristics?
+                            Buffer(Configuration.BatchFlushTime, Configuration.BatchFlushSize).
+                            Where(b => b.Count > 0).
+                            Synchronize(_allPartitionQueues).
+                            Do(batch =>
+                            {
+                                queue.Queue.Enqueue(batch.ToArray());
+                                if (_log.IsDebugEnabled)
+                                    _log.Debug("Enqueued batch of size {0} for topic '{1}' partition {2}", batch.Count, Configuration.Topic, part.Key);
+                            }).
+                            // After batch enqueued, send wake up sygnal to sending queue
+                            Subscribe(_ =>
+                                {
+                                    lock (_allPartitionQueues)
+                                        Monitor.Pulse(_allPartitionQueues);
+                                },
+                                e => _log.Error(e, "Error in batch pipeline. Partition {0}", part.Key),
+                                () => _log.Debug("Batch pipeline complete. Partition {0}", part.Key)
+                            );
+
+                        _log.Debug("{0} added new partition queue", this);
+                    }, e => _log.Fatal(e, "Error in message processing pipeline"),
+                    () => _log.Debug("Message processing pipeline complete")
+                );
+
+                // start the send loop task
+                _sendLoopTask = Task.Run((Func<Task>)SendLoop).
+                    ContinueWith(t =>
+                    {
+                        if (t.IsFaulted)
+                            _log.Fatal(t.Exception, "SendLoop failed");
+                        else
+                            _log.Debug("SendLoop complete with status: {0}", t.Status);
+                    });
             });
-
-            // start the send loop task
-            _sendLoopTask = SendLoop();
-
-            // TODO: Old logic. remove once new logic is in place.
-            // start up the subscription to the buffer and call SendBatchAsync on the Cluster when a batch is ready.
-            //_sendMessagesSubject.AsObservable().
-            //    Buffer(Configuration.BatchFlushTime, Configuration.BatchFlushSize).
-            //    Where(b => b.Count > 0). // apparently, Buffer will trigger empty batches too, skip them
-            //    ObserveOn(_cluster.Scheduler).  // Important! this needs to be AFTER Buffer call, because buffer execute on timer thread
-            //    // and will ignore ObserveOn
-            //    // TODO: how to check result? Make it failsafe?
-            //    Subscribe(batch => _cluster.SendBatchAsync(this, batch), // TODO: how to check result? Make it failsafe?
-            //    // How to prevent overlap?
-            //    // Make sure producer.OnError are fired
-            //        e =>
-            //        {
-            //            _log.Fatal("Unexpected error in send buffer: {0}", e.Message);
-            //            _completion.TrySetResult(false);
-            //        },
-            //        () =>
-            //        {
-            //            _log.Info("Send buffer complete");
-            //            _completion.TrySetResult(true);
-            //        });
-
         }
 
         public void Send(Message msg)
@@ -138,9 +159,15 @@ namespace kafka4net
             _log.Debug("Closing...");
             // mark the cancellation token to cause the sending to finish up and don't allow any new messages coming in.
             _cancellation.Cancel();
-
+            
             // complete the incoming message stream
             _sendMessagesSubject.OnCompleted();
+
+            // trigger send loop to exit
+            lock(_allPartitionQueues)
+            {
+                Monitor.Pulse(_allPartitionQueues);
+            }
             
             // wait for sending to complete 
             await _sendLoopTask.ConfigureAwait(false);
@@ -148,55 +175,126 @@ namespace kafka4net
             _log.Info("Close complete");
         }
 
-        private async Task SendLoop()
+        /// <summary>
+        /// Note that this function is scheduled on TaskPool, because it uses Monitor.Wait and would block if ran on scheduler thread
+        /// </summary>
+        /// <returns></returns>
+        async Task SendLoop()
         {
+            _log.Debug("Starting SendLoop for {0}", this);
 
             while (true)
             {
-                // get a list containing the first batch in each queue to be sent.
-                var outgoingBatch = new List<Tuple<int, Message[]>>();
-
-                foreach (var kvp in _allPartitionQueues)
+                PartitionQueueInfo[] queuesToBeSent;
+                var partsMeta = await await _cluster.Scheduler.Ask(() => _cluster.GetOrFetchMetaForTopicAsync(Configuration.Topic));
+                
+                lock (_allPartitionQueues)
                 {
-                    if (kvp.Value.Count > 0)
+                    if (_allPartitionQueues.Values.All(q => !q.IsReadyForServing))
                     {
-                        // here we just PEEK as we don't want it to be taken from the queue until we successfully send the batch.
-                        outgoingBatch.Add(new Tuple<int, Message[]>(kvp.Key, kvp.Value.Peek()));
+                        // TODO: bug: if messages are accumulating in buffer, this will quit. Wait for buffer drainage
+                        if (_cancellation.Token.IsCancellationRequested)
+                        {
+                            _log.Debug("Cancel detected. Quitting SendLoop");
+                            break;
+                        }
+                        _log.Debug("Waiting for queue event {0}", Configuration.Topic);
+                        Monitor.Wait(_allPartitionQueues);
+                        _log.Debug("Got queue event {0}", Configuration.Topic);
                     }
+                    else
+                    {
+                        if(_log.IsDebugEnabled)
+                            _log.Debug("There are batches in queues, continue working");
+                    }
+
+                    queuesToBeSent = _allPartitionQueues.Values.
+                        Where(q => q.IsReadyForServing).
+                        ToArray();
+
+                    _log.Debug("queuesToBeSent.Length {0}", queuesToBeSent.Length);
+
+                    if(queuesToBeSent.Length == 0)
+                        continue;
+
+                    // while sill in lock, mark queues as in-progress to skip sending in next iteration
+                    _log.Debug("Locking queues: '{0}'/[{1}]", Configuration.Topic, string.Join(",", queuesToBeSent.Select(q => q.Partition)));
+                    queuesToBeSent.ForEach(q => q.InProgress = true);
                 }
 
-                // now we have a batch outgoing, send and if successful, dequeue
-                Console.WriteLine("outgoing batch has: {0}", string.Join(",", outgoingBatch.Select(b => string.Format("p-{0}:{1}msgs", b.Item1, b.Item2.Length))));
+                //
+                // Do sending outside of _allPartitionQueues lock
+                //
 
+                try
+                {
+                    var sendTasks = queuesToBeSent.
+                        Select(q => new { partsMeta.First(m => m.Id == q.Partition).Leader, Queue = q }).
+                        // leader,queue -> leader,queue[]
+                        GroupBy(q => q.Leader, (i, queues) => new { Leader = i, Queues = queues.Select(q1 => q1.Queue).ToArray() }).
+                        Select(queues => new { queues.Leader, queues.Queues, Messages = queues.Queues.SelectMany(q => q.Queue.Peek()) }).
+                        Select(async brokerBatch =>
+                        {
+                            try
+                            {
+                                // TODO: freeze permanent errors and throw consumer exceptions upon sending to perm error partition
+                                var response = await _cluster.SendBatchAsync(brokerBatch.Leader, brokerBatch.Messages, this);
+                                
+                                // some errors, figure out which batches to dismiss from queues
+                                var failedResponsePartitions = new HashSet<int>(
+                                    response.Topics.
+                                    Where(t => t.TopicName == Configuration.Topic). // should contain response only for our topic, but just in case...
+                                    SelectMany(t => t.Partitions).
+                                    Where(p => p.ErrorCode != ErrorCode.NoError).
+                                    Select(p => p.Partition)
+                                );
+                                var successPartitionQueues = brokerBatch.Queues.
+                                    Where(q => !failedResponsePartitions.Contains(q.Partition)).
+                                    ToArray();
 
-                // TODO: Do Send asynchronously here for all brokers and handle result.
-                // look up broker for each
-                // then Group by Broker
-                // then call SendAsync on all at the same time, awaiting the results of all of them
-                // process results as they come back
+                                Message[] successMessages;
+                                lock (_allPartitionQueues)
+                                {
+                                    successMessages = successPartitionQueues.SelectMany(q => q.Queue.Dequeue()).ToArray();
+                                }
 
-                // NOTE: Pseudo-code from linqpad sample on handling results:
-                //if (rnd.NextDouble() > 0.2)
-                //{
-                //    // simulate success
-                //    Console.WriteLine("Success, removing batches");
-                //    foreach (var batch in outgoingBatch)
-                //    {
-                //        var key = new Tuple<string, int>(batch.Item1, batch.Item2);
-                //        var removed = allTopicPartitionQueues[key].Dequeue();
-                //        Console.WriteLine("removed batch of {0} messages from {1}", removed.Length, key);
-                //    }
-                //}
-                //else
-                //{
-                //    Console.WriteLine("Failed, do not remove batch.");
-                //}
-            }            
+                                if (OnSuccess != null && successMessages.Length != 0)
+                                    OnSuccess(successMessages);
+                            }
+                            catch (Exception e)
+                            {
+                                _log.Debug(e, "Exception while sending batch to topic '{0}' BrokerId {1}", Configuration.Topic, brokerBatch.Leader);
+                            }
+                        });
+
+                    await Task.WhenAll(sendTasks);
+                }
+                finally
+                {
+                    lock (_allPartitionQueues)
+                    {
+                        queuesToBeSent.ForEach(q => q.InProgress = false);
+
+                        if (_log.IsDebugEnabled)
+                            _log.Debug("Unlocked queue '{0}'/{1}", Configuration.Topic, string.Join(",", queuesToBeSent.Select(q => q.Partition)));
+                    }
+                }
+            }
         }
 
         public override string ToString()
         {
             return string.Format("'{0}' Batch flush time: {1} Batch flush size: {2}", Topic, Configuration.BatchFlushTime, Configuration.BatchFlushSize);
+        }
+
+        class PartitionQueueInfo
+        {
+            public readonly Queue<Message[]> Queue = new Queue<Message[]>();
+            public int Partition;
+            public bool InProgress;
+            public bool IsOnline;
+
+            public bool IsReadyForServing { get { return !InProgress && IsOnline && Queue.Count > 0; } }
         }
     }
 }

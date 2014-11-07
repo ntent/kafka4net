@@ -43,19 +43,17 @@ namespace kafka4net
 
             OnMessageArrived = Observable.Create<ReceivedMessage>(async observer =>
             {
-                _log.Debug("Connecting Cluster");
-                await _cluster.ConnectAsync();
+                // Relay messages from partition to consumer's output
+                OnMessageArrivedInput.Subscribe(observer);
 
                 // subscribe to all partitions
-                (await BuildTopicPartitionsAsync()).ForEach(part =>
+                var parts = await BuildTopicPartitionsAsync();
+                parts.ForEach(part =>
                 {
                     var partSubscription = part.Subscribe(this);
                     _partitionsSubscription.Add(partSubscription);
                 });
                 _log.Debug("Subscribed to partitions");
-
-                // Relay messages from partition to consumer's output
-                OnMessageArrivedInput.Subscribe(observer);
 
                 // upon unsubscribe
                 return () =>

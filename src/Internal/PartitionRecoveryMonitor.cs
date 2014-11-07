@@ -165,7 +165,7 @@ namespace kafka4net.Internal
                                 str.AppendFormat("[{0}]\n", string.Join(",", topic1.Select(t => t.Item2)));
                             }
                         }
-                        _log.Debug("Healed partitions found (will check broker availability):\n{0}", str.ToString());
+                        _log.Debug("Healed partitions found by broker {0} (will check broker availability):\n{1}", broker, str.ToString());
                     }
                 }
 
@@ -192,17 +192,30 @@ namespace kafka4net.Internal
 
                             // success!
                             // raise new metadata event 
-                            _newMetadataEvent.OnNext(response2);
-
                             _log.Info("Alive brokers detected: {0}", newBroker);
+                            
+                            // broadcast only healed partitions which belong to newBroker
+                            var filteredResponse = new MetadataResponse
+                            {
+                                Brokers = response2.Brokers,
+                                Topics = response2.Topics.Select(t => new TopicMeta { 
+                                    TopicErrorCode = t.TopicErrorCode,
+                                    TopicName = t.TopicName,
+                                    Partitions = t.Partitions.Where(p => healedPartitions.Any(hp => hp.Item1 == t.TopicName && hp.Item2 == p.Id)).ToArray()
+                                }).ToArray()
+                            };
+                            
+                            _log.Debug("Broadcasting filtered response {0}", filteredResponse);
+                            _newMetadataEvent.OnNext(filteredResponse);
+
                         }
                         catch (Exception e)
                         {
-                            _log.Warn(e, "Metadata points to broker but it is not accessible");
+                            _log.Warn("Metadata points to broker but it is not accessible. Error: {0}", e.Message);
                         }
                     });
 
-                await Task.Delay(1000, _cancel);
+                await Task.Delay(3000, _cancel);
             }
 
             _log.Debug("RecoveryLoop exiting. Setting completion");

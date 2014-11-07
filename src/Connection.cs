@@ -17,6 +17,7 @@ namespace kafka4net
         private readonly int _port;
         private readonly Protocol _protocol;
         private TcpClient _client;
+        object _gate = new object();
 
         internal Connection(string host, int port, Protocol protocol)
         {
@@ -70,7 +71,20 @@ namespace kafka4net
                     _client = new TcpClient();
                     await _client.ConnectAsync(_host, _port);
                     // TODO: Who and when is going to cancel reading?
-                    _protocol.CorrelateResponseLoop(_client, CancellationToken.None);
+                    var loopTask = _protocol.CorrelateResponseLoop(_client, CancellationToken.None);
+
+                    // Close connection in case of any exception. It is important, because in case of deserialization exception,
+                    // we are out of sync and can't continue.
+                    loopTask.ContinueWith(t => 
+                    {
+                        _log.Debug("CorrelationLoop errored. Closing connection because of error. {0}", t.Exception.Message);
+                        try
+                        {
+                            _client.Close();
+                        }
+                        finally { _client = null; }
+                    }, TaskContinuationOptions.OnlyOnFaulted);
+
                     State = ConnState.Connected;
                     return _client;
                 }
@@ -88,6 +102,11 @@ namespace kafka4net
         public override string ToString()
         {
             return string.Format("Connection: {0}:{1} connected:{2}", _host, _port, _client.Connected);
+        }
+
+        internal bool OwnsClient(TcpClient tcp)
+        {
+            return _client == tcp;
         }
     }
 }

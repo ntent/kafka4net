@@ -2,6 +2,7 @@
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
+using System.Linq.Expressions;
 using System.Net.Sockets;
 using System.Reactive.Linq;
 using System.Reactive.Threading.Tasks;
@@ -20,15 +21,17 @@ namespace kafka4net.Protocols
         private static readonly ILogger _log = Logger.GetLogger();
 
         private readonly Cluster _cluster;
+        private readonly Action<Exception, TcpClient> _onError;
         private readonly Tuple<string, int>[] _seedAddresses;
 
         // It is possible to have id per connection, but it's just simpler code and debug/tracing when it's global
         private static int _correlationId;
-        private readonly ConcurrentDictionary<int,Action<byte[]>> _corelationTable = new ConcurrentDictionary<int, Action<byte[]>>();
+        private readonly ConcurrentDictionary<int,Action<byte[],Exception>> _corelationTable = new ConcurrentDictionary<int, Action<byte[],Exception>>();
 
-        internal Protocol(Cluster cluster, string seedConnections)
+        internal Protocol(Cluster cluster, string seedConnections, Action<Exception,TcpClient> onError = null)
         {
             _cluster = cluster;
+            _onError = onError;
             _seedAddresses = Connection.ParseAddress(seedConnections);
         }
 
@@ -56,7 +59,7 @@ namespace kafka4net.Protocols
                 {
                     var client = new TcpClient { NoDelay = true };
                     //cancel.Register(client.Close);
-                    await client.ConnectAsync((string) addr.Item1, addr.Item2);
+                    await client.ConnectAsync(addr.Item1, addr.Item2);
                     //if (cancel.IsCancellationRequested)
                     //    return null;
                     _log.Debug("Connected to {0}:{1}", addr.Item1, addr.Item2);
@@ -71,86 +74,107 @@ namespace kafka4net.Protocols
 
         internal async Task CorrelateResponseLoop(TcpClient client, CancellationToken cancel)
         {
-            _log.Debug("Starting reading loop from socket {0}", client.Client.RemoteEndPoint);
-            // TODO: if corrup message, dump bin log of 100 bytes for further investigation
-            while (client.Connected)
+            try
             {
-                try
+                _log.Debug("Starting reading loop from socket {0}", client.Client.RemoteEndPoint);
+                // TODO: if corrup message, dump bin log of 100 bytes for further investigation
+                while (client.Connected)
                 {
-                    // read message size
-                    var buff = new byte[4];
-                    var read = await client.GetStream().ReadAsync(buff, 0, 4, cancel);
-                    if (cancel.IsCancellationRequested)
+                    try
                     {
-                        _log.Debug("Stopped reading from {0} because socket cancelled", client.Client.RemoteEndPoint);
-                        return;
-                    }
+                        // read message size
+                        var buff = new byte[4];
+                        var read = await client.GetStream().ReadAsync(buff, 0, 4, cancel);
+                        if (cancel.IsCancellationRequested)
+                        {
+                            _log.Debug("Stopped reading from {0} because socket cancelled", client.Client.RemoteEndPoint);
+                            return;
+                        }
 
-                    // TODO: what to do if read<4 ? Recycle connection?
-                    if (read == 0)
-                    {
-                        _log.Info("Server closed connection");
-                        client.Close();
-                        return;
-                    }
-                    var size = BigEndianConverter.ToInt32(buff);
-                    // read message body
-                    var body = new byte[size];
-                    var pos = 0;
-                    var left = size;
-                    do
-                    {
-                        read = await client.GetStream().ReadAsync(body, pos, left);
+                        // TODO: what to do if read<4 ? Recycle connection?
                         if (read == 0)
                         {
                             _log.Info("Server closed connection");
                             client.Close();
+                            return;
                         }
-                        //_log.Debug("Read/expected/total {0}/{1}/{2}", read, left, size);
-                        pos += read;
-                        left -= read;
-                    } while (left > 0);
-
-                    if (client.Available > 0)
-                        _log.Debug("Still available {0} bytes", client.Available);
-
-                    int correlationId = -1;
-                    try
-                    {
-                        // TODO: check read==size && read > 4
-                        correlationId = BigEndianConverter.ToInt32(body);
-                        //_log.Debug("<-{0}\n {1}", correlationId, FormatBytes(body));
-                        //_log.Debug("<-{0}", correlationId);
-
-                        // find correlated action
-                        Action<byte[]> handler;
-                        // TODO: if correlation id is not found, there is a chance of corrupt 
-                        // connection. Maybe recycle the connection?
-                        if (!_corelationTable.TryRemove(correlationId, out handler))
+                        var size = BigEndianConverter.ToInt32(buff);
+                        // read message body
+                        var body = new byte[size];
+                        var pos = 0;
+                        var left = size;
+                        do
                         {
-                            _log.Error("Unknown correlationId: " + correlationId);
-                            continue;
+                            read = await client.GetStream().ReadAsync(body, pos, left);
+                            if (read == 0)
+                            {
+                                _log.Info("Server closed connection");
+                                client.Close();
+                            }
+                            //_log.Debug("Read/expected/total {0}/{1}/{2}", read, left, size);
+                            pos += read;
+                            left -= read;
+                        } while (left > 0);
+
+                        if (client.Available > 0)
+                            _log.Debug("Still available {0} bytes", client.Available);
+
+                        try
+                        {
+                            int correlationId = -1;
+                            // TODO: check read==size && read > 4
+                            correlationId = BigEndianConverter.ToInt32(body);
+                            //_log.Debug("<-{0}\n {1}", correlationId, FormatBytes(body));
+                            //_log.Debug("<-{0}", correlationId);
+
+                            // find correlated action
+                            Action<byte[], Exception> handler;
+                            // TODO: if correlation id is not found, there is a chance of corrupt 
+                            // connection. Maybe recycle the connection?
+                            if (!_corelationTable.TryRemove(correlationId, out handler))
+                            {
+                                _log.Error("Unknown correlationId: " + correlationId);
+                                continue;
+                            }
+                            handler(body, null);
                         }
-                        handler(body);
+                        catch (Exception ex)
+                        {
+                            _log.Error(ex, "Error with handling message. Message bytes:\r\n{0}", FormatBytes(body));
+                            throw;
+                        }
                     }
-                    catch (Exception ex)
+                    catch (SocketException e)
                     {
-                        _log.Error(ex, "Error with handling message. Message bytes:\r\n{0}", FormatBytes(body));
+                        // shorter version of socket exception, without stack trace dump
+                        _log.Info("CorrelationLoop socket exception. {0}", e.Message);
+                        throw;
+                    }
+                    catch (Exception e)
+                    {
+                        _log.Error(e, "CorrelateResponseLoop error");
+                        if (_onError != null)
+                            _onError(e, client);
                         throw;
                     }
                 }
-                catch (Exception e)
+
+                try
                 {
-                    // TODO: it seems exception here is not propagated all the way back to subscriber
-                    _log.Error(e, "CorrelateResponseLoop error");
+                    _log.Debug("Finished reading loop from socket {0}", client.Client.RemoteEndPoint);
+                }
+                catch (ObjectDisposedException)
+                {
                 }
             }
-            try
+            catch(Exception e)
             {
-                _log.Debug("Finished reading loop from socket {0}", client.Client.RemoteEndPoint);
+                _corelationTable.Values.ForEach(c => c(null, e));
+                throw;
             }
-            catch (ObjectDisposedException)
+            finally
             {
+                _corelationTable.Values.ForEach(c => c(null, new TaskCanceledException("Correlation loop closed")));
             }
         }
 
@@ -161,12 +185,16 @@ namespace kafka4net.Protocols
             var callback = new TaskCompletionSource<T>();
             // TODO: configurable timeout
             // TODO: coordinate with Message's timeout
+            // TODO: set exception in case of tcp socket exception and end of correlation loop
             //var timeout = new CancellationTokenSource(5 * 1000);
             try
             {
-                var res = _corelationTable.TryAdd(correlationId, body =>
+                var res = _corelationTable.TryAdd(correlationId, (body, ex) =>
                 {
-                    callback.TrySetResult(deserialize(body));
+                    if(ex == null)
+                        callback.TrySetResult(deserialize(body));
+                    else
+                        callback.TrySetException(ex);
                     //timeout.Dispose();
                 });
                 if (!res)
@@ -200,69 +228,20 @@ namespace kafka4net.Protocols
             return response;
         }
 
-        internal Task Produce(IEnumerable<ProduceRequest> requests)
+        internal async Task<ProducerResponse> Produce(ProduceRequest request)
         {
-            // Avoid multiple enumeration of "requests"
-            var materializedRequest = requests.ToArray();
+            var conn = request.Broker.Conn;
+            var client = await conn.GetClientAsync();
+            _log.Debug("Sending ProduceRequest to {0}, Request: {1}", conn, request);
+            var response = await SendAndCorrelateAsync(
+                id => Serializer.Serialize(request, id),
+                Serializer.GetProducerResponse,
+                client,
+                CancellationToken.None
+            );
+            _log.Debug("Got ProduceResponse: {0}", response);
 
-            // TODO: handle result
-            var tasks = materializedRequest.Select(async request =>
-            {
-                ProducerResponse response;
-                try
-                {
-                    var conn = request.Broker.Conn;
-                    var client = await conn.GetClientAsync();
-                    _log.Debug("Sending ProduceRequest to {0}, Request: {1}", conn, request);
-                    response = await SendAndCorrelateAsync(
-                        id => Serializer.Serialize(request, id),
-                        Serializer.GetProducerResponse,
-                        client,
-                        CancellationToken.None
-                    );
-                    _log.Debug("Got ProduceResponse: {0}", response);
-                    if (response.Topics.Any(t => t.Partitions.Any(p => p.ErrorCode != ErrorCode.NoError)))
-                        _log.Debug("_");
-                }
-                catch (SocketException e)
-                {
-                    _cluster.OnTransportError(request, e);
-                    return;
-                }
-
-                (
-                    from req in materializedRequest
-                    from topic in req.TopicData
-                    from part in topic.PartitionsData
-                    // correlate per-partition result errors to source per-partition messages
-                    join err in (
-                        from topic in response.Topics
-                        from part in topic.Partitions
-                        select new {topic.TopicName, part.Partition, part.ErrorCode}
-                    ) on new {topic.TopicName, part.Partition} equals new {err.TopicName, err.Partition}
-                    select new {topic.TopicName, part.Pub, part.OriginalMessages, err.ErrorCode, err.Partition }
-                 ).ForEach(p => {
-                     if (p.ErrorCode == ErrorCode.NoError)
-                     {
-                         if (p.Pub.OnSuccess != null)
-                             SafeCallback(() => p.Pub.OnSuccess(p.OriginalMessages));
-                     }
-                     else
-                     {
-                         // TODO: if its a temp error, route messages to delay queue
-                         // TODO: what if exception? What if recoverable exception (connection lost?)
-                         if(p.Pub.OnPermError != null) 
-                         {
-                             // TODO: create dedicated PartitionException
-                             var error = string.Format("Error sending data. Error code: {0}; topic: '{1}', partition: {2}", p.ErrorCode, p.TopicName, p.Partition);
-                             SafeCallback(() => p.Pub.OnPermError(new BrokerException(error), p.OriginalMessages));
-                         }
-                     }
-                 });
-
-            });
-
-            return Task.WhenAll(tasks);
+            return response;
         }
 
         internal async Task<MetadataResponse> MetadataRequest(TopicRequest request, BrokerMeta broker = null)
@@ -317,23 +296,10 @@ namespace kafka4net.Protocols
             return SendAndCorrelateAsync(c => Serializer.Serialize(request, c), Serializer.DeserializeMetadataResponse, client, CancellationToken.None);
         }
 
-        static void SafeCallback(Action action)
-        {
-            try
-            {
-                action();
-            }
-            catch (Exception e)
-            {
-                _log.Error("Error when executing callback. {0}\n{1}", e.Message, e.StackTrace);
-            }
-        }
-
         private static string FormatBytes(byte[] buff)
         {
             return buff.Aggregate(new StringBuilder(), (builder, b) => builder.Append(b.ToString("x2")),
                 str => str.ToString());
         }
-
     }
 }
