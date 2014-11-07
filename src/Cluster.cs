@@ -301,14 +301,16 @@ namespace kafka4net
         /// <returns></returns>
         private void BuildPartitionStateChangeSubject()
         {
-            _partitionStateChanges = _partitionStateChangesSubject.
+            var conn = _partitionStateChangesSubject.
                 GroupBy(t => new { t.Item1, t.Item2 }).
                 // Within partition, filter out repetition and remember the last result (for late subscribers)
-                Select(p => p.DistinctUntilChanged().Replay(1).RefCount()).
+                Select(p => { var conn2 = p.DistinctUntilChanged().Replay(1); conn2.Connect(); return conn2; }).
                 // remember all partitions state for late subscribers
-                Replay().RefCount().
-                // merge per-partition unique streams back into single stream
-                Merge();
+                Replay();
+
+            conn.Connect();
+            // merge per-partition unique streams back into single stream
+            _partitionStateChanges = conn.Merge();
         }
 
         /// <summary>
