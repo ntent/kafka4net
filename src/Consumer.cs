@@ -43,6 +43,9 @@ namespace kafka4net
 
             OnMessageArrived = Observable.Create<ReceivedMessage>(async observer =>
             {
+                // Relay messages from partition to consumer's output
+                OnMessageArrivedInput.Subscribe(observer);
+
                 // subscribe to all partitions
                 var parts = await BuildTopicPartitionsAsync();
                 parts.ForEach(part =>
@@ -51,9 +54,6 @@ namespace kafka4net
                     _partitionsSubscription.Add(partSubscription);
                 });
                 _log.Debug("Subscribed to partitions");
-
-                // Relay messages from partition to consumer's output
-                OnMessageArrivedInput.Subscribe(observer);
 
                 // upon unsubscribe
                 return () =>
