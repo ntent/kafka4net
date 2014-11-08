@@ -47,8 +47,10 @@ namespace tests
             // disable Transport noise
             // config.LoggingRules.Add(new LoggingRule("kafka4net.Protocol.Transport", LogLevel.Info, fileTarget) { Final = true});
             //
-            config.LoggingRules.Add(new LoggingRule("PartitionRecoveryMonitor", LogLevel.Error, fileTarget) { Final = true });
-            config.LoggingRules.Add(new LoggingRule("tests.*", LogLevel.Debug, consoleTarget) { Final = true, });
+            config.LoggingRules.Add(new LoggingRule("tests.*", LogLevel.Debug, fileTarget) { Final = true, });
+            config.LoggingRules.Add(new LoggingRule("kafka4net.Internal.PartitionRecoveryMonitor", LogLevel.Error, fileTarget) { Final = true });
+            config.LoggingRules.Add(new LoggingRule("kafka4net.Connection", LogLevel.Error, fileTarget) { Final = true });
+            //config.LoggingRules.Add(new LoggingRule("kafka4net.Protocols.Protocol", LogLevel.Error, fileTarget) { Final = true });
             //
             config.LoggingRules.Add(new LoggingRule("*", LogLevel.Info, consoleTarget));
             config.LoggingRules.Add(new LoggingRule("*", LogLevel.Debug, fileTarget));
@@ -456,19 +458,17 @@ namespace tests
 
         }
 
+        /// <summary>
+        /// Set long batching period for producer (20 sec) and make sure that shutdown flushes
+        /// buffered data.
+        /// </summary>
         [Test]
         public async void CleanShutdownTest()
         {
             const string topic = "shutdown.test";
 
             // set producer long batching period, 20 sec
-            var producer = new Producer(_seedAddresses, new ProducerConfiguration(topic, TimeSpan.FromSeconds(20), int.MaxValue))
-            {
-                OnTempError = tmpErrored => { },
-                OnPermError = (e, messages) => Console.WriteLine("Producer error: {0}", e.Message),
-                OnShutdownDirty = dirtyShutdown => Console.WriteLine("Dirty shutdown"), 
-                OnSuccess = success => { },
-            };
+            var producer = new Producer(_seedAddresses, new ProducerConfiguration(topic, TimeSpan.FromSeconds(20), int.MaxValue));
 
             _log.Debug("Connecting");
             await producer.ConnectAsync();
@@ -476,33 +476,44 @@ namespace tests
             // start listener at the end of queue and accumulate received messages
             var received = new HashSet<string>();
             var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, maxWaitTimeMs: 30 * 1000));
+            _log.Info("Connecting consumer");
             await consumer.ConnectAsync();
+            _log.Info("Subscribing to consumer");
             var consumerSubscription = consumer.OnMessageArrived
                                         .Select(msg => Encoding.UTF8.GetString(msg.Value))
                                         .Subscribe(m => received.Add(m));
+            _log.Info("Subscribed to consumer");
 
-            // send data, 5 msg/sec
+            _log.Info("Starting sender");
+            // send data, 5 msg/sec, for 5 seconds
             var sent = new HashSet<string>();
-            var producerSubscription = Observable.Interval(TimeSpan.FromSeconds(1.0 / 5)).
+            var sender = Observable.Interval(TimeSpan.FromSeconds(1.0 / 5)).
                 Select(i => string.Format("msg {0} {1}", i, Guid.NewGuid())).
+                Synchronize().
                 Do(m => sent.Add(m)).
                 Select(msg => new Message
                 {
                     Value = Encoding.UTF8.GetBytes(msg)
                 }).
-                Subscribe(producer.Send);
+                TakeUntil(DateTimeOffset.Now.AddSeconds(5)).
+                Publish().RefCount();
+            sender.Subscribe(producer.Send);
 
-            // shutdown producer in 5 sec
-            await Task.Delay(5000);
-            producerSubscription.Dispose();
+            _log.Debug("Waiting for sender");
+            await sender;
+            _log.Debug("Waiting for producer complete");
             await producer.Close(TimeSpan.FromSeconds(4));
 
             // how to make sure nothing is sent after shutdown? listen to logger?  have connection events?
 
-            // wait for 1sec for receiver to get all the messages
-            await Task.Delay(1000);
+            // wait for 5sec for receiver to get all the messages
+            _log.Info("Waiting for consumer to fetch");
+            await Task.Delay(5000);
+            _log.Info("Disposing consumer subscription");
             consumerSubscription.Dispose();
+            _log.Info("Closing consumer");
             await consumer.CloseAsync(TimeSpan.FromSeconds(4));
+            _log.Info("Closed consumer");
 
             // assert we received all the messages
 

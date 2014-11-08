@@ -31,7 +31,6 @@ namespace kafka4net
             Closed // closed means we already closed down, cannot reconnect.
         }
 
-        private static readonly Random _rnd = new Random();
         private static readonly ILogger _log = Logger.GetLogger();
 
         private readonly Protocol _protocol;
@@ -172,11 +171,6 @@ namespace kafka4net
 
             _state = ClusterState.Disconnected;
         }
-
-        //public TopicMeta[] GetTopics()
-        //{
-        //    return _metadata.Topics;
-        //}
 
         /// <summary>Get list of all topics which are already cached. Does not issue a metadata request.</summary>
         public string[] GetAllTopics()
@@ -363,7 +357,7 @@ namespace kafka4net
                     return fetcher;
 
                 })
-                .Do(f => _log.Info("GetFetcherChanges returning {1} fetcher {0}", f, f == null ? "null" : "new"),
+                .Do(f => _log.Debug("GetFetcherChanges returning {1} fetcher {0}", f, f == null ? "null" : "new"),
                     ex => _log.Error(ex, "GetFetcherChages saw ERROR returning new fetcher."),
                     () => _log.Error("GetFetcherChanges saw COMPLETE from returning new fetcher."));
         }
@@ -604,15 +598,7 @@ namespace kafka4net
                 }
             };
 
-            ProducerResponse response;
-            try
-            {
-                response = await _protocol.Produce(request);
-            }
-            catch(Exception)
-            {
-                throw;
-            }
+            var response = await _protocol.Produce(request);
             _log.Debug("#{0} SendBatchAsync complete", _id);
             return response;
         }

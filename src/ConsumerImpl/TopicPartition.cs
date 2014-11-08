@@ -82,7 +82,7 @@ namespace kafka4net.ConsumerImpl
             // now subscribe to the new fetcher. This will begin pumping messages through to the consumer.
             if (newFetcher != null)
             {
-                _log.Info("{0} Received new fetcher. Fetcher: {1}. Subscribing to this fetcher.", this, newFetcher);
+                _log.Debug("{0} Received new fetcher. Fetcher: {1}. Subscribing to this fetcher.", this, newFetcher);
                 _currentfetcherSubscription = newFetcher.Subscribe(this);
             }
         }

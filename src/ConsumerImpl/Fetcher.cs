@@ -38,6 +38,10 @@ namespace kafka4net.ConsumerImpl
         private readonly IObservable<FetchResponse> _fetchResponses;
         SemaphoreSlim _subscribersWaiter = new SemaphoreSlim(0, 1);
 
+        public int BrokerId { get { return _broker.NodeId; } }
+        public BrokerMeta Broker { get { return _broker; } }
+
+
         public Fetcher(Cluster cluster, BrokerMeta broker, Protocol protocol, ConsumerConfiguration consumerConfig, CancellationToken cancel)
         {
             _cluster = cluster;
@@ -122,38 +126,6 @@ namespace kafka4net.ConsumerImpl
             {
                 return _topicPartitions.Select(tp=>new Tuple<string,int>(tp.Topic,tp.PartitionId)).ToArray();
             }
-        }
-
-        /*
-
-        public IObservable<FetchResponse> AsObservable() { return _fetchResponses; }
-
-        public Dictionary<string, List<PartitionFetchState>> GetOffsetStates() { return _topicToPartitionsMap;  }
-
-        public bool HasTopic(string topic) { return _topicToPartitionsMap.ContainsKey(topic); }
-
-        public bool HasConsumer(Consumer consumer) { return _consumerToPartitionsMap.ContainsKey(consumer); }
-
-         */
-
-        public int BrokerId { get { return _broker.NodeId; } }
-        public BrokerMeta Broker { get { return _broker; } }
-
-        /// <summary>
-        /// TODO: Remove!
-        /// </summary>
-        /// <param name="consumer"></param>
-        /// <param name="parts"></param>
-        public void AddToListeningPartitions(Consumer consumer, List<PartitionFetchState> parts)
-        {
-            throw new NotImplementedException();
-            //List<PartitionFetchState> partsOld;
-            //if (!_consumerToPartitionsMap.TryGetValue(consumer, out partsOld))
-            //    _consumerToPartitionsMap.Add(consumer, parts);
-            //else
-            //    partsOld.AddRange(parts);
-
-            //RebuildTopicMap();
         }
 
         private IObservable<FetchResponse> FetchLoop()

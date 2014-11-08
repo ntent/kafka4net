@@ -125,12 +125,12 @@ namespace kafka4net
                                         Monitor.Pulse(_allPartitionQueues);
                                 },
                                 e => _log.Error(e, "Error in batch pipeline. Partition {0}", part.Key),
-                                () => _log.Debug("Batch pipeline complete. Partition {0}", part.Key)
+                                () => _log.Debug("Batch group for partition {0} complete", part.Key)
                             );
 
                         _log.Debug("{0} added new partition queue", this);
-                    }, e => _log.Fatal(e, "Error in message processing pipeline"),
-                    () => _log.Debug("Message processing pipeline complete")
+                    }, e => _log.Fatal(e, "Error in _sendMessagesSubject pipeline"),
+                    () => _log.Debug("_sendMessagesSubject complete")
                 );
 
                 // start the send loop task
@@ -160,19 +160,26 @@ namespace kafka4net
             // mark the cancellation token to cause the sending to finish up and don't allow any new messages coming in.
             _cancellation.Cancel();
             
-            // complete the incoming message stream
+            // flush messages to partition queues
+            _log.Debug("Completing _sendMessagesSubject...");
             _sendMessagesSubject.OnCompleted();
+            _log.Debug("Completed _sendMessagesSubject");
 
-            // trigger send loop to exit
+            // trigger send loop into action, if it is waiting on empty queue
             lock(_allPartitionQueues)
             {
                 Monitor.Pulse(_allPartitionQueues);
             }
             
             // wait for sending to complete 
+            _log.Debug("Waiting for send loop complete...");
             await _sendLoopTask.ConfigureAwait(false);
+            _log.Debug("Send loop completed");
 
-            _log.Info("Close complete");
+            // close down the cluster
+            _log.Debug("Closing cluster...");
+            await _cluster.CloseAsync(timeout);
+            _log.Debug("Cluster closed. Close complete");
         }
 
         /// <summary>

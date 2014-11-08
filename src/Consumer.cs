@@ -1,11 +1,5 @@
 ﻿using System.Linq;
-using System.Reactive;
-using System.Reactive.Concurrency;
-using System.Reactive.Threading.Tasks;
-using System.Runtime.Remoting.Messaging;
 using kafka4net.ConsumerImpl;
-using kafka4net.Protocols.Requests;
-using kafka4net.Protocols.Responses;
 using System;
 using System.Collections.Generic;
 using System.Reactive.Disposables;
@@ -41,7 +35,22 @@ namespace kafka4net
             Configuration = consumerConfig;
             _cluster = new Cluster(consumerConfig.SeedBrokers);
 
-            OnMessageArrived = Observable.Create<ReceivedMessage>(async observer =>
+            OnMessageArrived = Observable.Create<ReceivedMessage>(observer => 
+            {
+                // Subscription to OnMessageArrived is tricky because users would expect offsets to be resolved at the time
+                // of OnMessageArrived.Subscribe(), which is synchronous. But fetchers offset resolution is async.
+                // Using blocking Wait combined with ConfigureAwaiter(false) inside in SubscribeClient seems the only way to do it.
+                var task = SubscribeClient(observer);
+                task.Wait();
+                return task.Result;
+            }).
+            Publish().
+            RefCount();
+        }
+
+        async Task<IDisposable> SubscribeClient(IObserver<ReceivedMessage> observer)
+        {
+            return await await _cluster.Scheduler.Ask(async () =>
             {
                 // Relay messages from partition to consumer's output
                 OnMessageArrivedInput.Subscribe(observer);
@@ -56,18 +65,12 @@ namespace kafka4net
                 _log.Debug("Subscribed to partitions");
 
                 // upon unsubscribe
-                return () =>
+                return Disposable.Create(() =>
                 {
                     _partitionsSubscription.Dispose();
                     _topicPartitions.Clear();
-                    // Do not wait for broker closure. Seems impossible in synchronous unsubscribe.
-                    _cluster.CloseAsync(TimeSpan.FromSeconds(1));
-                };
-            }).
-                SubscribeOn(_cluster.Scheduler).
-            // allow multiple consumers to share the same subscription
-            Publish().
-            RefCount();
+                });
+            }).ConfigureAwait(false);
         }
 
         /// <summary>
@@ -166,28 +169,6 @@ namespace kafka4net
             }
 
             _isDisposed = true;
-        }
-
-        /// <summary>
-        /// TODO: Remove this!
-        /// </summary>
-        /// <param name="recoveredPartitions"></param>
-        internal void OnPartitionsRecovered(IObservable<FetchResponse.TopicFetchData> recoveredPartitions)
-        {
-            throw new NotImplementedException();
-            //recoveredPartitions.
-            //    Subscribe(fetch => (
-            //        from part in fetch.Partitions
-            //        from msg in part.Messages
-            //        select new ReceivedMessage
-            //        {
-            //            Topic = fetch.Topic,
-            //            Partition = part.Partition,
-            //            Key = msg.Key,
-            //            Value = msg.Value
-            //        }).
-            //        ForEach(msg => _events.OnNext(msg))
-            //    );
         }
     }
 }
