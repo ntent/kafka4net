@@ -36,7 +36,7 @@ namespace kafka4net.ConsumerImpl
 
         // this is the observable sequence of fetch responses returned from the FetchLoop
         private readonly IObservable<FetchResponse> _fetchResponses;
-
+        SemaphoreSlim _subscribersWaiter = new SemaphoreSlim(0, 1);
 
         public Fetcher(Cluster cluster, BrokerMeta broker, Protocol protocol, ConsumerConfiguration consumerConfig, CancellationToken cancel)
         {
@@ -75,11 +75,15 @@ namespace kafka4net.ConsumerImpl
         public IDisposable Subscribe(TopicPartition topicPartition)
         {
             _topicPartitions.Add(topicPartition);
+            _subscribersWaiter.Release();
 
             // create a disposable that allows us to remove the topic partition
             var disposable = new CompositeDisposable
             {
-                Disposable.Create(() => _topicPartitions.Remove(topicPartition)),
+                Disposable.Create(() => {
+                    _topicPartitions.Remove(topicPartition);
+                    //TODO: ??? _subscribersWaiter.
+                }),
                 ReceivedMessages.Where(rm => rm.Topic == topicPartition.Topic && rm.Partition == topicPartition.PartitionId)
                     .Subscribe(topicPartition)
             };
@@ -177,7 +181,11 @@ namespace kafka4net.ConsumerImpl
                     if (fetchRequest.Topics.Length == 0)
                     {
                         // no topics, yield for a little and let others run
-                        await Task.Delay(_consumerConfig.MaxWaitTimeMs, _cancel);
+                        _log.Debug("No partitions subscribed to fetcher. Waiting for any...", _consumerConfig.MaxWaitTimeMs);
+                        // TODO: if we wake up and start fetching upon 1st partition subscription, the 2nd one will receive it's
+                        // data only after _consumerConfig.MaxWaitTimeMs. Is it expected by the user?
+                        await _subscribersWaiter.WaitAsync(_cancel);
+                        _log.Debug("Woke up");
                         continue;
                     }
 
