@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Reactive.Disposables;
 using System.Reactive.Linq;
 using System.Threading;
@@ -60,9 +61,14 @@ namespace kafka4net.ConsumerImpl
 
             // subscribe to fetcher changes for this partition.
             // We will immediately get a call with the "current" fetcher if it is available, and connect to it then.
+            var fetchers = new List<Fetcher>();
             _fetcherChangesSubscription = _cluster
-                .GetFetcherChanges(_topic, _partitionId, consumer.Configuration)
-                .Subscribe(OnNewFetcher,OnFetcherChangesError,OnFetcherChangesComplete);
+                .GetFetcherChanges(_topic, _partitionId, consumer.Configuration).
+                Do(fetchers.Add).
+                Subscribe(OnNewFetcher,OnFetcherChangesError,OnFetcherChangesComplete);
+             
+            _log.Debug("Starting {0} fetchers", fetchers.Count);
+            fetchers.ForEach(fetcher => fetcher.PartitionsUpdated());
 
             // give back a handle to close this topic partition.
             return Disposable.Create(DisposeImpl);
