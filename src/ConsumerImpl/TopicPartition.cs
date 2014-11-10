@@ -90,6 +90,7 @@ namespace kafka4net.ConsumerImpl
             {
                 _log.Debug("{0} Received new fetcher. Fetcher: {1}. Subscribing to this fetcher.", this, newFetcher);
                 _currentfetcherSubscription = newFetcher.Subscribe(this);
+                newFetcher.PartitionsUpdated();
             }
         }
 
