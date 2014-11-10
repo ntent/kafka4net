@@ -1,4 +1,5 @@
 ﻿using System.Reactive.Subjects;
+using kafka4net.Internal;
 using kafka4net.Metadata;
 using kafka4net.Protocols;
 using kafka4net.Protocols.Requests;
@@ -180,8 +181,8 @@ namespace kafka4net.ConsumerImpl
                         fetch = await _protocol.Fetch(fetchRequest, _broker.Conn);
 
                         // if any TopicPartitions have an error, fail them with the Cluster.
-                        fetch.Topics.SelectMany(t=> t.Partitions.Select(p => new Tuple<string, int, ErrorCode>(t.Topic, p.Partition, p.ErrorCode)))
-                            .Where(ps => ps.Item3 != ErrorCode.NoError)
+                        fetch.Topics.SelectMany(t => t.Partitions.Select(p => new PartitionStateChangeEvent(t.Topic, p.Partition, p.ErrorCode)))
+                            .Where(ps => ps.ErrorCode != ErrorCode.NoError)
                             .ForEach(ps => _cluster.NotifyPartitionStateChange(ps));
                         
                         if (_log.IsDebugEnabled)

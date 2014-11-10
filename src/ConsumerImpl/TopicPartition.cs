@@ -2,8 +2,7 @@
 using System.Collections.Generic;
 using System.Reactive.Disposables;
 using System.Reactive.Linq;
-using System.Threading;
-using System.Threading.Tasks;
+using kafka4net.Internal;
 
 namespace kafka4net.ConsumerImpl
 {
@@ -133,7 +132,7 @@ namespace kafka4net.ConsumerImpl
             _log.Warn("{0} Recieved Error from Fetcher. Waiting for new or updated Fetcher. Message: {1}", this, error.Message);
             _currentfetcherSubscription.Dispose();
             _currentfetcherSubscription = null;
-            _cluster.NotifyPartitionStateChange(new Tuple<string, int, ErrorCode>(Topic, PartitionId, ErrorCode.FetcherException));
+            _cluster.NotifyPartitionStateChange(new PartitionStateChangeEvent(Topic, PartitionId, ErrorCode.FetcherException));
         }
 
         public void OnCompleted()

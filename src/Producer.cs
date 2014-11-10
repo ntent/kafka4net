@@ -72,22 +72,22 @@ namespace kafka4net
 
                 // Recovery: subscribe to partition offline/online events
                 _cluster.PartitionStateChanges.
-                    Where(p => p.Item1 == Configuration.Topic).
+                    Where(p => p.Topic == Configuration.Topic).
                     Synchronize(_allPartitionQueues).
                     Subscribe(p =>
                     {
                         PartitionQueueInfo queue;
-                        if (!_allPartitionQueues.TryGetValue(p.Item2, out queue))
+                        if (!_allPartitionQueues.TryGetValue(p.PartitionId, out queue))
                         {
-                            queue = new PartitionQueueInfo {Partition = p.Item2};
-                            _allPartitionQueues.Add(p.Item2, queue);
+                            queue = new PartitionQueueInfo {Partition = p.PartitionId};
+                            _allPartitionQueues.Add(p.PartitionId, queue);
                         }
-                        queue.IsOnline = p.Item3 == ErrorCode.NoError;
+                        queue.IsOnline = p.ErrorCode == ErrorCode.NoError;
                         Monitor.Pulse(_allPartitionQueues);
 
                         if (_log.IsDebugEnabled)
                         {
-                            _log.Debug("Detected change in topic/partition '{0}'/{1}/{2}. Triggered queue event", Configuration.Topic, p.Item2, p.Item3);
+                            _log.Debug("Detected change in topic/partition '{0}'/{1}/{2}. Triggered queue event", Configuration.Topic, p.PartitionId, p.ErrorCode);
                         }
                     });
 
