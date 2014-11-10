@@ -26,7 +26,7 @@ namespace kafka4net
 
         //public MessageCodec Codec = MessageCodec.CodecNone;
         private Task _sendLoopTask;
-        private readonly Subject<Message> _sendMessagesSubject;
+        private Subject<Message> _sendMessagesSubject;
         private readonly Cluster _cluster;
 
         // cancellation token used to notify all producer components to stop.
@@ -42,8 +42,6 @@ namespace kafka4net
         {
             Configuration = producerConfiguration;
             _cluster = cluster;
-
-            _sendMessagesSubject = new Subject<Message>();
         }
 
         /// <summary>
@@ -57,10 +55,18 @@ namespace kafka4net
             : this(new Cluster(seedBrokers), producerConfiguration) { }
 
 
+        public bool IsConnected { get { return _sendMessagesSubject != null; } }
+
         public async Task ConnectAsync()
         {
+            // if we've already connected, don't do it again.
+            if (IsConnected)
+                return;
+
             await await _cluster.Scheduler.Ask(async () =>
             {
+                _sendMessagesSubject = new Subject<Message>();
+
 				if (_cluster.State != Cluster.ClusterState.Connected)
 	                await _cluster.ConnectAsync();
 
@@ -149,7 +155,10 @@ namespace kafka4net
         {
             if (_cancellation.IsCancellationRequested)
                 throw new Exception("Cannot send messages after producer is canceled / closed.");
-                
+
+            if (!IsConnected)
+                throw new Exception("Must call ConnectAsync prior to sending messages.");
+
             _sendMessagesSubject.OnNext(msg);
 
         }

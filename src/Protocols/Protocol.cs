@@ -110,6 +110,7 @@ namespace kafka4net.Protocols
                             {
                                 _log.Info("Server closed connection");
                                 client.Close();
+                                return;
                             }
                             //_log.Debug("Read/expected/total {0}/{1}/{2}", read, left, size);
                             pos += read;
