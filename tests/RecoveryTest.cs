@@ -974,31 +974,31 @@ namespace tests
         [Test]
         public async void SchedulerThreadIsIsolatedFromUserCode()
         {
-            var threadId = Thread.CurrentThread.ManagedThreadId;
-            _log.Info("Test Runner is using thread {0}",threadId);
+            const string threadName = "kafka-scheduler";
+            _log.Info("Test Runner is using thread {0}", Thread.CurrentThread.Name);
 
             var topic = "topic." + _rnd.Next();
             VagrantBrokerUtil.CreateTopic(topic,6,3);
 
             var cluster = new Cluster(_seedAddresses);
             await cluster.ConnectAsync();
-            Assert.AreEqual(threadId,Thread.CurrentThread.ManagedThreadId);
+            Assert.AreNotEqual(threadName, Thread.CurrentThread.Name);
 
             await cluster.FetchPartitionOffsetsAsync(topic);
-            Assert.AreEqual(threadId, Thread.CurrentThread.ManagedThreadId);
+            Assert.AreNotEqual(threadName, Thread.CurrentThread.Name);
 
             var topics = cluster.GetAllTopics();
-            Assert.AreEqual(threadId, Thread.CurrentThread.ManagedThreadId);
+            Assert.AreNotEqual(threadName, Thread.CurrentThread.Name);
 
             // now create a producer
             var producer = new Producer(cluster, new ProducerConfiguration(topic));
             await producer.ConnectAsync();
-            Assert.AreEqual(threadId, Thread.CurrentThread.ManagedThreadId);
+            Assert.AreNotEqual(threadName, Thread.CurrentThread.Name);
 
             // create a producer that also creates a cluster
             var producerWithCluster = new Producer(_seedAddresses, new ProducerConfiguration(topic));
             await producerWithCluster.ConnectAsync();
-            Assert.AreEqual(threadId, Thread.CurrentThread.ManagedThreadId);
+            Assert.AreNotEqual(threadName, Thread.CurrentThread.Name);
 
             // TODO: Subscribe and check thread on notification observables!
 
@@ -1007,40 +1007,63 @@ namespace tests
                 .Do(l =>
                 {
                     producer.Send(new Message { Value = BitConverter.GetBytes(l) });
-                    producer.Send(new Message { Value = BitConverter.GetBytes(l) });
+                    producerWithCluster.Send(new Message { Value = BitConverter.GetBytes(l) });
+                    _log.Debug("After Producer Send using thread {0}", Thread.CurrentThread.Name);
 
-                }).Take(50);
-            Assert.AreEqual(threadId, Thread.CurrentThread.ManagedThreadId);
+                }).Take(50).ToArray();
+            Assert.AreNotEqual(threadName, Thread.CurrentThread.Name);
 
             // now consumer(s)
             var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses,topic,ConsumerStartLocation.TopicHead));
             await consumer.ConnectAsync();
-            Assert.AreEqual(threadId, Thread.CurrentThread.ManagedThreadId);
+            Assert.AreNotEqual(threadName, Thread.CurrentThread.Name);
 
 
+            var msgsRcv = new List<long>();
             var messageSubscription = consumer.OnMessageArrived
-                .Do(msg=> Assert.AreEqual(threadId, Thread.CurrentThread.ManagedThreadId), exception => Assert.AreEqual(threadId, Thread.CurrentThread.ManagedThreadId), () => Assert.AreEqual(threadId, Thread.CurrentThread.ManagedThreadId) )
+                .Do(msg => Assert.AreNotEqual(threadName, Thread.CurrentThread.Name), exception => Assert.AreNotEqual(threadName, Thread.CurrentThread.Name), () => Assert.AreNotEqual(threadName, Thread.CurrentThread.Name))
                 .Take(50)
-                .TakeUntil(DateTime.Now.AddSeconds(5))
-                .Subscribe(msg=> Assert.AreEqual(threadId, Thread.CurrentThread.ManagedThreadId), exception => Assert.AreEqual(threadId, Thread.CurrentThread.ManagedThreadId), () => Assert.AreEqual(threadId, Thread.CurrentThread.ManagedThreadId) );
+                .TakeUntil(DateTime.Now.AddSeconds(500))
+                .Subscribe(
+                    msg=>
+                    {
+                        msgsRcv.Add(BitConverter.ToInt64(msg.Value,0));
+                        Assert.AreNotEqual(threadName, Thread.CurrentThread.Name);
+                        _log.Debug("In Consumer Subscribe OnNext using thread {0}", Thread.CurrentThread.Name);
+                    }, exception =>
+                    {
+                        _log.Debug("In Consumer Subscribe OnError using thread {0}", Thread.CurrentThread.Name);
+                        throw exception;
+                    }, () =>
+                    {
+                        Assert.AreNotEqual(threadName, Thread.CurrentThread.Name);
+                        _log.Debug("In Consumer Subscribe OnComplete using thread {0}", Thread.CurrentThread.Name);
+                    });
 
             await Task.Delay(TimeSpan.FromSeconds(6));
-            Assert.AreEqual(threadId, Thread.CurrentThread.ManagedThreadId);
+            _log.Debug("After Consumer Subscribe using thread {0}", Thread.CurrentThread.Name);
+            Assert.AreNotEqual(threadName, Thread.CurrentThread.Name);
+
+            Assert.AreEqual(msgs.Length, msgsRcv.Count);
+
             messageSubscription.Dispose();
-            Assert.AreEqual(threadId, Thread.CurrentThread.ManagedThreadId);
+            Assert.AreNotEqual(threadName, Thread.CurrentThread.Name);
 
             // now close down
             await producer.Close(TimeSpan.FromSeconds(5));
-            Assert.AreEqual(threadId, Thread.CurrentThread.ManagedThreadId);
+            _log.Debug("After Consumer Close using thread {0}", Thread.CurrentThread.Name);
+            Assert.AreNotEqual(threadName, Thread.CurrentThread.Name);
 
             await producerWithCluster.Close(TimeSpan.FromSeconds(5));
-            Assert.AreEqual(threadId, Thread.CurrentThread.ManagedThreadId);
+            _log.Debug("After Producer Subscribe using thread {0}", Thread.CurrentThread.Name);
+            Assert.AreNotEqual(threadName, Thread.CurrentThread.Name);
 
             await consumer.CloseAsync(TimeSpan.FromSeconds(5));
-            Assert.AreEqual(threadId, Thread.CurrentThread.ManagedThreadId);
+            Assert.AreNotEqual(threadName, Thread.CurrentThread.Name);
 
             await cluster.CloseAsync(TimeSpan.FromSeconds(5));
-            Assert.AreEqual(threadId, Thread.CurrentThread.ManagedThreadId);
+            _log.Debug("After Cluster Close using thread {0}", Thread.CurrentThread.Name);
+            Assert.AreNotEqual(threadName, Thread.CurrentThread.Name);
 
         }
 

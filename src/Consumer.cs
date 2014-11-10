@@ -1,4 +1,5 @@
 ﻿using System.Linq;
+using System.Reactive.Concurrency;
 using kafka4net.ConsumerImpl;
 using System;
 using System.Collections.Generic;
@@ -45,7 +46,9 @@ namespace kafka4net
                 return task.Result;
             }).
             Publish().
-            RefCount();
+            RefCount()
+            //.Do(msg=> _log.Debug("Received Message on final observable"))
+            .ObserveOn(Scheduler.Default);
         }
 
         async Task<IDisposable> SubscribeClient(IObserver<ReceivedMessage> observer)
@@ -53,7 +56,9 @@ namespace kafka4net
             return await await _cluster.Scheduler.Ask(async () =>
             {
                 // Relay messages from partition to consumer's output
-                OnMessageArrivedInput.Subscribe(observer);
+                OnMessageArrivedInput
+                    //.Do(msg=>_log.Debug("Received Message on ArrivedInput"))
+                    .Subscribe(observer);
 
                 // subscribe to all partitions
                 var parts = await BuildTopicPartitionsAsync();
