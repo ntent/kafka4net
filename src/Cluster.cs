@@ -106,6 +106,20 @@ namespace kafka4net
             });
         }
 
+        private void HandleTransportError(Exception e, BrokerMeta broker)
+        {
+            (
+                from topic in _metadata.Topics
+                from part in topic.Partitions
+                where part.Leader == broker.NodeId
+                select new { topic.TopicName, part }
+            ).ForEach(p =>
+            {
+                p.part.ErrorCode = ErrorCode.TransportError;
+                _partitionStateChangesSubject.OnNext(Tuple.Create(p.TopicName, p.part.Id, ErrorCode.TransportError));
+            });
+        }
+
         private void CheckConnected()
         {
             if (_state != ClusterState.Connected)
@@ -502,7 +516,7 @@ namespace kafka4net
                     join brokerConn in
                         (
                             from broker in clusterMeta.Brokers
-                            select new { broker, conn = new Connection(broker.Host, broker.Port, _protocol) }
+                            select new { broker, conn = new Connection(broker.Host, broker.Port, _protocol, e => HandleTransportError(e, broker)) }
                         ) on leaderGrp.Key equals brokerConn.broker.NodeId
                     // flatten broker->partition[] into partition->broker
                     from partition in leaderGrp

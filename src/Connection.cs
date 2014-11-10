@@ -16,14 +16,16 @@ namespace kafka4net
         private readonly string _host;
         private readonly int _port;
         private readonly Protocol _protocol;
+        private readonly Action<Exception> _onError;
         private TcpClient _client;
         object _gate = new object();
 
-        internal Connection(string host, int port, Protocol protocol)
+        internal Connection(string host, int port, Protocol protocol, Action<Exception> onError = null)
         {
             _host = host;
             _port = port;
             _protocol = protocol;
+            _onError = onError;
         }
 
 
@@ -69,7 +71,14 @@ namespace kafka4net
 
                     State = ConnState.Connecting;
                     _client = new TcpClient();
-                    await _client.ConnectAsync(_host, _port);
+                    try
+                    {
+                        await _client.ConnectAsync(_host, _port);
+                    }
+                    catch (Exception e)
+                    {
+
+                    }
                     // TODO: Who and when is going to cancel reading?
                     var loopTask = _protocol.CorrelateResponseLoop(_client, CancellationToken.None);
 
@@ -89,10 +98,12 @@ namespace kafka4net
                     return _client;
                 }
             }
-            catch
+            catch(Exception e)
             {
                 // some exception getting a connection, clear what we have for next time.
                 _client = null;
+                if (_onError != null)
+                    _onError(e);
                 throw;
             }
 
