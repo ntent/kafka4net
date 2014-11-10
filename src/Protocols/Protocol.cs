@@ -76,7 +76,7 @@ namespace kafka4net.Protocols
         {
             try
             {
-                _log.Debug("Starting reading loop from socket {0}", client.Client.RemoteEndPoint);
+                _log.Debug("Starting reading loop from socket");
                 // TODO: if corrup message, dump bin log of 100 bytes for further investigation
                 while (client.Connected)
                 {
@@ -162,7 +162,7 @@ namespace kafka4net.Protocols
 
                 try
                 {
-                    _log.Debug("Finished reading loop from socket {0}", client.Client.RemoteEndPoint);
+                    _log.Debug("Finished reading loop from socket");
                 }
                 catch (ObjectDisposedException)
                 {
@@ -171,6 +171,8 @@ namespace kafka4net.Protocols
             catch(Exception e)
             {
                 _corelationTable.Values.ForEach(c => c(null, e));
+                if (_onError != null)
+                    _onError(e, client);
                 throw;
             }
             finally
