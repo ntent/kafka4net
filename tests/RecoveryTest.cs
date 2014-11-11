@@ -44,16 +44,23 @@ namespace tests
             fileTarget.FileName = "${basedir}../../../../log.txt";
             fileTarget.Layout = "${longdate} ${level} [${threadname}:${threadid}] ${logger:shortName=true} ${message} ${exception:format=tostring,stacktrace:innerFormat=tostring,stacktrace}";
 
+            var rule = new LoggingRule("*", LogLevel.Info, consoleTarget);
+            rule.Targets.Add(fileTarget);
+            rule.Final = true;
+
+            rule = new LoggingRule("*", LogLevel.Debug, fileTarget);
+            rule.ChildRules.Add(new LoggingRule("tests.*", LogLevel.Debug, consoleTarget));
+            config.LoggingRules.Add(rule);
+
             // disable Transport noise
             // config.LoggingRules.Add(new LoggingRule("kafka4net.Protocol.Transport", LogLevel.Info, fileTarget) { Final = true});
             //
-            config.LoggingRules.Add(new LoggingRule("tests.*", LogLevel.Debug, fileTarget) { Final = true, });
-            config.LoggingRules.Add(new LoggingRule("kafka4net.Internal.PartitionRecoveryMonitor", LogLevel.Error, fileTarget) { Final = true });
-            config.LoggingRules.Add(new LoggingRule("kafka4net.Connection", LogLevel.Error, fileTarget) { Final = true });
+            //config.LoggingRules.Add(new LoggingRule("tests.*", LogLevel.Debug, fileTarget));
+            //config.LoggingRules.Add(new LoggingRule("kafka4net.Internal.PartitionRecoveryMonitor", LogLevel.Error, fileTarget) { Final = true });
+            //config.LoggingRules.Add(new LoggingRule("kafka4net.Connection", LogLevel.Error, fileTarget) { Final = true });
             //config.LoggingRules.Add(new LoggingRule("kafka4net.Protocols.Protocol", LogLevel.Error, fileTarget) { Final = true });
             //
-            config.LoggingRules.Add(new LoggingRule("*", LogLevel.Info, consoleTarget));
-            config.LoggingRules.Add(new LoggingRule("*", LogLevel.Debug, fileTarget));
+
             LogManager.Configuration = config;
 
             var logger = LogManager.GetLogger("Main");

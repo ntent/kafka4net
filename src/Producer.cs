@@ -98,43 +98,37 @@ namespace kafka4net
                 _sendMessagesSubject.
                     ObserveOn(_cluster.Scheduler).
                     Do(msg => msg.PartitionId = Configuration.Partitioner.GetMessagePartition(msg, topicPartitions).Id).
-                    GroupBy(m => m.PartitionId).
-                    Subscribe(part =>
+                    Buffer(Configuration.BatchFlushTime, Configuration.BatchFlushSize).
+                    Where(b => b.Count > 0).
+                    Select(msgs => msgs.GroupBy(msg => msg.PartitionId)).
+                    Subscribe(partitionGroups =>
                     {
-                        PartitionQueueInfo queue;
                         lock (_allPartitionQueues)
                         {
-                            // partition queue might be created if metadata broadcast fired already
-                            if (!_allPartitionQueues.TryGetValue(part.Key, out queue))
+                            foreach (var batch in partitionGroups)
                             {
-                                queue = new PartitionQueueInfo { Partition = part.Key };
-                                _allPartitionQueues.Add(part.Key, queue);
-                            }
-                            queue.IsOnline = topicPartitions.First(p => p.Id == part.Key).ErrorCode == ErrorCode.NoError;
-                        }
-
-                        part.
-                            // TODO: buffer incoming messages, because configuration means incoming characteristics?
-                            Buffer(Configuration.BatchFlushTime, Configuration.BatchFlushSize).
-                            Where(b => b.Count > 0).
-                            Synchronize(_allPartitionQueues).
-                            Do(batch =>
-                            {
-                                queue.Queue.Enqueue(batch.ToArray());
-                                if (_log.IsDebugEnabled)
-                                    _log.Debug("Enqueued batch of size {0} for topic '{1}' partition {2}", batch.Count, Configuration.Topic, part.Key);
-                            }).
-                            // After batch enqueued, send wake up sygnal to sending queue
-                            Subscribe(_ =>
+                                // partition queue might be created if metadata broadcast fired already
+                                PartitionQueueInfo queue;
+                                if (!_allPartitionQueues.TryGetValue(batch.Key, out queue))
                                 {
-                                    lock (_allPartitionQueues)
-                                        Monitor.Pulse(_allPartitionQueues);
-                                },
-                                e => _log.Error(e, "Error in batch pipeline. Partition {0}", part.Key),
-                                () => _log.Debug("Batch group for partition {0} complete", part.Key)
-                            );
+                                    queue = new PartitionQueueInfo {Partition = batch.Key};
+                                    _allPartitionQueues.Add(batch.Key, queue);
+                                    queue.IsOnline = topicPartitions.First(p => p.Id == batch.Key).ErrorCode ==
+                                                        ErrorCode.NoError;
+                                    _log.Debug("{0} added new partition queue", this);
+                                }
 
-                        _log.Debug("{0} added new partition queue", this);
+                                // now go through each group and queue them up
+                                var batchAr = batch.ToArray();
+                                queue.Queue.Enqueue(batchAr);
+                                if (_log.IsDebugEnabled)
+                                    _log.Debug("Enqueued batch of size {0} for topic '{1}' partition {2}",
+                                        batchAr.Length, Configuration.Topic, batch.Key);
+
+                                // After batch enqueued, send wake up sygnal to sending queue
+                                Monitor.Pulse(_allPartitionQueues);
+                            }
+                        }
                     }, e => _log.Fatal(e, "Error in _sendMessagesSubject pipeline"),
                     () => _log.Debug("_sendMessagesSubject complete")
                 );
@@ -256,17 +250,24 @@ namespace kafka4net
                                 // TODO: freeze permanent errors and throw consumer exceptions upon sending to perm error partition
                                 var response = await _cluster.SendBatchAsync(brokerBatch.Leader, brokerBatch.Messages, this);
                                 
-                                // some errors, figure out which batches to dismiss from queues
-                                var failedResponsePartitions = new HashSet<int>(
-                                    response.Topics.
+
+
+                                var failedResponsePartitions = response.Topics.
                                     Where(t => t.TopicName == Configuration.Topic). // should contain response only for our topic, but just in case...
                                     SelectMany(t => t.Partitions).
-                                    Where(p => p.ErrorCode != ErrorCode.NoError).
-                                    Select(p => p.Partition)
-                                );
+                                    Where(p => p.ErrorCode != ErrorCode.NoError).ToList();
+
+                                // some errors, figure out which batches to dismiss from queues
+                                var failedPartitionIds = new HashSet<int>(failedResponsePartitions.Select(p => p.Partition));
+
                                 var successPartitionQueues = brokerBatch.Queues.
-                                    Where(q => !failedResponsePartitions.Contains(q.Partition)).
+                                    Where(q => !failedPartitionIds.Contains(q.Partition)).
                                     ToArray();
+
+                                // notify of any errors from send response
+                                failedResponsePartitions.ForEach(failedPart => 
+                                    _cluster.NotifyPartitionStateChange(new Tuple<string, int, ErrorCode>(Topic, failedPart.Partition, failedPart.ErrorCode)));
+                                
 
                                 Message[] successMessages;
                                 lock (_allPartitionQueues)
@@ -280,6 +281,7 @@ namespace kafka4net
                             catch (Exception e)
                             {
                                 _log.Debug(e, "Exception while sending batch to topic '{0}' BrokerId {1}", Configuration.Topic, brokerBatch.Leader);
+                                //brokerBatch.Queues.ForEach(partQueue => _cluster.NotifyPartitionStateChange(new Tuple<string, int, ErrorCode>(Topic, partQueue.Partition, ErrorCode.TransportError)));
                             }
                         });
 
