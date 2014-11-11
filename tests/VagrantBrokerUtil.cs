@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Net.Sockets;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using kafka4net;
 using kafka4net.Utils;
@@ -70,6 +71,11 @@ namespace tests
         {
             _log.Info("Starting broker: '{0}'", broker);
             Vagrant("ssh -c 'sudo service kafka start' " + broker);
+
+            // await for tcp to become accessible, because process start does not mean that server has done initializing and start listening
+            while(!IsBrokerResponding(BrokerIpToName.Single(b => b.Value == broker).Key))
+                Thread.Sleep(200);
+
             _log.Info("Started broker: '{0}'", broker);
         }
 

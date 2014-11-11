@@ -102,7 +102,21 @@ namespace kafka4net
             ).ForEach(p =>
             {
                 p.part.ErrorCode = ErrorCode.TransportError;
-                _partitionStateChangesSubject.OnNext(Tuple.Create(p.TopicName, p.part.Id, ErrorCode.TransportError));
+                _partitionStateChangesSubject.OnNext(new PartitionStateChangeEvent(p.TopicName, p.part.Id, ErrorCode.TransportError));
+            });
+        }
+
+        private void HandleTransportError(Exception e, BrokerMeta broker)
+        {
+            (
+                from topic in _metadata.Topics
+                from part in topic.Partitions
+                where part.Leader == broker.NodeId
+                select new { topic.TopicName, part }
+            ).ForEach(p =>
+            {
+                p.part.ErrorCode = ErrorCode.TransportError;
+                _partitionStateChangesSubject.OnNext(new PartitionStateChangeEvent(p.TopicName, p.part.Id, ErrorCode.TransportError));
             });
         }
 
@@ -280,15 +294,15 @@ namespace kafka4net
         /// and routing functions can await for good status to come back
         /// Structure: Topic/Partition/ErrorCode.
         /// </summary>
-        internal IObservable<Tuple<string, int, ErrorCode>> PartitionStateChanges { get { return _partitionStateChanges; } }
-        IObservable<Tuple<string, int, ErrorCode>> _partitionStateChanges;
-        private readonly ISubject<Tuple<string, int, ErrorCode>> _partitionStateChangesSubject = new Subject<Tuple<string, int, ErrorCode>>();
+        internal IObservable<PartitionStateChangeEvent> PartitionStateChanges { get { return _partitionStateChanges; } }
+        IObservable<PartitionStateChangeEvent> _partitionStateChanges;
+        private readonly ISubject<PartitionStateChangeEvent> _partitionStateChangesSubject = new Subject<PartitionStateChangeEvent>();
 
         /// <summary>
         /// Allow notification of a new partition state detected by a component
         /// </summary>
         /// <param name="state"></param>
-        internal void NotifyPartitionStateChange(Tuple<string, int, ErrorCode> state)
+        internal void NotifyPartitionStateChange(PartitionStateChangeEvent state)
         {
             _partitionStateChangesSubject.OnNext(state);
         }
@@ -300,7 +314,7 @@ namespace kafka4net
         private void BuildPartitionStateChangeSubject()
         {
             var conn = _partitionStateChangesSubject.
-                GroupBy(t => new { t.Item1, t.Item2 }).
+                GroupBy(t => new { t.Topic, t.PartitionId }).
                 // Within partition, filter out repetition and remember the last result (for late subscribers)
                 Select(p => { var conn2 = p.DistinctUntilChanged().Replay(1); conn2.Connect(); return conn2; }).
                 // remember all partitions state for late subscribers
@@ -321,17 +335,17 @@ namespace kafka4net
         internal IObservable<Fetcher> GetFetcherChanges(string topic, int partitionId, ConsumerConfiguration consumerConfiguration)
         {
             return PartitionStateChanges
-                .Where(t => t.Item1 == topic && t.Item2 == partitionId)
-                .Do(psc => _log.Debug("GetFetcherChages saw new partition state {0}-{1}-{2}", psc.Item1, psc.Item2, psc.Item3),
+                .Where(t => t.Topic == topic && t.PartitionId == partitionId)
+                .Do(psc => _log.Debug("GetFetcherChages saw new partition state {0}-{1}-{2}", psc.Topic, psc.PartitionId, psc.ErrorCode),
                     ex => _log.Fatal(ex, "GetFetcherChages saw ERROR from PartitionStateChanges"))
                 .Select(state =>
                 {
                     // if the state is not ready, return NULL for the fetcher.
-                    if (state.Item3 != ErrorCode.NoError)
+                    if (state.ErrorCode != ErrorCode.NoError)
                         return (Fetcher)null;
 
                     // get or create the correct Fetcher for this topic/partition
-                    var broker = FindBrokerMetaForPartitionId(state.Item1, state.Item2);
+                    var broker = FindBrokerMetaForPartitionId(state.Topic, state.PartitionId);
 
                     var fetcher = _activeFetchers.GetOrAdd(broker, b =>
                     {
@@ -502,7 +516,7 @@ namespace kafka4net
                     join brokerConn in
                         (
                             from broker in clusterMeta.Brokers
-                            select new { broker, conn = new Connection(broker.Host, broker.Port, _protocol) }
+                            select new { broker, conn = new Connection(broker.Host, broker.Port, _protocol, e => HandleTransportError(e, broker)) }
                         ) on leaderGrp.Key equals brokerConn.broker.NodeId
                     // flatten broker->partition[] into partition->broker
                     from partition in leaderGrp
@@ -555,7 +569,7 @@ namespace kafka4net
 
             // broadcast the current partition state for all partitions.
             topicMeta.Topics.
-                SelectMany(t => t.Partitions.Select(part => new Tuple<string, int, ErrorCode>(t.TopicName, part.Id, part.ErrorCode))).
+                SelectMany(t => t.Partitions.Select(part => new PartitionStateChangeEvent(t.TopicName, part.Id, part.ErrorCode))).
                 ForEach(tp => _partitionStateChangesSubject.OnNext(tp));
 
         }

@@ -54,6 +54,7 @@
   <ItemGroup>
     <Compile Include="FletcherHashedMessagePartitioner.cs" />
     <Compile Include="IMessagePartitioner.cs" />
+    <Compile Include="Internal\PartitionStateChangeEvent.cs" />
     <Compile Include="Metadata\PartitionOffsetInfo.cs" />
     <Compile Include="ProducerConfiguration.cs" />
     <Compile Include="ConsumerConfiguration.cs" />

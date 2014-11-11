@@ -1,4 +1,6 @@
-﻿using kafka4net.Metadata;
+﻿using System.Reactive.Subjects;
+using kafka4net.Internal;
+using kafka4net.Metadata;
 using kafka4net.Protocols;
 using kafka4net.Protocols.Requests;
 using kafka4net.Protocols.Responses;
@@ -35,11 +37,13 @@ namespace kafka4net.ConsumerImpl
         private readonly HashSet<TopicPartition> _topicPartitions = new HashSet<TopicPartition>();
 
         // this is the observable sequence of fetch responses returned from the FetchLoop
-        private readonly IObservable<FetchResponse> _fetchResponses;
-        SemaphoreSlim _subscribersWaiter = new SemaphoreSlim(0, 1);
+        private IObservable<FetchResponse> _fetchResponses;
 
         public int BrokerId { get { return _broker.NodeId; } }
         public BrokerMeta Broker { get { return _broker; } }
+
+        // "bool" is a fake param, it does not carry any meaning
+        readonly Subject<bool> _partitionsUpdated = new Subject<bool>();
 
 
         public Fetcher(Cluster cluster, BrokerMeta broker, Protocol protocol, ConsumerConfiguration consumerConfig, CancellationToken cancel)
@@ -52,8 +56,9 @@ namespace kafka4net.ConsumerImpl
             _consumerConfig = consumerConfig;
 
             _fetchResponses = FetchLoop().Publish().RefCount();
-
             BuildReceivedMessages();
+
+            _cancel.Register(() => _partitionsUpdated.OnNext(true));
 
             if(_log.IsDebugEnabled)
                 _log.Debug("Created new fetcher #{0} for broker: {1}", _id, _broker);
@@ -79,15 +84,11 @@ namespace kafka4net.ConsumerImpl
         public IDisposable Subscribe(TopicPartition topicPartition)
         {
             _topicPartitions.Add(topicPartition);
-            _subscribersWaiter.Release();
 
             // create a disposable that allows us to remove the topic partition
             var disposable = new CompositeDisposable
             {
-                Disposable.Create(() => {
-                    _topicPartitions.Remove(topicPartition);
-                    //TODO: ??? _subscribersWaiter.
-                }),
+                Disposable.Create(() => _topicPartitions.Remove(topicPartition)),
                 ReceivedMessages.Where(rm => rm.Topic == topicPartition.Topic && rm.Partition == topicPartition.PartitionId)
                     .Subscribe(topicPartition)
             };
@@ -128,6 +129,11 @@ namespace kafka4net.ConsumerImpl
             }
         }
 
+        internal void PartitionsUpdated() 
+        {
+            _partitionsUpdated.OnNext(true);
+        }
+
         private IObservable<FetchResponse> FetchLoop()
         {
             return Observable.Create<FetchResponse>(async observer =>
@@ -152,12 +158,16 @@ namespace kafka4net.ConsumerImpl
 
                     if (fetchRequest.Topics.Length == 0)
                     {
-                        // no topics, yield for a little and let others run
-                        _log.Debug("No partitions subscribed to fetcher. Waiting for any...", _consumerConfig.MaxWaitTimeMs);
-                        // TODO: if we wake up and start fetching upon 1st partition subscription, the 2nd one will receive it's
-                        // data only after _consumerConfig.MaxWaitTimeMs. Is it expected by the user?
-                        await _subscribersWaiter.WaitAsync(_cancel);
-                        _log.Debug("Woke up");
+                        _log.Debug("No partitions subscribed to fetcher. Waiting for _partitionsUpdated signl");
+                        await _partitionsUpdated.FirstAsync();
+                        
+                        if(_cancel.IsCancellationRequested)
+                        {
+                            _log.Debug("Cancel detected. Quitting FetchLoop");
+                            break;
+                        }
+                        
+                        _log.Debug("Received _partitionsUpdated. Have {0} partitions subscribed", _topicPartitions.Count);
                         continue;
                     }
 
@@ -171,8 +181,8 @@ namespace kafka4net.ConsumerImpl
                         fetch = await _protocol.Fetch(fetchRequest, _broker.Conn);
 
                         // if any TopicPartitions have an error, fail them with the Cluster.
-                        fetch.Topics.SelectMany(t=> t.Partitions.Select(p => new Tuple<string, int, ErrorCode>(t.Topic, p.Partition, p.ErrorCode)))
-                            .Where(ps => ps.Item3 != ErrorCode.NoError)
+                        fetch.Topics.SelectMany(t => t.Partitions.Select(p => new PartitionStateChangeEvent(t.Topic, p.Partition, p.ErrorCode)))
+                            .Where(ps => ps.ErrorCode != ErrorCode.NoError)
                             .ForEach(ps => _cluster.NotifyPartitionStateChange(ps));
                         
                         if (_log.IsDebugEnabled)

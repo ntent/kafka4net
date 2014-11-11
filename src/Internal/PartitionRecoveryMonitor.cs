@@ -62,13 +62,13 @@ namespace kafka4net.Internal
             cluster.PartitionStateChanges.Subscribe(
                 state =>
                 {
-                    var key = new Tuple<string, int>(state.Item1, state.Item2);
+                    var key = new Tuple<string, int>(state.Topic, state.PartitionId);
                     // check if it is failed or recovered, and remove or add to our failed list.
-                    if (state.Item3 == ErrorCode.NoError)
+                    if (state.ErrorCode == ErrorCode.NoError)
                     {
                          if (_failedList.ContainsKey(key))
                          {
-                             _log.Info("Partition {0}-{1} is recovered. Removing from failed list.", state.Item1, state.Item2);
+                             _log.Info("Partition {0}-{1} is recovered. Removing from failed list.", state.Topic, state.PartitionId);
                              _failedList.Remove(key);
                          }
                     }
@@ -76,13 +76,13 @@ namespace kafka4net.Internal
                     {
                         if (!_failedList.ContainsKey(key))
                         {
-                            _log.Info("Partition {0}-{1} is in error state {2}. Adding to failed list.", state.Item1, state.Item2, state.Item3);
-                            _failedList.Add(key, state.Item3);
+                            _log.Info("Partition {0}-{1} is in error state {2}. Adding to failed list.", state.Topic, state.PartitionId, state.ErrorCode);
+                            _failedList.Add(key, state.ErrorCode);
                         }
                         else
                         {
-                            _log.Info("Partition {0}-{1} is updated but still errored. Updating ErrorCode in failed list.", state.Item1, state.Item2);
-                            _failedList[key] = state.Item3;
+                            _log.Info("Partition {0}-{1} is updated but still errored. Updating ErrorCode in failed list.", state.Topic, state.PartitionId);
+                            _failedList[key] = state.ErrorCode;
                         }
                     }
                 },

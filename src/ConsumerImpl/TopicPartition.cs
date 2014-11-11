@@ -1,8 +1,8 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Reactive.Disposables;
 using System.Reactive.Linq;
-using System.Threading;
-using System.Threading.Tasks;
+using kafka4net.Internal;
 
 namespace kafka4net.ConsumerImpl
 {
@@ -60,9 +60,14 @@ namespace kafka4net.ConsumerImpl
 
             // subscribe to fetcher changes for this partition.
             // We will immediately get a call with the "current" fetcher if it is available, and connect to it then.
+            var fetchers = new List<Fetcher>();
             _fetcherChangesSubscription = _cluster
-                .GetFetcherChanges(_topic, _partitionId, consumer.Configuration)
-                .Subscribe(OnNewFetcher,OnFetcherChangesError,OnFetcherChangesComplete);
+                .GetFetcherChanges(_topic, _partitionId, consumer.Configuration).
+                Do(fetchers.Add).
+                Subscribe(OnNewFetcher,OnFetcherChangesError,OnFetcherChangesComplete);
+             
+            _log.Debug("Starting {0} fetchers", fetchers.Count);
+            fetchers.ForEach(fetcher => fetcher.PartitionsUpdated());
 
             // give back a handle to close this topic partition.
             return Disposable.Create(DisposeImpl);
@@ -84,6 +89,7 @@ namespace kafka4net.ConsumerImpl
             {
                 _log.Debug("{0} Received new fetcher. Fetcher: {1}. Subscribing to this fetcher.", this, newFetcher);
                 _currentfetcherSubscription = newFetcher.Subscribe(this);
+                newFetcher.PartitionsUpdated();
             }
         }
 
@@ -126,7 +132,7 @@ namespace kafka4net.ConsumerImpl
             _log.Warn("{0} Recieved Error from Fetcher. Waiting for new or updated Fetcher. Message: {1}", this, error.Message);
             _currentfetcherSubscription.Dispose();
             _currentfetcherSubscription = null;
-            _cluster.NotifyPartitionStateChange(new Tuple<string, int, ErrorCode>(Topic, PartitionId, ErrorCode.FetcherException));
+            _cluster.NotifyPartitionStateChange(new PartitionStateChangeEvent(Topic, PartitionId, ErrorCode.FetcherException));
         }
 
         public void OnCompleted()

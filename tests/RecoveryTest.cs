@@ -165,8 +165,17 @@ namespace tests
         public async void LeaderDownRecovery()
         {
             const string topic = "part33";
+            var sent = new List<string>();
+            var confirmedSent1 = new List<string>();
 
-            var producer = new Producer(_seedAddresses, new ProducerConfiguration(topic)) { OnSuccess = msgs => _log.Debug("Sent {0} messages", msgs.Length) };
+            var producer = new Producer(_seedAddresses, new ProducerConfiguration(topic))
+            {
+                OnSuccess = msgs =>
+                {
+                    msgs.ForEach(msg => confirmedSent1.Add(Encoding.UTF8.GetString(msg.Value)));
+                    _log.Debug("Sent {0} messages", msgs.Length);
+                }
+            };
             await producer.ConnectAsync();
 
             if (!producer.Cluster.GetAllTopics().Contains(topic))
@@ -178,7 +187,9 @@ namespace tests
             const int postCount = 100;
             const int postCount2 = 50;
 
-            // read messages
+            //
+            // Read messages
+            //
             var received = new List<ReceivedMessage>();
             var receivedEvents = new ReplaySubject<ReceivedMessage>();
             var consumerSubscription = consumer.OnMessageArrived.
@@ -190,45 +201,70 @@ namespace tests
                     _log.Debug("Received {0}/{1}", Encoding.UTF8.GetString(msg.Value), received.Count);
                 });
 
-            // send
+            //
+            // Send #1
+            //
+            _log.Info("Start sender");
             Observable.Interval(TimeSpan.FromMilliseconds(200)).
                 Take(postCount).
                 Subscribe(
-                    i => producer.Send(new Message { Value = Encoding.UTF8.GetBytes("msg " + i) }),
-                    () => Console.WriteLine("Producer complete")
+                    i => {
+                        var msg = "msg " + i;
+                        producer.Send(new Message { Value = Encoding.UTF8.GetBytes(msg) });
+                        sent.Add("msg " + i);
+                    },
+                    () => _log.Info("Producer complete")
                 );
 
             // wait for first 50 messages to arrive
+            _log.Info("Waiting for first {0} messages to arrive", postCount2);
             await receivedEvents.Take(postCount2).Count().ToTask();
             Assert.AreEqual(postCount2, received.Count);
 
-            // stop broker1. As messages have null-key, some of 50 of them have to end up on relocated broker1
-            VagrantBrokerUtil.StopBroker("broker1");
+            _log.Info("Stopping broker");
+            VagrantBrokerUtil.StopBrokerLeaderForPartition(producer.Cluster, topic, 0);
 
             // post another 50 messages
+            _log.Info("Sending another {0} messages", postCount2);
             var sender2 = Observable.Interval(TimeSpan.FromMilliseconds(200)).
                 Take(postCount2);
 
+            //
+            // Send #2
+            //
             sender2.Subscribe(
                     i => {
-                        producer.Send(new Message { Value = Encoding.UTF8.GetBytes("msg #2 " + i) });
+                        var msg = "msg #2 " + i;
+                        producer.Send(new Message { Value = Encoding.UTF8.GetBytes(msg) });
+                        sent.Add(msg);
                         _log.Debug("Sent msg #2 {0}", i);
                     },
-                    () => Console.WriteLine("Producer #2 complete")
+                    () => _log.Info("Producer #2 complete")
                 );
 
-            _log.Debug("Waiting for #2 sender to complete");
+            _log.Info("Waiting for #2 sender to complete");
             await sender2.ToTask();
-            _log.Debug("Waiting 4sec for remaining messages");
-            // TODO: when test is marked as async void, this await cause nunit to hang!!!?
-            await Task.Delay(TimeSpan.FromSeconds(4)); // if unexpected messages arrive, let them in to detect failure
-            //await receivedEvents.Take(postCount + postCount2).ToTask();
-            Assert.AreEqual(postCount + postCount2, received.Count);
-            consumerSubscription.Dispose();
-            await consumer.CloseAsync(TimeSpan.FromSeconds(5));
+            _log.Info("Waiting for producer.Close");
             await producer.Close(TimeSpan.FromSeconds(5));
 
-            _log.Debug("Done");
+            _log.Info("Waiting 4sec for remaining messages");
+            await Task.Delay(TimeSpan.FromSeconds(4)); // if unexpected messages arrive, let them in to detect failure
+
+            _log.Info("Waiting for consumer.CloseAsync");
+            await consumer.CloseAsync(TimeSpan.FromSeconds(5));
+            consumerSubscription.Dispose();
+
+            if (postCount + postCount2 != received.Count)
+            {
+                var diff = sent.Except(received.Select(m => Encoding.UTF8.GetString(m.Value))).OrderBy(s => s);
+                _log.Info("Not received {0}: \n {1}", diff.Count(), string.Join("\n ", diff));
+
+                var diff2 = sent.Except(confirmedSent1).OrderBy(s => s);
+                _log.Info("Not confirmed {0}: \n {1}", diff2.Count(), string.Join("\n ", diff2));
+            }
+            Assert.AreEqual(postCount + postCount2, received.Count, "Received.Count");
+
+            _log.Info("Done");
         }
 
         [Test]
@@ -338,7 +374,11 @@ namespace tests
         }
 
         /// <summary>
-        /// Test producer recovery isolated
+        /// Test producer recovery isolated.
+        /// 
+        /// Create queue and produce 200 messages. On message 30, shutdown broker#2
+        /// Check that result summ of offsets (legth of the topic) is equal to 200
+        /// Check confirmed sent messasges count is sequal to intendent sent.
         /// </summary>
         [Test]
         public async void ProducerRecoveryTest()
@@ -371,6 +411,9 @@ namespace tests
             await producer.Close(TimeSpan.FromSeconds(5));
             _log.Info("Producer closed.");
 
+            //
+            // Check length of result topic
+            //
             var c2 = new Cluster(_seedAddresses);
             await c2.ConnectAsync();
             var parts = await c2.FetchPartitionOffsetsAsync(topic);
@@ -378,7 +421,7 @@ namespace tests
             _log.Info("Sum of offsets: {0}", parts.Select(p => p.Tail - p.Head).Sum());
             _log.Info("Offsets: [{0}]", string.Join(",", parts.Select(p => p.ToString())));
 
-
+            //
             if (sentList.Count != actuallySentList.Count)
             {
                 // log some debug info.
