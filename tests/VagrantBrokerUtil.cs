@@ -59,12 +59,12 @@ namespace tests
             _log.Info("Stopped broker {0}", broker);
         }
 
-        public static void StopBrokerLeaderForPartition(Cluster cluster, string topic, int partition)
+        public static string StopBrokerLeaderForPartition(Cluster cluster, string topic, int partition)
         {
             var brokerMeta = cluster.FindBrokerMetaForPartitionId(topic, partition);
             var brokerName = GetBrokerNameFromIp(brokerMeta.Host);
             StopBroker(brokerName);
-            
+            return brokerName;
         }
 
         public static void StartBroker(string broker)

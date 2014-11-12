@@ -92,18 +92,28 @@ namespace kafka4net
         /// <param name="tcp"></param>
         void HandleTransportError(Exception e, TcpClient tcp)
         {
+            // TODO: implement as reaction to rx event ConnectionFailed?
+
             (
                 from broker in _metadata.Brokers
                 where broker.Conn.OwnsClient(tcp)
                 from topic in _metadata.Topics
                 from part in topic.Partitions
                 where part.Leader == broker.NodeId
-                select new {topic.TopicName, part}
+                select new {topic.TopicName, part, broker.Conn}
             ).ForEach(p =>
             {
                 p.part.ErrorCode = ErrorCode.TransportError;
                 _partitionStateChangesSubject.OnNext(new PartitionStateChangeEvent(p.TopicName, p.part.Id, ErrorCode.TransportError));
             });
+
+            // mark connection as failed
+            // TODO: move to Connection class
+            (
+                from broker in _metadata.Brokers
+                where broker.Conn.OwnsClient(tcp)
+                select broker.Conn
+            ).ForEach(conn => conn.MarkSocketAsFailed());
         }
 
         private void HandleTransportError(Exception e, BrokerMeta broker)

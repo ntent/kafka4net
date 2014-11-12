@@ -18,7 +18,6 @@ namespace kafka4net
         private readonly Protocol _protocol;
         private readonly Action<Exception> _onError;
         private TcpClient _client;
-        object _gate = new object();
 
         internal Connection(string host, int port, Protocol protocol, Action<Exception> onError = null)
         {
@@ -87,11 +86,12 @@ namespace kafka4net
                     loopTask.ContinueWith(t => 
                     {
                         _log.Debug("CorrelationLoop errored. Closing connection because of error. {0}", t.Exception.Message);
-                        try
-                        {
-                            _client.Close();
-                        }
-                        finally { _client = null; }
+                        if(_client != null)
+                            try
+                            {
+                                _client.Close();
+                            }
+                            finally { _client = null; }
                     }, TaskContinuationOptions.OnlyOnFaulted);
 
                     State = ConnState.Connected;
@@ -118,6 +118,15 @@ namespace kafka4net
         internal bool OwnsClient(TcpClient tcp)
         {
             return _client == tcp;
+        }
+
+        public void MarkSocketAsFailed()
+        {
+            _log.Debug("Marking connection as failed. {0}", this);
+            if(_client != null)
+                try { _client.Close(); }
+                catch { /*empty*/ }
+            _client = null;
         }
     }
 }

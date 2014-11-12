@@ -212,6 +212,7 @@ namespace kafka4net.Protocols
                 callback.TrySetException(e);
                 if (_onError != null)
                     _onError(e, tcp);
+                throw;
             }
 
             // TODO: is stream safe to use after timeout?

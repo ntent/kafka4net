@@ -30,7 +30,7 @@ namespace kafka4net
         private readonly Cluster _cluster;
 
         // cancellation token used to notify all producer components to stop.
-        private readonly CancellationTokenSource _cancellation = new CancellationTokenSource();
+        private readonly CancellationTokenSource _shutdown = new CancellationTokenSource();
 
         // the _allPartitionQueues dictionary contains queues for all of the "PartitionBatches" indexed by topic/partition. 
         // the sending loop will send out of these queues as quickly as possible, however when there is an issue with 
@@ -147,7 +147,7 @@ namespace kafka4net
 
         public void Send(Message msg)
         {
-            if (_cancellation.IsCancellationRequested)
+            if (_shutdown.IsCancellationRequested)
                 throw new Exception("Cannot send messages after producer is canceled / closed.");
 
             if (!IsConnected)
@@ -161,7 +161,7 @@ namespace kafka4net
         {
             _log.Debug("Closing...");
             // mark the cancellation token to cause the sending to finish up and don't allow any new messages coming in.
-            _cancellation.Cancel();
+            _shutdown.Cancel();
             
             // flush messages to partition queues
             _log.Debug("Completing _sendMessagesSubject...");
@@ -174,8 +174,10 @@ namespace kafka4net
             // wait for sending to complete 
             _log.Debug("Waiting for send loop complete...");
             if(_sendLoopTask != null)
-                await _sendLoopTask.ConfigureAwait(false);
-            _log.Debug("Send loop completed");
+                if(await _sendLoopTask.TimeoutAfter(timeout).ConfigureAwait(false))
+                    _log.Debug("Send loop completed");
+                else
+                    _log.Error("Timed out while waiting for _sendLoop");
 
             // close down the cluster
             _log.Debug("Closing cluster...");
@@ -194,7 +196,7 @@ namespace kafka4net
                 if (_allPartitionQueues.Values.All(q => !q.IsReadyForServing))
                 {
                     // TODO: bug: if messages are accumulating in buffer, this will quit. Wait for buffer drainage
-                    if (_cancellation.Token.IsCancellationRequested)
+                    if (_shutdown.Token.IsCancellationRequested && _allPartitionQueues.Values.All(q => q.Queue.Count == 0))
                     {
                         _log.Debug("Cancel detected. Quitting SendLoop");
                         break;
@@ -204,7 +206,7 @@ namespace kafka4net
                     await Task.Run(() => 
                     { 
                         _log.Debug("Start waiting in a thread");
-                        _queueEventWaitHandler.Wait(_cancellation.Token);
+                        _queueEventWaitHandler.Wait();
                         _queueEventWaitHandler.Reset();
                     });
                     
@@ -232,7 +234,6 @@ namespace kafka4net
                 //
                 // Send ProduceRequist
                 //
-
                 try
                 {
                     var sendTasks = queuesToBeSent.

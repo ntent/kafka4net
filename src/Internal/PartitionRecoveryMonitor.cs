@@ -68,7 +68,7 @@ namespace kafka4net.Internal
                     {
                          if (_failedList.ContainsKey(key))
                          {
-                             _log.Info("Partition {0}-{1} is recovered. Removing from failed list.", state.Topic, state.PartitionId);
+                             _log.Debug("#{0} Partition {1}-{2} is recovered. Removing from failed list.", _id, state.Topic, state.PartitionId);
                              _failedList.Remove(key);
                          }
                     }
@@ -76,17 +76,17 @@ namespace kafka4net.Internal
                     {
                         if (!_failedList.ContainsKey(key))
                         {
-                            _log.Info("Partition {0}-{1} is in error state {2}. Adding to failed list.", state.Topic, state.PartitionId, state.ErrorCode);
+                            _log.Debug("#{0} Partition {1}-{2} is in error state {3}. Adding to failed list.", _id, state.Topic, state.PartitionId, state.ErrorCode);
                             _failedList.Add(key, state.ErrorCode);
                         }
                         else
                         {
-                            _log.Info("Partition {0}-{1} is updated but still errored. Updating ErrorCode in failed list.", state.Topic, state.PartitionId);
+                            _log.Debug("#{0} Partition {1}-{2} is updated but still errored. Updating ErrorCode in failed list.", _id, state.Topic, state.PartitionId);
                             _failedList[key] = state.ErrorCode;
                         }
                     }
                 },
-                ex => _log.Error(ex, "Error thrown in PartitionStateChanges subscription!"));
+                ex => _log.Error(ex, "#{0} Error thrown in PartitionStateChanges subscription!", _id));
         }
 
         private async Task RecoveryLoop(BrokerMeta broker)

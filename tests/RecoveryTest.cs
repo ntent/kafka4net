@@ -59,6 +59,7 @@ namespace tests
             //config.LoggingRules.Add(new LoggingRule("kafka4net.Internal.PartitionRecoveryMonitor", LogLevel.Error, fileTarget) { Final = true });
             //config.LoggingRules.Add(new LoggingRule("kafka4net.Connection", LogLevel.Error, fileTarget) { Final = true });
             //config.LoggingRules.Add(new LoggingRule("kafka4net.Protocols.Protocol", LogLevel.Error, fileTarget) { Final = true });
+            config.LoggingRules.Add(new LoggingRule("kafka4net.Internal.PartitionRecoveryMonitor", LogLevel.Info, fileTarget));
             //
 
             LogManager.Configuration = config;
@@ -222,7 +223,8 @@ namespace tests
             Assert.AreEqual(postCount2, received.Count);
 
             _log.Info("Stopping broker");
-            VagrantBrokerUtil.StopBrokerLeaderForPartition(producer.Cluster, topic, 0);
+            var stoppedBroker = VagrantBrokerUtil.StopBrokerLeaderForPartition(producer.Cluster, topic, 0);
+            _log.Debug("Stopped broker {0}", stoppedBroker);
 
             // post another 50 messages
             _log.Info("Sending another {0} messages", postCount2);
@@ -256,6 +258,8 @@ namespace tests
 
             if (postCount + postCount2 != received.Count)
             {
+                var receivedStr = received.Select(m => Encoding.UTF8.GetString(m.Value)).ToArray();
+
                 var diff = sent.Except(received.Select(m => Encoding.UTF8.GetString(m.Value))).OrderBy(s => s);
                 _log.Info("Not received {0}: \n {1}", diff.Count(), string.Join("\n ", diff));
 
@@ -263,10 +267,13 @@ namespace tests
                 _log.Info("Not confirmed {0}: \n {1}", diff2.Count(), string.Join("\n ", diff2));
 
                 var diff3 = received.Select(m => Encoding.UTF8.GetString(m.Value)).Except(sent).OrderBy(s => s);
-                _log.Info("Received extra: {0}: \n {1}", diff3.Count(), string.Join("\n ", diff));
+                _log.Info("Received extra: {0}: \n {1}", diff3.Count(), string.Join("\n ", diff3));
 
                 var diff4 = confirmedSent1.Except(sent).OrderBy(s => s);
-                _log.Info("Confirmed extra {0}: \n {1}", diff4.Count(), string.Join("\n ", diff2));
+                _log.Info("Confirmed extra {0}: \n {1}", diff4.Count(), string.Join("\n ", diff4));
+
+                var dups = receivedStr.GroupBy(s => s).Where(g => g.Count() > 1).Select(g => string.Format("{0}: {1}", g.Count(), g.Key));
+                _log.Info("Receved dups: \n {0}", string.Join("\n ", dups));
 
                 _log.Debug("Received: \n{0}", string.Join("\n ", received.Select(m => Encoding.UTF8.GetString(m.Value))));
             }
