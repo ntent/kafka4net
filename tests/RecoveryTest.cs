@@ -162,7 +162,7 @@ namespace tests
         // and are committed (can be read) within (5sec?)
         // Also, order of messages is preserved
         [Test]
-        public async void LeaderDownRecovery()
+        public async void LeaderDownProducerAndConsumerRecovery()
         {
             const string topic = "part33";
             var sent = new List<string>();
@@ -261,6 +261,14 @@ namespace tests
 
                 var diff2 = sent.Except(confirmedSent1).OrderBy(s => s);
                 _log.Info("Not confirmed {0}: \n {1}", diff2.Count(), string.Join("\n ", diff2));
+
+                var diff3 = received.Select(m => Encoding.UTF8.GetString(m.Value)).Except(sent).OrderBy(s => s);
+                _log.Info("Received extra: {0}: \n {1}", diff3.Count(), string.Join("\n ", diff));
+
+                var diff4 = confirmedSent1.Except(sent).OrderBy(s => s);
+                _log.Info("Confirmed extra {0}: \n {1}", diff4.Count(), string.Join("\n ", diff2));
+
+                _log.Debug("Received: \n{0}", string.Join("\n ", received.Select(m => Encoding.UTF8.GetString(m.Value))));
             }
             Assert.AreEqual(postCount + postCount2, received.Count, "Received.Count");
 

@@ -216,7 +216,16 @@ namespace kafka4net.Protocols
 
             // TODO: is stream safe to use after timeout?
             cancel.Register(() => callback.TrySetCanceled(), useSynchronizationContext: false);
-            return await callback.Task;
+            try
+            {
+                return await callback.Task;
+            }
+            catch(TaskCanceledException e) 
+            {
+                if (_onError != null)
+                    _onError(e, tcp);
+                throw;
+            }
         }
 
         internal async Task<ProducerResponse> ProduceRaw(ProduceRequest request, CancellationToken cancel)

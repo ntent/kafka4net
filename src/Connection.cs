@@ -61,7 +61,7 @@ namespace kafka4net
             {
                 if (_client != null && !_client.Connected)
                 {
-                    _log.Debug("Replacing closed connection {0} with a new one", _client.Client.RemoteEndPoint);
+                    _log.Debug("Replacing closed connection {0}:{1} with a new one", _host, _port);
                     _client = null;
                 }
 
