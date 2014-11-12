@@ -513,19 +513,11 @@ namespace kafka4net
                     )
                 group partition by partition.Leader
                     into leaderGrp
-                    join brokerConn in
-                        (
-                            from broker in clusterMeta.Brokers
-                            select new { broker, conn = new Connection(broker.Host, broker.Port, _protocol, e => HandleTransportError(e, broker)) }
-                        ) on leaderGrp.Key equals brokerConn.broker.NodeId
+                    join brokers in clusterMeta.Brokers on leaderGrp.Key equals brokers.NodeId
                     // flatten broker->partition[] into partition->broker
                     from partition in leaderGrp
-                    select new { partition, broker = brokerConn }
-                ).ToDictionary(p => p.partition, p =>
-                {
-                    p.broker.broker.Conn = p.broker.conn;
-                    return p.broker.broker;
-                });
+                    select new { partition, broker = brokers }
+                ).ToDictionary(p => p.partition, p => p.broker);
         }
 
         private void MergeTopicMeta(MetadataResponse topicMeta)
@@ -560,6 +552,7 @@ namespace kafka4net
 
             // add new brokers
             var newBrokers = topicMeta.Brokers.Except(_metadata.Brokers, BrokerMeta.NodeIdComparer).ToArray();
+            newBrokers.ForEach(b => b.Conn = new Connection(b.Host, b.Port, _protocol, e => HandleTransportError(e, b)));
             _metadata.Brokers = _metadata.Brokers.Concat(newBrokers).ToArray();
 
             RebuildBrokerIndexes(_metadata);
