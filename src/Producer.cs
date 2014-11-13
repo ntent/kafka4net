@@ -106,6 +106,7 @@ namespace kafka4net
                     Buffer(Configuration.BatchFlushTime, Configuration.BatchFlushSize).
                     Where(b => b.Count > 0).
                     Select(msgs => msgs.GroupBy(msg => msg.PartitionId)).
+                    ObserveOn(_cluster.Scheduler).
                     Subscribe(partitionGroups =>
                     {
                         foreach (var batch in partitionGroups)
@@ -203,7 +204,7 @@ namespace kafka4net
 
             while (true)
             {
-                var partsMeta = await await _cluster.Scheduler.Ask(() => _cluster.GetOrFetchMetaForTopicAsync(Configuration.Topic)).ConfigureAwait(false);
+                var partsMeta = await await _cluster.Scheduler.Ask(() => _cluster.GetOrFetchMetaForTopicAsync(Configuration.Topic));
                 
                 if (_allPartitionQueues.Values.All(q => !q.IsReadyForServing))
                 {
