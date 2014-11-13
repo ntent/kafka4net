@@ -112,13 +112,9 @@ namespace kafka4net.Protocols
                                 client.Close();
                                 return;
                             }
-                            //_log.Debug("Read/expected/total {0}/{1}/{2}", read, left, size);
                             pos += read;
                             left -= read;
                         } while (left > 0);
-
-                        if (client.Available > 0)
-                            _log.Debug("Still available {0} bytes", client.Available);
 
                         try
                         {
