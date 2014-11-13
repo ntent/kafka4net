@@ -99,7 +99,7 @@ namespace kafka4net
                 if (_partitionsSubscription != null && ! _partitionsSubscription.IsDisposed)
                     _partitionsSubscription.Dispose();
                 return _cluster.CloseAsync(timeout);
-            });
+            }).ConfigureAwait(false);
         }
 
         /// <summary>
@@ -108,7 +108,7 @@ namespace kafka4net
         public Cluster Cluster { get { return _cluster; } }
 
         /// <summary>For every patition, resolve offsets and build TopicPartition object</summary>
-        internal async Task<IEnumerable<TopicPartition>> BuildTopicPartitionsAsync()
+        private async Task<IEnumerable<TopicPartition>> BuildTopicPartitionsAsync()
         {
             // two code paths here. If we have specified locations to start from, just get the partition metadata, and build the TopicPartitions
             if (Configuration.StartLocation == ConsumerStartLocation.SpecifiedLocations)

@@ -28,6 +28,7 @@ namespace kafka4net
         private Task _sendLoopTask;
         private Subject<Message> _sendMessagesSubject;
         private readonly Cluster _cluster;
+        private readonly bool _internalCluster;
 
         // cancellation token used to notify all producer components to stop.
         private readonly CancellationTokenSource _shutdown = new CancellationTokenSource();
@@ -53,7 +54,10 @@ namespace kafka4net
         /// </param>
         /// <param name="producerConfiguration"></param>
         public Producer(string seedBrokers, ProducerConfiguration producerConfiguration)
-            : this(new Cluster(seedBrokers), producerConfiguration) { }
+            : this(new Cluster(seedBrokers), producerConfiguration)
+        {
+            _internalCluster = true;
+        }
 
 
         public bool IsConnected { get { return _sendMessagesSubject != null; } }
@@ -142,7 +146,7 @@ namespace kafka4net
                             _log.Debug("SendLoop complete with status: {0}", t.Status);
                     });
                 });
-            });
+            }).ConfigureAwait(false);
         }
 
         public void Send(Message msg)
@@ -179,19 +183,27 @@ namespace kafka4net
                 else
                     _log.Error("Timed out while waiting for _sendLoop");
 
-            // close down the cluster
-            _log.Debug("Closing cluster...");
-            await _cluster.CloseAsync(timeout);
-            _log.Debug("Cluster closed. Close complete");
+            // close down the cluster ONLY if we created it
+            if (_internalCluster)
+            {
+                _log.Debug("Closing internal cluster...");
+                await _cluster.CloseAsync(timeout).ConfigureAwait(false);
+            }
+            else
+            {
+                _log.Debug("Not closing external shared cluster.");
+            }
+
+            _log.Debug("Close complete");
         }
 
-        async Task SendLoop()
+        private async Task SendLoop()
         {
             _log.Debug("Starting SendLoop for {0}", this);
 
             while (true)
             {
-                var partsMeta = await await _cluster.Scheduler.Ask(() => _cluster.GetOrFetchMetaForTopicAsync(Configuration.Topic));
+                var partsMeta = await await _cluster.Scheduler.Ask(() => _cluster.GetOrFetchMetaForTopicAsync(Configuration.Topic)).ConfigureAwait(false);
                 
                 if (_allPartitionQueues.Values.All(q => !q.IsReadyForServing))
                 {

@@ -624,7 +624,7 @@ namespace tests
             Assert.True(partitionMeta.GroupBy(p=>p.Leader).Count()==1);
 
             // now publish messages
-            const int count = 16000;
+            const int count = 48000;
             var producer = new Producer(_seedAddresses, new ProducerConfiguration(topic));
             _log.Debug("Connecting");
             await producer.ConnectAsync();
