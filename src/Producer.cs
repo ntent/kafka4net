@@ -181,7 +181,7 @@ namespace kafka4net
 
             // close down the cluster
             _log.Debug("Closing cluster...");
-            await _cluster.CloseAsync(timeout);
+            await _cluster.CloseAsync(timeout).ConfigureAwait(false);
             _log.Debug("Cluster closed. Close complete");
         }
 

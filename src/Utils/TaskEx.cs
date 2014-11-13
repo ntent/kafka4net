@@ -15,7 +15,7 @@ namespace kafka4net.Utils
         public async static Task<bool> TimeoutAfter(this Task task, TimeSpan timeout)
         {
             var delay = Task.Delay(timeout);
-            var res = await Task.WhenAny(task, delay);
+            var res = await Task.WhenAny(task, delay).ConfigureAwait(false);
             return res == task;
         }
     }
