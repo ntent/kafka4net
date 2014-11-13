@@ -90,7 +90,7 @@ namespace kafka4net
         /// </summary>
         /// <param name="e"></param>
         /// <param name="tcp"></param>
-        void HandleTransportError(Exception e, TcpClient tcp)
+        private void HandleTransportError(Exception e, TcpClient tcp)
         {
             // TODO: implement as reaction to rx event ConnectionFailed?
 
@@ -162,7 +162,7 @@ namespace kafka4net
                 _partitionRecoveryMonitor = new PartitionRecoveryMonitor(this, _protocol, _cancel.Token);
                 // Merge metadata that recovery monitor discovers
                 _partitionRecoveryMonitor.NewMetadataEvents.Subscribe(MergeTopicMeta, ex => _log.Error(ex, "Error thrown by RecoveryMonitor.NewMetadataEvents!"));
-            });
+            }).ConfigureAwait(false);
         }
 
         /// <summary>
@@ -180,7 +180,7 @@ namespace kafka4net
 
             var success = await Task.WhenAll(new[] { 
                 _partitionRecoveryMonitor.Completion, 
-            }).TimeoutAfter(timeout);
+            }).TimeoutAfter(timeout).ConfigureAwait(false);
 
             if (!success)
             {
@@ -287,7 +287,7 @@ namespace kafka4net
                     }
                 }
                 throw new TaskCanceledException();
-            });
+            }).ConfigureAwait(false);
 
             return ret;
         }
@@ -615,7 +615,7 @@ namespace kafka4net
                 }
             };
 
-            var response = await _protocol.Produce(request);
+            var response = await _protocol.Produce(request).ConfigureAwait(false);
             _log.Debug("#{0} SendBatchAsync complete", _id);
             return response;
         }
