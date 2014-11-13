@@ -229,7 +229,8 @@ namespace tests
             // post another 50 messages
             _log.Info("Sending another {0} messages", postCount2);
             var sender2 = Observable.Interval(TimeSpan.FromMilliseconds(200)).
-                Take(postCount2);
+                Take(postCount2).
+                Publish().RefCount();
 
             //
             // Send #2
