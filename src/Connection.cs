@@ -58,6 +58,7 @@ namespace kafka4net
         {
             try
             {
+                start:
                 if (_client != null && !_client.Connected)
                 {
                     _log.Debug("Replacing closed connection {0}:{1} with a new one", _host, _port);
@@ -73,6 +74,12 @@ namespace kafka4net
                     try
                     {
                         await _client.ConnectAsync(_host, _port);
+                        //
+                        // After await, we can not expect _client to still be initialized because
+                        // another asyn call might reset it while we are in wait state
+                        //
+                        if (_client == null || !_client.Connected)
+                            goto start;
                     }
                     catch (Exception e)
                     {
@@ -112,7 +119,7 @@ namespace kafka4net
 
         public override string ToString()
         {
-            return string.Format("Connection: {0}:{1} connected:{2}", _host, _port, _client.Connected);
+            return string.Format("Connection: {0}:{1}", _host, _port);
         }
 
         internal bool OwnsClient(TcpClient tcp)
