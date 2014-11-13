@@ -18,6 +18,7 @@ namespace kafka4net
         private readonly Protocol _protocol;
         private readonly Action<Exception> _onError;
         private TcpClient _client;
+        readonly SemaphoreSlim _connectionLock = new SemaphoreSlim(1, 1);
 
         internal Connection(string host, int port, Protocol protocol, Action<Exception> onError = null)
         {
@@ -56,9 +57,9 @@ namespace kafka4net
 
         internal async Task<TcpClient> GetClientAsync()
         {
+            await _connectionLock.WaitAsync();
             try
             {
-                start:
                 if (_client != null && !_client.Connected)
                 {
                     _log.Debug("Replacing closed connection {0}:{1} with a new one", _host, _port);
@@ -74,12 +75,6 @@ namespace kafka4net
                     try
                     {
                         await _client.ConnectAsync(_host, _port);
-                        //
-                        // After await, we can not expect _client to still be initialized because
-                        // another asyn call might reset it while we are in wait state
-                        //
-                        if (_client == null || !_client.Connected)
-                            goto start;
                     }
                     catch (Exception e)
                     {
@@ -90,15 +85,20 @@ namespace kafka4net
 
                     // Close connection in case of any exception. It is important, because in case of deserialization exception,
                     // we are out of sync and can't continue.
-                    loopTask.ContinueWith(t => 
+                    loopTask.ContinueWith(async t => 
                     {
                         _log.Debug("CorrelationLoop errored. Closing connection because of error. {0}", t.Exception.Message);
-                        if(_client != null)
-                            try
-                            {
+                        await _connectionLock.WaitAsync();
+                        try
+                        {
+                            if (_client != null)
                                 _client.Close();
-                            }
-                            finally { _client = null; }
+                        }
+                        finally 
+                        { 
+                            _client = null;
+                            _connectionLock.Release();
+                        }
                     }, TaskContinuationOptions.OnlyOnFaulted);
 
                     State = ConnState.Connected;
@@ -112,6 +112,10 @@ namespace kafka4net
                 if (_onError != null)
                     _onError(e);
                 throw;
+            }
+            finally
+            {
+                _connectionLock.Release();
             }
 
             return _client;
@@ -127,13 +131,25 @@ namespace kafka4net
             return _client == tcp;
         }
 
-        public void MarkSocketAsFailed()
+        public async Task MarkSocketAsFailed(TcpClient tcp)
         {
-            _log.Debug("Marking connection as failed. {0}", this);
-            if(_client != null)
-                try { _client.Close(); }
-                catch { /*empty*/ }
-            _client = null;
+            await _connectionLock.WaitAsync();
+            try
+            {
+                if (_client != tcp)
+                    return;
+
+                _log.Debug("Marking connection as failed. {0}", this);
+
+                if (_client != null)
+                    try { _client.Close(); }
+                    catch { /*empty*/ }
+                _client = null;
+            }
+            finally
+            {
+                _connectionLock.Release();
+            }
         }
     }
 }

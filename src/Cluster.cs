@@ -113,7 +113,7 @@ namespace kafka4net
                 from broker in _metadata.Brokers
                 where broker.Conn.OwnsClient(tcp)
                 select broker.Conn
-            ).ForEach(conn => conn.MarkSocketAsFailed());
+            ).ForEach(conn => conn.MarkSocketAsFailed(tcp));
         }
 
         private void HandleTransportError(Exception e, BrokerMeta broker)
