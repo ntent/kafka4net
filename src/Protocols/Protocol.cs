@@ -147,6 +147,11 @@ namespace kafka4net.Protocols
                         _log.Info("CorrelationLoop socket exception. {0}", e.Message);
                         throw;
                     }
+                    catch (ObjectDisposedException)
+                    {
+                        _log.Info("CorrelationLoop socket exception. Object disposed");
+                        throw;
+                    }
                     catch (Exception e)
                     {
                         _log.Error(e, "CorrelateResponseLoop error");
