@@ -70,10 +70,15 @@ namespace kafka4net
 
             await await _cluster.Scheduler.Ask(async () =>
             {
+                _log.Debug("Connecting");
                 _sendMessagesSubject = new Subject<Message>();
 
-				if (_cluster.State != Cluster.ClusterState.Connected)
-	                await _cluster.ConnectAsync();
+                if (_cluster.State != Cluster.ClusterState.Connected)
+                {
+                    _log.Debug("Connecting cluster");
+                    await _cluster.ConnectAsync();
+                    _log.Debug("Connected cluster");
+                }
 
                 // Recovery: subscribe to partition offline/online events
                 _cluster.PartitionStateChanges.
@@ -147,6 +152,7 @@ namespace kafka4net
                             _log.Debug("SendLoop complete with status: {0}", t.Status);
                     });
                 });
+                _log.Debug("Connected");
             }).ConfigureAwait(false);
         }
 

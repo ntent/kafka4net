@@ -58,7 +58,9 @@ namespace kafka4net.Internal
                 ex => _log.Error("Error thrown in NewBrokers subscription!")
                 );
 
+            //
             // listen for any topic status changes and keep our "failed" list updated
+            //
             cluster.PartitionStateChanges.Subscribe(
                 state =>
                 {
@@ -66,11 +68,11 @@ namespace kafka4net.Internal
                     // check if it is failed or recovered, and remove or add to our failed list.
                     if (state.ErrorCode == ErrorCode.NoError)
                     {
-                         if (_failedList.ContainsKey(key))
-                         {
-                             _log.Debug("#{0} Partition {1}-{2} is recovered. Removing from failed list.", _id, state.Topic, state.PartitionId);
-                             _failedList.Remove(key);
-                         }
+                        if (_failedList.ContainsKey(key))
+                        {
+                            _log.Debug("#{0} Partition {1}-{2} is recovered. Removing from failed list.", _id, state.Topic, state.PartitionId);
+                            _failedList.Remove(key);
+                        }
                     }
                     else
                     {

@@ -167,7 +167,7 @@ namespace kafka4net.ConsumerImpl
 
         public override string ToString()
         {
-            return string.Format("<{0}-{1}>",Topic, PartitionId);
+            return string.Format("'{0}' part: {1} offset: {2}",Topic, PartitionId, CurrentOffset);
         }
 
         public override bool Equals(object obj)

@@ -108,8 +108,8 @@ namespace tests
             };
 
             var p = Process.Start(pi);
-            p.OutputDataReceived += (sender, args) => Console.WriteLine(args.Data);
-            p.ErrorDataReceived += (sender, args) => Console.WriteLine(args.Data);
+            p.OutputDataReceived += (sender, args) => _log.Info(args.Data);
+            p.ErrorDataReceived += (sender, args) => _log.Info(args.Data);
             p.BeginOutputReadLine();
             p.BeginErrorReadLine();
             p.WaitForExit();

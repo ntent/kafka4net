@@ -93,6 +93,13 @@ namespace kafka4net.ConsumerImpl
                     .Subscribe(topicPartition)
             };
 
+            if (_log.IsDebugEnabled)
+            {
+                disposable.Add(Disposable.Create(() => _log.Debug("Fetcher #{0}: topicPartition is unsubscribing", topicPartition)));
+            }
+
+            _log.Debug("Fetcher #{0} added {1}", _id, topicPartition);
+
             // TODO: Add FlowControlState handling
             return disposable;
         }
@@ -117,16 +124,12 @@ namespace kafka4net.ConsumerImpl
                         Offset = msg.Offset
                     });
             })
-            .Do(_ => { }, err => _log.Warn("Error received in ReceivedMessages stream from broker {0}. Message: {1}", _broker, err.Message), () => _log.Debug("ReceivedMessages stream for broker {0} is complete.", _broker))
+            .Do(
+                _ => { }, 
+                err => _log.Warn("Error in ReceivedMessages stream from broker {0}. Message: {1}", _broker, err.Message), 
+                () => _log.Debug("ReceivedMessages stream for broker {0} is complete.", _broker)
+            )
             .Publish().RefCount();
-        }
-
-        internal Tuple<string, int>[] AllListeningPartitions
-        {
-            get
-            {
-                return _topicPartitions.Select(tp=>new Tuple<string,int>(tp.Topic,tp.PartitionId)).ToArray();
-            }
         }
 
         internal void PartitionsUpdated() 
@@ -158,16 +161,16 @@ namespace kafka4net.ConsumerImpl
 
                     if (fetchRequest.Topics.Length == 0)
                     {
-                        _log.Debug("No partitions subscribed to fetcher. Waiting for _partitionsUpdated signl");
+                        _log.Debug("#{0} No partitions subscribed to fetcher. Waiting for _partitionsUpdated signal", _id);
                         await _partitionsUpdated.FirstAsync();
                         
                         if(_cancel.IsCancellationRequested)
                         {
-                            _log.Debug("Cancel detected. Quitting FetchLoop");
+                            _log.Debug("#{0}Cancel detected. Quitting FetchLoop", _id);
                             break;
                         }
                         
-                        _log.Debug("Received _partitionsUpdated. Have {0} partitions subscribed", _topicPartitions.Count);
+                        _log.Debug("#{0} Received _partitionsUpdated. Have {1} partitions subscribed", _id, _topicPartitions.Count);
                         continue;
                     }
 
@@ -207,7 +210,7 @@ namespace kafka4net.ConsumerImpl
                     }
                     catch (Exception e)
                     {
-                        _log.Error(e, "#{0} Fetcher failed",_id);
+                        _log.Error(e, "#{0} Fetcher failed", _id);
                         observer.OnError(e);
                         return;
                     }

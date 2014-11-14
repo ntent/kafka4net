@@ -58,10 +58,6 @@ namespace kafka4net
 
         private readonly CancellationTokenSource _cancel = new CancellationTokenSource();
 
-        /// <summary>
-        /// Create broker in disconnected state. Requires ConnectAsync or ConnectAsync call.
-        /// Attempt to send message in disconnected state will cause exception.
-        /// </summary>
         private Cluster() 
         {
             // Init synchronization context of scheduler thread
@@ -153,6 +149,8 @@ namespace kafka4net
                 if (_state != ClusterState.Disconnected)
                     return;
 
+                _log.Debug("Connecting");
+
                 _state = ClusterState.Connecting;
                 var initMeta = await _protocol.ConnectAsync();
                 MergeTopicMeta(initMeta);
@@ -162,6 +160,7 @@ namespace kafka4net
                 _partitionRecoveryMonitor = new PartitionRecoveryMonitor(this, _protocol, _cancel.Token);
                 // Merge metadata that recovery monitor discovers
                 _partitionRecoveryMonitor.NewMetadataEvents.Subscribe(MergeTopicMeta, ex => _log.Error(ex, "Error thrown by RecoveryMonitor.NewMetadataEvents!"));
+                _log.Debug("Connected");
             }).ConfigureAwait(false);
         }
 
@@ -497,7 +496,7 @@ namespace kafka4net
                 }
                 catch (Exception e)
                 {
-                    _log.Error("Error while trying to fetch topic '{0}' metadata. {1}", topic, e.Message);
+                    _log.Error(e, "Error while trying to fetch topic '{0}' metadata", topic);
                 }
 
                 await Task.Delay(500, _cancel.Token);

@@ -44,11 +44,16 @@ namespace tests
             fileTarget.FileName = "${basedir}../../../../log.txt";
             fileTarget.Layout = "${longdate} ${level} [${threadname}:${threadid}] ${logger:shortName=true} ${message} ${exception:format=tostring,stacktrace:innerFormat=tostring,stacktrace}";
 
+            config.LoggingRules.Add(new LoggingRule("tests.*", LogLevel.Debug, consoleTarget) { Final = true });
             var rule = new LoggingRule("*", LogLevel.Info, consoleTarget);
             rule.Targets.Add(fileTarget);
             rule.Final = true;
 
-            config.LoggingRules.Add(new LoggingRule("kafka4net.Internal.PartitionRecoveryMonitor", LogLevel.Info, fileTarget) { Final = true });
+
+            var r1 = new LoggingRule("kafka4net.Internal.PartitionRecoveryMonitor", LogLevel.Info, fileTarget) { Final = true };
+            r1.Targets.Add(consoleTarget);
+            config.LoggingRules.Add(r1);
+
             rule = new LoggingRule("*", LogLevel.Debug, fileTarget);
             rule.ChildRules.Add(new LoggingRule("tests.*", LogLevel.Debug, consoleTarget));
             config.LoggingRules.Add(rule);
@@ -65,7 +70,7 @@ namespace tests
             LogManager.Configuration = config;
 
             var logger = LogManager.GetLogger("Main");
-            logger.Info("=============== Starting =================");
+            logger.Debug("=============== Starting =================");
 
             // set nlog logger in kafka
             Logger.SetupNLog();
@@ -835,13 +840,16 @@ namespace tests
                 ForEach(producer.Send);
 
             var sentMsgs = await sentMessagesObservable;
-            _log.Info("Producer sent {0} messages.",sentMsgs.Count);
-
-            // consume tail-300 for each partition
-            var offsets = (await producer.Cluster.FetchPartitionOffsetsAsync(topic)).ToDictionary(p => p.Partition);
+            _log.Info("Producer sent {0} messages.", sentMsgs.Count);
 
             _log.Debug("Closing producer");
             await producer.Close(TimeSpan.FromSeconds(5));
+
+            var offsetFetchCluster = new Cluster(_seedAddresses);
+            await offsetFetchCluster.ConnectAsync();
+
+            // consume tail-300 for each partition
+            var offsets = (await offsetFetchCluster.FetchPartitionOffsetsAsync(topic)).ToDictionary(p => p.Partition);
             
             var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, ConsumerStartLocation.SpecifiedLocations, partitionOffsetProvider: p => offsets[p].Tail - 300));
             await consumer.ConnectAsync();
