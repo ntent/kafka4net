@@ -22,54 +22,15 @@ namespace kafka4net.Protocols
 
         private readonly Cluster _cluster;
         private readonly Action<Exception, TcpClient> _onError;
-        private readonly Tuple<string, int>[] _seedAddresses;
 
         // It is possible to have id per connection, but it's just simpler code and debug/tracing when it's global
         private static int _correlationId;
         private readonly ConcurrentDictionary<int,Action<byte[],Exception>> _corelationTable = new ConcurrentDictionary<int, Action<byte[],Exception>>();
 
-        internal Protocol(Cluster cluster, string seedConnections, Action<Exception,TcpClient> onError = null)
+        internal Protocol(Cluster cluster, Action<Exception,TcpClient> onError = null)
         {
             _cluster = cluster;
             _onError = onError;
-            _seedAddresses = Connection.ParseAddress(seedConnections);
-        }
-
-        internal async Task<MetadataResponse> ConnectAsync()
-        {
-            var meta = await StartInitialConnectAsync();
-            if (meta == null)
-            {
-                //_log.FatalFormat("Could not connect to any of seed addresses");
-                //return null;
-                throw new BrokerException("Could not connect to any of seed addresses");
-            }
-            return meta;
-        }
-
-        /// <summary>
-        /// Parallel query all seed brokers and listen to the first successful response with all
-        /// topics configuration.
-        /// </summary>
-        /// <returns></returns>
-        private async Task<MetadataResponse> StartInitialConnectAsync()
-        {
-            return await _seedAddresses.
-                Select(addr => Observable.StartAsync(async cancel =>
-                {
-                    var client = new TcpClient { NoDelay = true };
-                    //cancel.Register(client.Close);
-                    await client.ConnectAsync(addr.Item1, addr.Item2);
-                    //if (cancel.IsCancellationRequested)
-                    //    return null;
-                    _log.Debug("Connected to {0}:{1}", addr.Item1, addr.Item2);
-                    CorrelateResponseLoop(client, cancel);
-                    var meta = await LoadAllTopicsMeta(client);
-                    return meta;
-                })).
-                Merge().
-                FirstOrDefaultAsync().
-                ToTask();
         }
 
         internal async Task CorrelateResponseLoop(TcpClient client, CancellationToken cancel)

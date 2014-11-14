@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Net.Sockets;
 using System.Reactive.Concurrency;
@@ -23,10 +24,11 @@ namespace kafka4net
     /// </summary>
     public class Cluster
     {
+        private readonly string _seedBrokers;
+
         internal enum ClusterState
         {
             Disconnected,
-            Connecting,
             Connected,
             Closed // closed means we already closed down, cannot reconnect.
         }
@@ -76,7 +78,8 @@ namespace kafka4net
         /// </param>
         public Cluster(string seedBrokers) : this()
         {
-            _protocol = new Protocol(this, seedBrokers, HandleTransportError);
+            _seedBrokers = seedBrokers;
+            _protocol = new Protocol(this, HandleTransportError);
             _state = ClusterState.Disconnected;
         }
 
@@ -151,8 +154,15 @@ namespace kafka4net
 
                 _log.Debug("Connecting");
 
-                _state = ClusterState.Connecting;
-                var initMeta = await _protocol.ConnectAsync();
+                var initBrokers = Connection.ParseAddress(_seedBrokers).
+                    Select(seed => new BrokerMeta 
+                    {
+                        Host = seed.Item1,
+                        Port = seed.Item2,
+                        NodeId = -99
+                    }).ToArray();
+                var initMeta = new MetadataResponse { Topics = new TopicMeta[0], Brokers = initBrokers };
+
                 MergeTopicMeta(initMeta);
                 _state = ClusterState.Connected;
 
@@ -561,13 +571,31 @@ namespace kafka4net
 
             // add new brokers
             var newBrokers = topicMeta.Brokers.Except(_metadata.Brokers, BrokerMeta.NodeIdComparer).ToArray();
-            newBrokers.ForEach(b => b.Conn = new Connection(b.Host, b.Port, _protocol, e => HandleTransportError(e, b)));
+            
+            // Brokers which were created from seed info have NodeId == -99.
+            // Once we learn their true Id, update the NodeId
+            var resolvedSeedBrokers = (
+                from seed in _metadata.Brokers
+                where seed.NodeId == -99
+                from resolved in topicMeta.Brokers
+                where resolved.Port != -99 &&
+                    seed.Port == resolved.Port &&
+                    string.Compare(resolved.Host, seed.Host, true, CultureInfo.InvariantCulture) == 0
+                select new { seed, resolved }
+            ).ToArray();
+
+            // remove old seeds which have been resolved
+            _metadata.Brokers = _metadata.Brokers.Except(resolvedSeedBrokers.Select(b => b.seed)).ToArray();
+
+            resolvedSeedBrokers.ForEach(b => b.resolved.Conn = b.seed.Conn);
+
+            newBrokers.Where(b => b.Conn == null).ForEach(b => b.Conn = new Connection(b.Host, b.Port, _protocol, e => HandleTransportError(e, b)));
             _metadata.Brokers = _metadata.Brokers.Concat(newBrokers).ToArray();
 
             RebuildBrokerIndexes(_metadata);
 
             // broadcast any new brokers
-            newBrokers.ForEach(b => _newBrokerSubject.OnNext(b));
+            newBrokers.Where(b => b.NodeId != -99).ForEach(b => _newBrokerSubject.OnNext(b));
 
             // broadcast the current partition state for all partitions.
             topicMeta.Topics.
