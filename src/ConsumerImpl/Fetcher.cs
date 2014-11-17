@@ -95,7 +95,7 @@ namespace kafka4net.ConsumerImpl
 
             if (_log.IsDebugEnabled)
             {
-                disposable.Add(Disposable.Create(() => _log.Debug("Fetcher #{0}: topicPartition is unsubscribing", topicPartition)));
+                disposable.Add(Disposable.Create(() => _log.Debug("Fetcher #{0} {1} topicPartition is unsubscribing", _id, topicPartition)));
             }
 
             _log.Debug("Fetcher #{0} added {1}", _id, topicPartition);
@@ -191,16 +191,22 @@ namespace kafka4net.ConsumerImpl
                         if (_log.IsDebugEnabled)
                             _log.Debug("#{0}: got FetchResponse: {1}", _id, fetch);
                     }
-                    catch (TaskCanceledException)
-                    {
-                        // Usually reason of fetch to time out is broker closing Tcp socket.
-                        // Due to Tcp specifics, there are situations when closed connection can not be detected, 
-                        // thus we need to implement timeout to detect it and restart connection.
-                        _log.Info("#{0} Fetch timed out {1}", _id, this);
+                    //catch (TaskCanceledException)
+                    //{
+                    //    // Usually reason of fetch to time out is broker closing Tcp socket.
+                    //    // Due to Tcp specifics, there are situations when closed connection can not be detected, 
+                    //    // thus we need to implement timeout to detect it and restart connection.
+                    //    _log.Info("#{0} Fetch timed out {1}", _id, this);
 
-                        // Continue so that socket exception happen and handle exception
-                        // in uniform way
-                        continue;
+                    //    // Continue so that socket exception happen and handle exception
+                    //    // in uniform way
+                    //    continue;
+                    //}
+                    catch (CorrelationLoopException e)
+                    {
+                        _log.Debug("#{0} connection closed", _id);
+                        observer.OnError(e);
+                        return;
                     }
                     catch (SocketException e)
                     {

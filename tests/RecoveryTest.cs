@@ -50,9 +50,9 @@ namespace tests
             rule.Final = true;
 
 
-            var r1 = new LoggingRule("kafka4net.Internal.PartitionRecoveryMonitor", LogLevel.Info, fileTarget) { Final = true };
-            r1.Targets.Add(consoleTarget);
-            config.LoggingRules.Add(r1);
+            //var r1 = new LoggingRule("kafka4net.Internal.PartitionRecoveryMonitor", LogLevel.Info, fileTarget) { Final = true };
+            //r1.Targets.Add(consoleTarget);
+            //config.LoggingRules.Add(r1);
 
             rule = new LoggingRule("*", LogLevel.Debug, fileTarget);
             rule.ChildRules.Add(new LoggingRule("tests.*", LogLevel.Debug, consoleTarget));

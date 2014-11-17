@@ -99,9 +99,10 @@ namespace kafka4net
                 from topic in _metadata.Topics
                 from part in topic.Partitions
                 where part.Leader == broker.NodeId
-                select new {topic.TopicName, part, broker.Conn}
+                select new {topic.TopicName, part, broker}
             ).ForEach(p =>
             {
+                _log.Debug("Failing Topic/Part {0}/{1} on broker {2} because of {3}", p.TopicName, p.part.Id, p.broker, e.Message);
                 p.part.ErrorCode = ErrorCode.TransportError;
                 _partitionStateChangesSubject.OnNext(new PartitionStateChangeEvent(p.TopicName, p.part.Id, ErrorCode.TransportError));
             });

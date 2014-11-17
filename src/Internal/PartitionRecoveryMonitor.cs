@@ -158,7 +158,7 @@ namespace kafka4net.Internal
                     else
                     {
                         var str = new StringBuilder();
-                        foreach (var leader in healedPartitions.GroupBy(p => p.Item3, p => p, (i, tuples) => new { Leader = i, Topics = tuples.GroupBy(t => t.Item1) }))
+                        foreach (var leader in healedPartitions.GroupBy(p => p.Item3, (i, tuples) => new { Leader = i, Topics = tuples.GroupBy(t => t.Item1) }))
                         {
                             str.AppendFormat(" Leader: {0}\n", leader.Leader);
                             foreach (var topic1 in leader.Topics)
@@ -194,7 +194,7 @@ namespace kafka4net.Internal
 
                             // success!
                             // raise new metadata event 
-                            _log.Info("Alive brokers detected: {0}", newBroker);
+                            _log.Info("Alive brokers detected: {0} which responded with: {1}", newBroker, response2);
                             
                             // broadcast only healed partitions which belong to newBroker
                             var filteredResponse = new MetadataResponse
