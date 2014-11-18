@@ -21,180 +21,17 @@ namespace kafka4net.Protocols
         private static readonly ILogger _log = Logger.GetLogger();
 
         private readonly Cluster _cluster;
-        private readonly Action<Exception, TcpClient> _onError;
 
-        // It is possible to have id per connection, but it's just simpler code and debug/tracing when it's global
-        private static int _correlationId;
-        private readonly ConcurrentDictionary<int,Action<byte[],Exception>> _corelationTable = new ConcurrentDictionary<int, Action<byte[],Exception>>();
-
-        internal Protocol(Cluster cluster, Action<Exception,TcpClient> onError = null)
+        internal Protocol(Cluster cluster)
         {
             _cluster = cluster;
-            _onError = onError;
-        }
-
-        internal async Task CorrelateResponseLoop(TcpClient client, CancellationToken cancel)
-        {
-            try
-            {
-                _log.Debug("Starting reading loop from socket");
-                // TODO: if corrup message, dump bin log of 100 bytes for further investigation
-                while (client.Connected)
-                {
-                    try
-                    {
-                        // read message size
-                        var buff = new byte[4];
-                        var read = await client.GetStream().ReadAsync(buff, 0, 4, cancel);
-                        if (cancel.IsCancellationRequested)
-                        {
-                            _log.Debug("Stopped reading from {0} because socket cancelled", client.Client.RemoteEndPoint);
-                            return;
-                        }
-
-                        // TODO: what to do if read<4 ? Recycle connection?
-                        if (read == 0)
-                        {
-                            _log.Info("Server closed connection");
-                            client.Close();
-                            return;
-                        }
-                        var size = BigEndianConverter.ToInt32(buff);
-                        // read message body
-                        var body = new byte[size];
-                        var pos = 0;
-                        var left = size;
-                        do
-                        {
-                            read = await client.GetStream().ReadAsync(body, pos, left);
-                            if (read == 0)
-                            {
-                                _log.Info("Server closed connection");
-                                client.Close();
-                                return;
-                            }
-                            pos += read;
-                            left -= read;
-                        } while (left > 0);
-
-                        try
-                        {
-                            int correlationId = -1;
-                            // TODO: check read==size && read > 4
-                            correlationId = BigEndianConverter.ToInt32(body);
-                            //_log.Debug("<-{0}\n {1}", correlationId, FormatBytes(body));
-                            //_log.Debug("<-{0}", correlationId);
-
-                            // find correlated action
-                            Action<byte[], Exception> handler;
-                            // TODO: if correlation id is not found, there is a chance of corrupt 
-                            // connection. Maybe recycle the connection?
-                            if (!_corelationTable.TryRemove(correlationId, out handler))
-                            {
-                                _log.Error("Unknown correlationId: " + correlationId);
-                                continue;
-                            }
-                            handler(body, null);
-                        }
-                        catch (Exception ex)
-                        {
-                            _log.Error(ex, "Error with handling message. Message bytes:\r\n{0}", FormatBytes(body));
-                            throw;
-                        }
-                    }
-                    catch (SocketException e)
-                    {
-                        // shorter version of socket exception, without stack trace dump
-                        _log.Info("CorrelationLoop socket exception. {0}", e.Message);
-                        throw;
-                    }
-                    catch (ObjectDisposedException)
-                    {
-                        _log.Info("CorrelationLoop socket exception. Object disposed");
-                        throw;
-                    }
-                    catch (Exception e)
-                    {
-                        _log.Error(e, "CorrelateResponseLoop error");
-                        if (_onError != null)
-                            _onError(e, client);
-                        throw;
-                    }
-                }
-
-                try
-                {
-                    _log.Debug("Finished reading loop from socket");
-                }
-                catch (ObjectDisposedException)
-                {
-                }
-            }
-            catch(Exception e)
-            {
-                _corelationTable.Values.ForEach(c => c(null, e));
-                if (_onError != null)
-                    _onError(e, client);
-                throw;
-            }
-            finally
-            {
-                _corelationTable.Values.ForEach(c => c(null, new TaskCanceledException("Correlation loop closed")));
-            }
-        }
-
-        private async Task<T> SendAndCorrelateAsync<T>(Func<int, byte[]> serialize, Func<byte[], T> deserialize, TcpClient tcp, CancellationToken cancel)
-        {
-            var correlationId = Interlocked.Increment(ref _correlationId);
-
-            var callback = new TaskCompletionSource<T>();
-            // TODO: configurable timeout
-            // TODO: coordinate with Message's timeout
-            // TODO: set exception in case of tcp socket exception and end of correlation loop
-            //var timeout = new CancellationTokenSource(5 * 1000);
-            try
-            {
-                var res = _corelationTable.TryAdd(correlationId, (body, ex) =>
-                {
-                    if(ex == null)
-                        callback.TrySetResult(deserialize(body));
-                    else
-                        callback.TrySetException(ex);
-                    //timeout.Dispose();
-                });
-                if (!res)
-                    throw new ApplicationException("Failed to add correlationId: " + correlationId);
-                var buff = serialize(correlationId);
-                //_log.Debug("{0}->\n{1}", correlationId, FormatBytes(buff));
-                //_log.Debug("{0}->", correlationId);
-                await tcp.GetStream().WriteAsync(buff, 0, buff.Length, cancel);
-            }
-            catch (Exception e)
-            {
-                callback.TrySetException(e);
-                if (_onError != null)
-                    _onError(e, tcp);
-                throw;
-            }
-
-            // TODO: is stream safe to use after timeout?
-            cancel.Register(() => callback.TrySetCanceled(), useSynchronizationContext: false);
-            try
-            {
-                return await callback.Task;
-            }
-            catch(TaskCanceledException e) 
-            {
-                if (_onError != null)
-                    _onError(e, tcp);
-                throw;
-            }
         }
 
         internal async Task<ProducerResponse> ProduceRaw(ProduceRequest request, CancellationToken cancel)
         {
-            var client = await request.Broker.Conn.GetClientAsync();
-            var response = await SendAndCorrelateAsync(
+            var conn = request.Broker.Conn;
+            var client = await conn.GetClientAsync();
+            var response = await conn.Correlation.SendAndCorrelateAsync(
                 id => Serializer.Serialize(request, id),
                 Serializer.GetProducerResponse,
                 client, cancel);
@@ -210,7 +47,7 @@ namespace kafka4net.Protocols
             var conn = request.Broker.Conn;
             var client = await conn.GetClientAsync();
             _log.Debug("Sending ProduceRequest to {0}, Request: {1}", conn, request);
-            var response = await SendAndCorrelateAsync(
+            var response = await conn.Correlation.SendAndCorrelateAsync(
                 id => Serializer.Serialize(request, id),
                 Serializer.GetProducerResponse,
                 client,
@@ -223,11 +60,25 @@ namespace kafka4net.Protocols
 
         internal async Task<MetadataResponse> MetadataRequest(TopicRequest request, BrokerMeta broker = null)
         {
-            var tcp = await (broker != null ? broker.Conn.GetClientAsync() : _cluster.GetAnyClientAsync());
+            TcpClient tcp;
+            Connection conn;
+
+            if (broker != null)
+            {
+                conn = broker.Conn;
+                tcp = await conn.GetClientAsync();
+            }
+            else
+            {
+                var clientAndConnection = await _cluster.GetAnyClientAsync();
+                conn = clientAndConnection.Item1;
+                tcp = clientAndConnection.Item2;
+            }
+
+            //var tcp = await (broker != null ? broker.Conn.GetClientAsync() : _cluster.GetAnyClientAsync());
             _log.Debug("Sending MetadataRequest to {0}", tcp.Client.RemoteEndPoint);
 
-            // TODO: handle result
-            return await SendAndCorrelateAsync(
+            return await conn.Correlation.SendAndCorrelateAsync(
                 id => Serializer.Serialize(request, id),
                 Serializer.DeserializeMetadataResponse,
                 tcp, CancellationToken.None);
@@ -238,7 +89,7 @@ namespace kafka4net.Protocols
             var tcp = await conn.GetClientAsync();
             if(_log.IsDebugEnabled)
                 _log.Debug("Sending OffsetRequest to {0}. request: {1}", tcp.Client.RemoteEndPoint, req);
-            return await SendAndCorrelateAsync(
+            return await conn.Correlation.SendAndCorrelateAsync(
                 id => Serializer.Serialize(req, id),
                 Serializer.DeserializeOffsetResponse,
                 tcp, CancellationToken.None);
@@ -254,7 +105,7 @@ namespace kafka4net.Protocols
             var cancel = new CancellationTokenSource(timeout);
 
             var tcp = await conn.GetClientAsync();
-            var response = await SendAndCorrelateAsync(
+            var response = await conn.Correlation.SendAndCorrelateAsync(
                 id => Serializer.Serialize(req, id),
                 Serializer.DeserializeFetchResponse,
                 tcp, cancel.Token);
@@ -263,20 +114,6 @@ namespace kafka4net.Protocols
                 _log.Debug("Got fetch response from {0} Response: {1}", conn, response);
 
             return response;
-        }
-
-        // TODO: move to Cluster
-        Task<MetadataResponse> LoadAllTopicsMeta(TcpClient client)
-        {
-            _log.Debug("Loading all metadata...");
-            var request = new TopicRequest();
-            return SendAndCorrelateAsync(c => Serializer.Serialize(request, c), Serializer.DeserializeMetadataResponse, client, CancellationToken.None);
-        }
-
-        private static string FormatBytes(byte[] buff)
-        {
-            return buff.Aggregate(new StringBuilder(), (builder, b) => builder.Append(b.ToString("x2")),
-                str => str.ToString());
         }
     }
 }
