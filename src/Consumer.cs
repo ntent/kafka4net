@@ -125,16 +125,18 @@ namespace kafka4net
             }
 
             // no offsets provided. Need to issue an offset request to get start/end locations and use them for consuming
-            var partitions = await _cluster.FetchPartitionOffsetsAsync(Topic);
+            var partitions = await _cluster.FetchPartitionOffsetsAsync(Topic, Configuration.StartLocation);
 
             if (_log.IsDebugEnabled)
-                _log.Debug("Consumer for topic {0} got time->offset resolved for location {1}. parts: [{2}]", Topic, Configuration.StartLocation, string.Join(",", partitions.OrderBy(p=>p.Partition).Select(p => string.Format("{0}:{1}", p.Partition, Configuration.StartLocation == ConsumerStartLocation.TopicHead ? p.Head : p.Tail))));
+                _log.Debug("Consumer for topic {0} got time->offset resolved for location {1}. parts: [{2}]", 
+                    Topic, Configuration.StartLocation, 
+                    string.Join(",", partitions.Partitions.OrderBy(p=>p).Select(p => string.Format("{0}:{1}", p, partitions.NextOffset(p)))));
 
-            return partitions
-                .Where(pm => !_topicPartitions.ContainsKey(pm.Partition))
+            return partitions.Partitions
+                .Where(p => !_topicPartitions.ContainsKey(p))
                 .Select(part => 
                 {
-                    var tp = new TopicPartition(_cluster, Topic, part.Partition, Configuration.StartLocation == ConsumerStartLocation.TopicHead ? part.Head : part.Tail);
+                    var tp = new TopicPartition(_cluster, Topic, part, partitions.NextOffset(part));
                     _topicPartitions.Add(tp.PartitionId, tp);
                     return tp;
                 });

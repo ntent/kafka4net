@@ -13,6 +13,7 @@ namespace kafka4net.Protocols.Requests
         {
             public int Id;
             public long Time;
+            public int MaxNumOffsets;
         }
 
         public override string ToString()

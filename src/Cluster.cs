@@ -215,16 +215,44 @@ namespace kafka4net
             return Scheduler.Ask(() => _metadata.Topics.Select(t => t.TopicName).ToArray()).Result;
         }
 
+
         /// <summary>
-        /// Get list of partitions and their head and tail offsets. 
-        /// If partition is empty, head is -1.
+        /// Get list of partitions and the offsets at the given location. If the partition is empty, this method returns 0 for all offsets regardless of location.
         /// Tail is pointing to the offest AFTER the last message, i.e. offset of the message to be written next.
         /// This function will force fetch requests, i.e. it does not use cached metadata.
-		/// Subtracting Head from Tail will yield the size of the topic.
         /// </summary>
         /// <param name="topic">topic name for which to retrieve offsets for</param>
+        /// <param name="startLocation">The location you're interested in. Pass either TopicHead OR TopicTail, but NOT 'SpecifiedLocations'. </param>
         /// <returns></returns>
-        public async Task<PartitionOffsetInfo[]> FetchPartitionOffsetsAsync(string topic)
+        public Task<TopicPartitionOffsets> FetchPartitionOffsetsAsync(string topic, ConsumerStartLocation startLocation)
+        {
+            if (startLocation == ConsumerStartLocation.SpecifiedLocations)
+                throw new ArgumentException("startLocation must be either TopicHead or TopicTail");
+
+            return FetchPartitionOffsetsImplAsync(topic, (long) startLocation);
+        }
+
+        /// <summary>
+        /// Get list of partitions and the maximum offsets prior to the given time. This functionality 
+        /// depends on the Kafka Broker settings that control log segment file rolling. These settings are log.roll.hours and log.segment.bytes
+        /// If these are set too high, and new segment files are not created often, this method will tend to return very coarse results.
+        /// </summary>
+        /// <param name="topic"></param>
+        /// <param name="startDateTime"></param>
+        /// <returns></returns>
+        public Task<TopicPartitionOffsets> FetchPartitionOffsetsAsync(string topic, DateTimeOffset startDateTime)
+        {
+            return FetchPartitionOffsetsImplAsync(topic, startDateTime.DateTimeToEpochMilliseconds());
+        }
+        
+
+        /// <summary>
+        /// Get list of partitions and their offsets at the given time. 
+        /// </summary>
+        /// <param name="topic">topic name for which to retrieve offsets for</param>
+        /// <param name="time">max timestamp for message offsets. returns the largest offsets that are before the given time. Pass -2L for TopicHead, and -1L for TopicTail.</param>
+        /// <returns></returns>
+        private async Task<TopicPartitionOffsets> FetchPartitionOffsetsImplAsync(string topic, long time)
         {
             CheckConnected();
 
@@ -240,9 +268,10 @@ namespace kafka4net
                         // get partition list
                         var parts = (await GetOrFetchMetaForTopicAsync(topic)).
                             Select(p => new OffsetRequest.PartitionData {
-                                Id = p.Id,
-                                Time = (long)ConsumerStartLocation.TopicTail
-                            }).ToArray();
+                                    Id = p.Id,
+                                    Time = time,
+                                    MaxNumOffsets = 1
+                                }).ToArray();
 
                         // group parts by broker
                         var requests = (
@@ -270,13 +299,7 @@ namespace kafka4net
                         //if (partitions.Any(p => (p.Offsets.Length == 1 ? -1 : p.Offsets[1])==-1))
                         //    throw new Exception(string.Format("Partition Head Offset is -1 for partition(s): [{0}]", string.Join(",", partitions.Select(p => p.Partition + ":" + (p.Offsets.Length == 1 ? -1 : p.Offsets[1])))));
 
-                        return (
-                            from part in partitions
-                            select new PartitionOffsetInfo { 
-                                Partition = part.Partition,
-                                Head = part.Offsets.Length == 1 ? part.Offsets[0] : part.Offsets[1], 
-                                Tail = part.Offsets[0]
-                            }).ToArray();
+                        return new TopicPartitionOffsets(topic, partitions.ToDictionary(tp=>tp.Partition, tp=>tp.Offsets.First()));
                     }
                     catch (Exception ex)
                     {

@@ -16,6 +16,7 @@ namespace kafka4net.Protocols
         static readonly byte[] _minusOne32 = { 0xff, 0xff, 0xff, 0xff };
         static readonly byte[] _one32 = { 0x00, 0x00, 0x00, 0x01 };
         static readonly byte[] _two32 = { 0x00, 0x00, 0x00, 0x02 };
+        static readonly byte[] _eight32 = { 0x00, 0x00, 0x00, 0x08 };
         static readonly byte[] _minusOne16 = { 0xff, 0xff };
         static readonly byte[] _apiVersion = { 0x00, 0x00 };
         static readonly byte[] _zero64 = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
@@ -312,7 +313,7 @@ namespace kafka4net.Protocols
             {
                 BigEndianConverter.Write(stream, p.Id);
                 BigEndianConverter.Write(stream, p.Time);
-                stream.Write(_two32, 0, 4);     // request 2 offsets: start and end
+                BigEndianConverter.Write(stream, p.MaxNumOffsets);
             });
 
             return WriteMessageLength(stream);

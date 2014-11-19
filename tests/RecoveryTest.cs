@@ -370,7 +370,8 @@ namespace tests
             var receivedList = await received.Select(msg => BitConverter.ToInt32(msg.Value, 0)).Take(count).TakeUntil(DateTime.Now.AddSeconds(60)).ToList().ToTask();
 
             // get the offsets for comparison later
-            var parts = await consumer.Cluster.FetchPartitionOffsetsAsync(topic);
+            var heads = await consumer.Cluster.FetchPartitionOffsetsAsync(topic, ConsumerStartLocation.TopicHead);
+            var tails = await consumer.Cluster.FetchPartitionOffsetsAsync(topic, ConsumerStartLocation.TopicTail);
 
             _log.Info("Done waiting for receiver. Closing producer.");
             await producer.Close(TimeSpan.FromSeconds(5));
@@ -386,8 +387,8 @@ namespace tests
                 _log.Error("Did not receive all messages. Messages received: {0}",string.Join(",",receivedList.OrderBy(i=>i)));
                 _log.Error("Did not receive all messages. Messages sent but NOT received: {0}", string.Join(",", sentList.Except(receivedList).OrderBy(i => i)));
 
-                _log.Error("Sum of offsets fetched: {0}", parts.Select(p => p.Tail-p.Head).Sum());
-                _log.Error("Offsets fetched: [{0}]", string.Join(",", parts.Select(p => p.ToString())));
+                _log.Error("Sum of offsets fetched: {0}", tails.MessagesSince(heads));
+                _log.Error("Offsets fetched: [{0}]", string.Join(",", tails.Partitions.Select(p => string.Format("{0}:{1}",p,tails.NextOffset(p)))));
             }
 
             Assert.AreEqual(sentList.Count, receivedList.Count);
@@ -437,10 +438,11 @@ namespace tests
             //
             var c2 = new Cluster(_seedAddresses);
             await c2.ConnectAsync();
-            var parts = await c2.FetchPartitionOffsetsAsync(topic);
+            var heads = await c2.FetchPartitionOffsetsAsync(topic, ConsumerStartLocation.TopicHead);
+            var tails = await c2.FetchPartitionOffsetsAsync(topic, ConsumerStartLocation.TopicTail);
 
-            _log.Info("Sum of offsets: {0}", parts.Select(p => p.Tail - p.Head).Sum());
-            _log.Info("Offsets: [{0}]", string.Join(",", parts.Select(p => p.ToString())));
+            _log.Info("Sum of offsets: {0}", tails.MessagesSince(heads));
+            _log.Info("Offsets: [{0}]", string.Join(",", tails.Partitions.Select(p => string.Format("{0}:{1}", p, tails.NextOffset(p)))));
 
             //
             if (sentList.Count != actuallySentList.Count)
@@ -450,7 +452,7 @@ namespace tests
             }
 
             Assert.AreEqual(sentList.Count, actuallySentList.Count, "Actually sent");
-            Assert.AreEqual(sentList.Count, parts.Select(p => p.Tail - p.Head).Sum(), "Offsets");
+            Assert.AreEqual(sentList.Count, tails.MessagesSince(heads), "Offsets");
 
         }
 
@@ -478,13 +480,14 @@ namespace tests
 
             await Task.Delay(TimeSpan.FromSeconds(1));
 
-            var parts = await producer.Cluster.FetchPartitionOffsetsAsync(topic);
+            var heads = await producer.Cluster.FetchPartitionOffsetsAsync(topic, ConsumerStartLocation.TopicHead);
+            var tails = await producer.Cluster.FetchPartitionOffsetsAsync(topic, ConsumerStartLocation.TopicTail);
 
             _log.Info("Done sending messages. Closing producer.");
             await producer.Close(TimeSpan.FromSeconds(5));
             _log.Info("Producer closed, starting consumer subscription.");
 
-            var messagesInTopic = (int)parts.Select(p => p.Tail - p.Head).Sum();
+            var messagesInTopic = (int)tails.MessagesSince(heads);
             _log.Info("Topic offsets indicate producer sent {0} messages.", messagesInTopic);
 
 
@@ -507,7 +510,7 @@ namespace tests
             _log.Info("Waiting for receiver complete");
             var receivedList = await received.Select(msg => BitConverter.ToInt32(msg.Value, 0)).Take(messagesInTopic).TakeUntil(DateTime.Now.AddSeconds(60)).ToList().ToTask();
 
-            parts = await consumer.Cluster.FetchPartitionOffsetsAsync(topic);
+            tails = await consumer.Cluster.FetchPartitionOffsetsAsync(topic, ConsumerStartLocation.TopicTail);
 
             _log.Info("Receiver complete. Disposing Subscription");
             consumerSubscription.Dispose();
@@ -515,8 +518,8 @@ namespace tests
             await consumer.CloseAsync(TimeSpan.FromSeconds(5));
             _log.Info("Consumer closed.");
 
-            _log.Error("Sum of offsets fetched: {0}", parts.Select(p => p.Tail - p.Head).Sum());
-            _log.Error("Offsets fetched: [{0}]", string.Join(",", parts.Select(p => p.ToString())));
+            _log.Info("Sum of offsets: {0}", tails.MessagesSince(heads));
+            _log.Info("Offsets: [{0}]", string.Join(",", tails.Partitions.Select(p => string.Format("{0}:{1}", p, tails.NextOffset(p)))));
 
             if (messagesInTopic != receivedList.Count)
             {
@@ -644,13 +647,14 @@ namespace tests
 
             await Task.Delay(TimeSpan.FromSeconds(1));
 
-            var parts = await producer.Cluster.FetchPartitionOffsetsAsync(topic);
+            var heads = await producer.Cluster.FetchPartitionOffsetsAsync(topic, ConsumerStartLocation.TopicHead);
+            var tails = await producer.Cluster.FetchPartitionOffsetsAsync(topic, ConsumerStartLocation.TopicTail);
 
             _log.Info("Done sending messages. Closing producer.");
             await producer.Close(TimeSpan.FromSeconds(5));
             _log.Info("Producer closed, starting consumer subscription.");
 
-            var messagesInTopic = (int)parts.Select(p => p.Tail - p.Head).Sum();
+            var messagesInTopic = (int)tails.MessagesSince(heads);
             _log.Info("Topic offsets indicate producer sent {0} messages.", messagesInTopic);
 
 
@@ -673,7 +677,7 @@ namespace tests
             _log.Info("Waiting for receiver complete");
             var receivedList = await received.Select(msg => BitConverter.ToInt32(msg.Value, 0)).Take(messagesInTopic).TakeUntil(DateTime.Now.AddSeconds(120)).ToList().ToTask();
 
-            parts = await consumer.Cluster.FetchPartitionOffsetsAsync(topic);
+            tails = await consumer.Cluster.FetchPartitionOffsetsAsync(topic, ConsumerStartLocation.TopicTail);
 
             _log.Info("Receiver complete. Disposing Subscription");
             consumerSubscription.Dispose();
@@ -681,8 +685,8 @@ namespace tests
             await consumer.CloseAsync(TimeSpan.FromSeconds(5));
             _log.Info("Consumer closed.");
 
-            _log.Error("Sum of offsets fetched: {0}", parts.Select(p => p.Tail - p.Head).Sum());
-            _log.Error("Offsets fetched: [{0}]", string.Join(",", parts.Select(p => p.ToString())));
+            _log.Info("Sum of offsets: {0}", tails.MessagesSince(heads));
+            _log.Info("Offsets: [{0}]", string.Join(",", tails.Partitions.Select(p => string.Format("{0}:{1}", p, tails.NextOffset(p)))));
 
             if (messagesInTopic != receivedList.Count)
             {
@@ -849,9 +853,9 @@ namespace tests
             await offsetFetchCluster.ConnectAsync();
 
             // consume tail-300 for each partition
-            var offsets = (await offsetFetchCluster.FetchPartitionOffsetsAsync(topic)).ToDictionary(p => p.Partition);
+            var offsets = (await offsetFetchCluster.FetchPartitionOffsetsAsync(topic, ConsumerStartLocation.TopicTail));
             
-            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, ConsumerStartLocation.SpecifiedLocations, partitionOffsetProvider: p => offsets[p].Tail - 300));
+            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, ConsumerStartLocation.SpecifiedLocations, partitionOffsetProvider: (p)=>offsets.NextOffset(p)-300));
             await consumer.ConnectAsync();
             var messages = consumer.OnMessageArrived.
                 GroupBy(m => m.Partition).Replay();
@@ -913,24 +917,37 @@ namespace tests
 
         //}
 
-        // Create a new 1-partition topic and sent 100 messages.
-        // Read offsets, they should be [0, 100]
         [Test]
-        public async void ReadOffsets()
+        public void TopicPartitionOffsetsSerializeAndDeSerialize()
+        {
+            var offsets1 = new TopicPartitionOffsets("test");
+
+            for (int i = 0; i < 50; i++)
+            {
+                offsets1.UpdateOffset(i,_rnd.Next());
+            }
+
+            // save bytes
+            var offsetBytes = offsets1.WriteOffsets();
+
+            var offsets2 = new TopicPartitionOffsets(offsetBytes);
+
+            for (int i = 0; i < 50; i++)
+            {
+                Assert.AreEqual(offsets1.NextOffset(i),offsets2.NextOffset(i));
+            }
+
+        }
+
+        [Test]
+        public async void SaveOffsetsAndResumeConsuming()
         {
             var sentEvents = new Subject<Message>();
             var topic = "part12." + _rnd.Next();
-            VagrantBrokerUtil.CreateTopic(topic,1,2);
+            VagrantBrokerUtil.CreateTopic(topic, 5, 2);
 
             var producer = new Producer(_seedAddresses, new ProducerConfiguration(topic)) { OnSuccess = e => e.ForEach(sentEvents.OnNext) };
             await producer.ConnectAsync();
-
-            // read offsets of empty queue
-            var parts = await producer.Cluster.FetchPartitionOffsetsAsync(topic);
-            Assert.AreEqual(1, parts.Length, "Expected just one partition");
-            Assert.AreEqual(0L, parts[0].Head, "Expected start at 0");
-            Assert.AreEqual(0L, parts[0].Tail, "Expected end at 0");
-
 
             // send 100 messages
             Enumerable.Range(1, 100).
@@ -940,16 +957,123 @@ namespace tests
             sentEvents.Subscribe(msg => _log.Debug("Sent {0}", BitConverter.ToInt32(msg.Value, 0)));
             await sentEvents.Take(100).ToTask();
 
-            // re-read offsets after messages published
-            parts = await producer.Cluster.FetchPartitionOffsetsAsync(topic);
+
+            var offsets1 = await producer.Cluster.FetchPartitionOffsetsAsync(topic, ConsumerStartLocation.TopicHead);
 
             _log.Info("Closing producer");
             await producer.Close(TimeSpan.FromSeconds(5));
 
-            Assert.AreEqual(1, parts.Length, "Expected just one partition");
-            Assert.AreEqual(0, parts[0].Partition, "Expected the only partition with Id=0");
-            Assert.AreEqual(0L, parts[0].Head, "Expected start at 0");
-            Assert.AreEqual(100L, parts[0].Tail, "Expected end at 100");
+
+            // now consume the "first" 50. Stop, save offsets, and restart.
+            var consumer1 = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, ConsumerStartLocation.SpecifiedLocations, 500, 1, 262144, offsets1.NextOffset));
+            var receivedEvents = new List<int>(100);
+            await consumer1.ConnectAsync();
+
+            _log.Info("Consuming first half of messages.");
+
+            await consumer1.OnMessageArrived
+                .Do(msg =>
+                {
+                    var value = BitConverter.ToInt32(msg.Value, 0);
+                    _log.Info("Consumer1 Received value {0} from partition {1} at offset {2}", value, msg.Partition, msg.Offset);
+                    receivedEvents.Add(value);
+                    offsets1.UpdateOffset(msg.Partition, msg.Offset);
+                })
+                .Take(50);
+
+            _log.Info("Closing first consumer");
+            await consumer1.CloseAsync(TimeSpan.FromSeconds(5));
+
+            // now serialize the offsets.
+            var offsetBytes = offsets1.WriteOffsets();
+
+            // load a new set of offsets, and a new consumer
+            var offsets2 = new TopicPartitionOffsets(offsetBytes);
+
+            var consumer2 = new Consumer(new ConsumerConfiguration(_seedAddresses,offsets2.Topic, ConsumerStartLocation.SpecifiedLocations, 500, 1, 262144, offsets2.NextOffset));
+            await consumer2.ConnectAsync();
+
+            await consumer2.OnMessageArrived
+                .Do(msg =>
+                {
+                    var value = BitConverter.ToInt32(msg.Value, 0);
+                    _log.Info("Consumer2 Received value {0} from partition {1} at offset {2}", value, msg.Partition, msg.Offset);
+                    receivedEvents.Add(value);
+                    offsets2.UpdateOffset(msg.Partition, msg.Offset);
+                })
+                .Take(50);
+
+            _log.Info("Closing second consumer");
+            await consumer2.CloseAsync(TimeSpan.FromSeconds(5));
+
+            Assert.AreEqual(100, receivedEvents.Distinct().Count());
+            Assert.AreEqual(100, receivedEvents.Count);
+
+        }
+
+        // Create a new 1-partition topic and sent 100 messages.
+        // Read offsets, they should be [0, 100]
+        [Test]
+        public async void ReadOffsets()
+        {
+            var sentEvents = new Subject<Message>();
+            var topic = "part12." + _rnd.Next();
+            VagrantBrokerUtil.CreateTopic(topic,1,2);
+
+            var cluster = new Cluster(_seedAddresses);
+            await cluster.ConnectAsync();
+            var producer = new Producer(cluster, new ProducerConfiguration(topic)) { OnSuccess = e => e.ForEach(sentEvents.OnNext) };
+            await producer.ConnectAsync();
+
+            // read offsets of empty queue
+            var heads = await cluster.FetchPartitionOffsetsAsync(topic, ConsumerStartLocation.TopicHead);
+            var tails = await cluster.FetchPartitionOffsetsAsync(topic, ConsumerStartLocation.TopicTail);
+            Assert.AreEqual(1, heads.Partitions.Count(), "Expected just one head partition");
+            Assert.AreEqual(1, tails.Partitions.Count(), "Expected just one tail partition");
+            Assert.AreEqual(0L, heads.NextOffset(heads.Partitions.First()), "Expected start at 0");
+            Assert.AreEqual(0L, tails.NextOffset(tails.Partitions.First()), "Expected end at 0");
+
+            // log the broker selected as master
+            var brokerMeta = cluster.FindBrokerMetaForPartitionId(topic, heads.Partitions.First());
+            _log.Info("Partition Leader is {0}", brokerMeta);
+
+
+            // saw some inconsistency, so run this a few times.
+            const int count = 1100;
+            const int loops = 10;
+            for (int i = 0; i < loops; i++)
+            {
+                // NOTE that the configuration for the test machines through vagrant are set to 1MB rolling file segments
+                // so we need to generate large messages to force multiple segments to be created.
+
+                // send 100 messages
+                Enumerable.Range(1, count).
+                    Select(_ => new Message { Value = new byte[1024] }).
+                    ForEach(producer.Send);
+                _log.Info("Waiting for {0} sent messages", count);
+                await sentEvents.Take(count).ToTask();
+
+                // re-read offsets after messages published
+                await Task.Delay(TimeSpan.FromMilliseconds(50)); // NOTE: There seems to be a race condition on the Kafka broker that the offsets are not immediately available after getting a successful produce response 
+                tails = await cluster.FetchPartitionOffsetsAsync(topic, ConsumerStartLocation.TopicTail);
+                _log.Info("2:After loop {0} of {1} messages, Next Offset is {2}", i + 1, count, tails.NextOffset(tails.Partitions.First()));
+                Assert.AreEqual(count * (i + 1), tails.NextOffset(tails.Partitions.First()), "Expected end at " + count * (i + 1));
+
+            }
+
+            _log.Info("Closing producer");
+            await producer.Close(TimeSpan.FromSeconds(5));
+
+            await Task.Delay(TimeSpan.FromSeconds(1));
+
+            // re-read offsets after messages published
+            heads = await cluster.FetchPartitionOffsetsAsync(topic, ConsumerStartLocation.TopicHead);
+            tails = await cluster.FetchPartitionOffsetsAsync(topic, ConsumerStartLocation.TopicTail);
+
+            Assert.AreEqual(1, heads.Partitions.Count(), "Expected just one head partition");
+            Assert.AreEqual(1, tails.Partitions.Count(), "Expected just one tail partition");
+            Assert.AreEqual(0L, heads.NextOffset(heads.Partitions.First()), "Expected start at 0");
+            Assert.AreEqual(count*loops, tails.NextOffset(tails.Partitions.First()), "Expected end at " + count);
         }
 
         [Test]
@@ -993,11 +1117,13 @@ namespace tests
             await Task.WhenAll(new [] { producer1.Close(TimeSpan.FromSeconds(5)), producer2.Close(TimeSpan.FromSeconds(5)) });
 
             // check we got all 100 on each topic.
-            var topic1Offsets = await cluster.FetchPartitionOffsetsAsync(topic1);
-            var topic2Offsets = await cluster.FetchPartitionOffsetsAsync(topic2);
+            var topic1Heads = await cluster.FetchPartitionOffsetsAsync(topic1, ConsumerStartLocation.TopicHead);
+            var topic2Heads = await cluster.FetchPartitionOffsetsAsync(topic2, ConsumerStartLocation.TopicHead);
+            var topic1Tails = await cluster.FetchPartitionOffsetsAsync(topic1, ConsumerStartLocation.TopicHead);
+            var topic2Tails = await cluster.FetchPartitionOffsetsAsync(topic2, ConsumerStartLocation.TopicHead);
 
-            Assert.AreEqual(topic1Offsets.Sum(o => o.Tail - o.Head), 100);
-            Assert.AreEqual(topic2Offsets.Sum(o => o.Tail - o.Head), 100);
+            Assert.AreEqual(100, topic1Tails.MessagesSince(topic1Heads));
+            Assert.AreEqual(100, topic2Tails.MessagesSince(topic2Heads));
 
         }
 
@@ -1014,7 +1140,7 @@ namespace tests
             await cluster.ConnectAsync();
             Assert.AreNotEqual(threadName, Thread.CurrentThread.Name);
 
-            await cluster.FetchPartitionOffsetsAsync(topic);
+            await cluster.FetchPartitionOffsetsAsync(topic, ConsumerStartLocation.TopicHead);
             Assert.AreNotEqual(threadName, Thread.CurrentThread.Name);
 
             var topics = cluster.GetAllTopics();
