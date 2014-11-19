@@ -29,7 +29,7 @@ namespace kafka4net.Protocols
         {
             try
             {
-                _log.Debug("Starting reading loop from socket");
+                _log.Debug("Starting reading loop from socket. {0}", _id);
                 // TODO: if corrup message, dump bin log of 100 bytes for further investigation
                 while (client.Connected)
                 {
@@ -40,14 +40,14 @@ namespace kafka4net.Protocols
                         var read = await client.GetStream().ReadAsync(buff, 0, 4, cancel);
                         if (cancel.IsCancellationRequested)
                         {
-                            _log.Debug("Stopped reading from {0} because socket cancelled", client.Client.RemoteEndPoint);
+                            _log.Debug("Stopped reading from {0} because socket cancelled, {1}", client.Client.RemoteEndPoint, _id);
                             return;
                         }
 
                         // TODO: what to do if read<4 ? Recycle connection?
                         if (read == 0)
                         {
-                            _log.Info("Server closed connection");
+                            _log.Info("Server closed connection. {0}", _id);
                             client.Close();
                             return;
                         }
@@ -61,7 +61,7 @@ namespace kafka4net.Protocols
                             read = await client.GetStream().ReadAsync(body, pos, left);
                             if (read == 0)
                             {
-                                _log.Info("Server closed connection");
+                                _log.Info("Server closed connection. {0}", _id);
                                 client.Close();
                                 return;
                             }
@@ -97,24 +97,24 @@ namespace kafka4net.Protocols
                     catch (SocketException e)
                     {
                         // shorter version of socket exception, without stack trace dump
-                        _log.Info("CorrelationLoop socket exception. {0}", e.Message);
+                        _log.Info("CorrelationLoop socket exception. {0}. {1}", e.Message, _id);
                         throw;
                     }
                     catch (ObjectDisposedException)
                     {
-                        _log.Info("CorrelationLoop socket exception. Object disposed");
+                        _log.Info("CorrelationLoop socket exception. Object disposed. {0}", _id);
                         throw;
                     }
                     catch (Exception e)
                     {
-                        _log.Error(e, "CorrelateResponseLoop error");
+                        _log.Error(e, "CorrelateResponseLoop error. {0}", _id);
                         if (_onError != null)
                             _onError(e);
                         throw;
                     }
                 }
 
-                _log.Debug("Finished reading loop from socket");
+                _log.Debug("Finished reading loop from socket. {0}", _id);
             }
             catch (Exception e)
             {
