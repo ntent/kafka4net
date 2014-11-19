@@ -85,6 +85,7 @@ namespace kafka4net
 
         private void HandleTransportError(Exception e, BrokerMeta broker)
         {
+            _log.Info("Handling TransportError for broker {0}", broker);
             (
                 from topic in _metadata.Topics
                 from part in topic.Partitions
@@ -92,6 +93,7 @@ namespace kafka4net
                 select new { topic.TopicName, part }
             ).ForEach(p =>
             {
+                _log.Debug("Marking topic {2} partition {1} with transport error for broker {0}", broker, p.part, p.TopicName);
                 p.part.ErrorCode = ErrorCode.TransportError;
                 _partitionStateChangesSubject.OnNext(new PartitionStateChangeEvent(p.TopicName, p.part.Id, ErrorCode.TransportError));
             });
