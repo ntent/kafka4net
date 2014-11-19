@@ -89,10 +89,12 @@ namespace kafka4net.Protocols
             var tcp = await conn.GetClientAsync();
             if(_log.IsDebugEnabled)
                 _log.Debug("Sending OffsetRequest to {0}. request: {1}", tcp.Client.RemoteEndPoint, req);
-            return await conn.Correlation.SendAndCorrelateAsync(
+            var response = await conn.Correlation.SendAndCorrelateAsync(
                 id => Serializer.Serialize(req, id),
                 Serializer.DeserializeOffsetResponse,
                 tcp, CancellationToken.None);
+            _log.Debug("Got OffsetResponse {0}", response);
+            return response;
         }
 
         internal async Task<FetchResponse> Fetch(FetchRequest req, Connection conn)

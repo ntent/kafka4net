@@ -69,21 +69,14 @@ namespace kafka4net
                     _log.Debug("Opening new connection {0}:{1}", _host, _port);
 
                     _client = new TcpClient();
-                    try
-                    {
-                        await _client.ConnectAsync(_host, _port);
-                    }
-                    catch (Exception e)
-                    {
-
-                    }
+                    await _client.ConnectAsync(_host, _port);
 
                     var currentClient = _client;
                     Correlation = new ResponseCorrelation(async e => 
                     {
                         await MarkSocketAsFailed(currentClient);
                         _onError(e);
-                    });
+                    }, _host+":"+_port+" conn object hash: "+this.GetHashCode());
                     
                     // TODO: Who and when is going to cancel reading?
                     var loopTask = Correlation.CorrelateResponseLoop(_client, CancellationToken.None);

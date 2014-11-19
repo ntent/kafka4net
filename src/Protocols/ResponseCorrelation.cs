@@ -17,10 +17,12 @@ namespace kafka4net.Protocols
         private readonly ConcurrentDictionary<int, Action<byte[], Exception>> _corelationTable = new ConcurrentDictionary<int, Action<byte[], Exception>>();
         private readonly Action<Exception> _onError;
         private static readonly ILogger _log = Logger.GetLogger();
+        readonly string _id;
 
-        public ResponseCorrelation(Action<Exception> onError)
+        public ResponseCorrelation(Action<Exception> onError, string id = "")
         {
             _onError = onError;
+            _id = id;
         }
 
         internal async Task CorrelateResponseLoop(TcpClient client, CancellationToken cancel)
