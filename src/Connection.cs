@@ -17,6 +17,7 @@ namespace kafka4net
         private TcpClient _client;
         internal ResponseCorrelation Correlation;
         readonly SemaphoreSlim _connectionLock = new SemaphoreSlim(1, 1);
+        private bool _closed;
 
         internal Connection(string host, int port, Action<Exception> onError = null)
         {
@@ -54,6 +55,9 @@ namespace kafka4net
 
         internal async Task<TcpClient> GetClientAsync()
         {
+            if (_closed)
+                throw new ApplicationException("Attempt to reuse connection which is not supposed to be used anymore");
+
             await _connectionLock.WaitAsync();
 
             try
@@ -66,9 +70,9 @@ namespace kafka4net
 
                 if (_client == null)
                 {
-                    _log.Debug("Opening new connection {0}:{1}", _host, _port);
 
                     _client = new TcpClient();
+                    _log.Debug("Opening new connection {0}:{1} with hash {2}", _host, _port, _client.GetHashCode());
                     await _client.ConnectAsync(_host, _port);
 
                     var currentClient = _client;
@@ -142,6 +146,16 @@ namespace kafka4net
             {
                 _connectionLock.Release();
             }
+        }
+
+        public void ShutdownFactory()
+        {
+            try
+            {
+                _client.Close();
+            }
+            catch { }
+            _closed = true;
         }
     }
 }

@@ -570,13 +570,13 @@ namespace kafka4net
             // add new brokers
             var newBrokers = topicMeta.Brokers.Except(_metadata.Brokers, BrokerMeta.NodeIdComparer).ToArray();
             
-            // Brokers which were created from seed info have NodeId == -99.
+            // Brokers which were created from seed have NodeId == -99.
             // Once we learn their true Id, update the NodeId
             var resolvedSeedBrokers = (
                 from seed in _metadata.Brokers
                 where seed.NodeId == -99
                 from resolved in topicMeta.Brokers
-                where resolved.Port != -99 &&
+                where resolved.NodeId != -99 &&
                     seed.Port == resolved.Port &&
                     string.Compare(resolved.Host, seed.Host, true, CultureInfo.InvariantCulture) == 0
                 select new { seed, resolved }
@@ -585,10 +585,11 @@ namespace kafka4net
             // remove old seeds which have been resolved
             _metadata.Brokers = _metadata.Brokers.Except(resolvedSeedBrokers.Select(b => b.seed)).ToArray();
 
-            resolvedSeedBrokers.ForEach(b => b.resolved.Conn = b.seed.Conn);
-
-            newBrokers.Where(b => b.Conn == null).ForEach(b => b.Conn = new Connection(b.Host, b.Port, e => HandleTransportError(e, b)));
+            newBrokers/*.Where(b => b.Conn == null)*/.ForEach(b => b.Conn = new Connection(b.Host, b.Port, e => HandleTransportError(e, b)));
             _metadata.Brokers = _metadata.Brokers.Concat(newBrokers).ToArray();
+
+            // Close old seed connection and make sure nobody can use it anymore
+            resolvedSeedBrokers.ForEach(old => old.seed.Conn.ShutdownFactory());
 
             RebuildBrokerIndexes(_metadata);
 
