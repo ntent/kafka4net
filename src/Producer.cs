@@ -92,6 +92,12 @@ namespace kafka4net
                             queue = new PartitionQueueInfo {Partition = p.PartitionId};
                             _allPartitionQueues.Add(p.PartitionId, queue);
                         }
+
+                        if (_log.IsDebugEnabled)
+                        {
+                            _log.Debug("Changing '{0}'/{1} IsOnline {2}->{3}", Configuration.Topic, p.PartitionId, queue.IsOnline, p.ErrorCode == ErrorCode.NoError);
+                        }
+
                         queue.IsOnline = p.ErrorCode == ErrorCode.NoError;
                         Monitor.Pulse(_allPartitionQueues);
 
@@ -134,7 +140,7 @@ namespace kafka4net
                                 _log.Debug("Enqueued batch of size {0} for topic '{1}' partition {2}",
                                     batchAr.Length, Configuration.Topic, batch.Key);
 
-                            // After batch enqueued, send wake up sygnal to sending queue
+                            // After batch enqueued, send wake up signal to sending queue
                             _queueEventWaitHandler.Set();
                         }
                     }, e => _log.Fatal(e, "Error in _sendMessagesSubject pipeline"),

@@ -11,20 +11,17 @@ namespace kafka4net
     {
         private static readonly ILogger _log = Logger.GetLogger();
 
-        public ConnState State;
-
         private readonly string _host;
         private readonly int _port;
-        private readonly Protocol _protocol;
         private readonly Action<Exception> _onError;
         private TcpClient _client;
+        internal ResponseCorrelation Correlation;
         readonly SemaphoreSlim _connectionLock = new SemaphoreSlim(1, 1);
 
-        internal Connection(string host, int port, Protocol protocol, Action<Exception> onError = null)
+        internal Connection(string host, int port, Action<Exception> onError = null)
         {
             _host = host;
             _port = port;
-            _protocol = protocol;
             _onError = onError;
         }
 
@@ -58,6 +55,7 @@ namespace kafka4net
         internal async Task<TcpClient> GetClientAsync()
         {
             await _connectionLock.WaitAsync();
+
             try
             {
                 if (_client != null && !_client.Connected)
@@ -70,18 +68,18 @@ namespace kafka4net
                 {
                     _log.Debug("Opening new connection {0}:{1}", _host, _port);
 
-                    State = ConnState.Connecting;
                     _client = new TcpClient();
-                    try
-                    {
-                        await _client.ConnectAsync(_host, _port);
-                    }
-                    catch (Exception e)
-                    {
+                    await _client.ConnectAsync(_host, _port);
 
-                    }
+                    var currentClient = _client;
+                    Correlation = new ResponseCorrelation(async e => 
+                    {
+                        await MarkSocketAsFailed(currentClient);
+                        _onError(e);
+                    }, _host+":"+_port+" conn object hash: "+this.GetHashCode());
+                    
                     // TODO: Who and when is going to cancel reading?
-                    var loopTask = _protocol.CorrelateResponseLoop(_client, CancellationToken.None);
+                    var loopTask = Correlation.CorrelateResponseLoop(_client, CancellationToken.None);
 
                     // Close connection in case of any exception. It is important, because in case of deserialization exception,
                     // we are out of sync and can't continue.
@@ -101,7 +99,6 @@ namespace kafka4net
                         }
                     }, TaskContinuationOptions.OnlyOnFaulted);
 
-                    State = ConnState.Connected;
                     return _client;
                 }
             }
@@ -126,12 +123,7 @@ namespace kafka4net
             return string.Format("Connection: {0}:{1}", _host, _port);
         }
 
-        internal bool OwnsClient(TcpClient tcp)
-        {
-            return _client == tcp;
-        }
-
-        public async Task MarkSocketAsFailed(TcpClient tcp)
+        async Task MarkSocketAsFailed(TcpClient tcp)
         {
             await _connectionLock.WaitAsync();
             try

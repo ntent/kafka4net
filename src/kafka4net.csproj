@@ -60,6 +60,7 @@
     <Compile Include="ConsumerConfiguration.cs" />
     <Compile Include="ConsumerImpl\TopicPartitionOffsets.cs" />
     <Compile Include="ConsumerImpl\TopicPartition.cs" />
+    <Compile Include="Protocols\CorrelationLoopException.cs" />
     <Compile Include="Protocols\Requests\FetchRequest.cs" />
     <Compile Include="Protocols\Requests\MessageData.cs" />
     <Compile Include="Protocols\Requests\MessageSetItem.cs" />
@@ -68,6 +69,7 @@
     <Compile Include="Protocols\Requests\ProduceRequest.cs" />
     <Compile Include="Protocols\Requests\TopicData.cs" />
     <Compile Include="Protocols\Requests\TopicRequest.cs" />
+    <Compile Include="Protocols\ResponseCorrelation.cs" />
     <Compile Include="Protocols\Responses\FetchResponse.cs" />
     <Compile Include="Protocols\Responses\MetadataResponse.cs" />
     <Compile Include="Protocols\Responses\OffsetResponse.cs" />

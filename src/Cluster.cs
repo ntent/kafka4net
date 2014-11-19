@@ -79,40 +79,8 @@ namespace kafka4net
         public Cluster(string seedBrokers) : this()
         {
             _seedBrokers = seedBrokers;
-            _protocol = new Protocol(this, HandleTransportError);
+            _protocol = new Protocol(this);
             _state = ClusterState.Disconnected;
-        }
-
-        /// <summary>
-        /// Find which broker this tcp socket belongs to and send failure event for each involved partition.
-        /// This should turn attention of PartitionMonitor and start its recovery pooling.
-        /// </summary>
-        /// <param name="e"></param>
-        /// <param name="tcp"></param>
-        private void HandleTransportError(Exception e, TcpClient tcp)
-        {
-            // TODO: implement as reaction to rx event ConnectionFailed?
-
-            (
-                from broker in _metadata.Brokers
-                where broker.Conn.OwnsClient(tcp)
-                from topic in _metadata.Topics
-                from part in topic.Partitions
-                where part.Leader == broker.NodeId
-                select new {topic.TopicName, part, broker.Conn}
-            ).ForEach(p =>
-            {
-                p.part.ErrorCode = ErrorCode.TransportError;
-                _partitionStateChangesSubject.OnNext(new PartitionStateChangeEvent(p.TopicName, p.part.Id, ErrorCode.TransportError));
-            });
-
-            // mark connection as failed
-            // TODO: move to Connection class
-            (
-                from broker in _metadata.Brokers
-                where broker.Conn.OwnsClient(tcp)
-                select broker.Conn
-            ).ForEach(conn => conn.MarkSocketAsFailed(tcp));
         }
 
         private void HandleTransportError(Exception e, BrokerMeta broker)
@@ -464,7 +432,7 @@ namespace kafka4net
             return brokerMeta;
         }
 
-        internal async Task<TcpClient> GetAnyClientAsync()
+        internal async Task<Tuple<Connection, TcpClient>> GetAnyClientAsync()
         {
             // Two awaits, one for scheduler and one for Conn.GetClientAsync
             return await await Scheduler.Ask(() =>
@@ -472,7 +440,12 @@ namespace kafka4net
                 // TODO: would it be a good idea to query all brokers and return the 1st successful response?
                 // This way we do not fail the whole driver if first broker is down
                 var tcp = _metadata.Brokers.
-                    Select(b => b.Conn.GetClientAsync()).
+                    Select(async b =>
+                    {
+                        var conn = b.Conn;
+                        var client = await conn.GetClientAsync();
+                        return Tuple.Create(conn, client);
+                    }).
                     First();
                 return tcp;
             });
@@ -612,7 +585,7 @@ namespace kafka4net
 
             resolvedSeedBrokers.ForEach(b => b.resolved.Conn = b.seed.Conn);
 
-            newBrokers.Where(b => b.Conn == null).ForEach(b => b.Conn = new Connection(b.Host, b.Port, _protocol, e => HandleTransportError(e, b)));
+            newBrokers.Where(b => b.Conn == null).ForEach(b => b.Conn = new Connection(b.Host, b.Port, e => HandleTransportError(e, b)));
             _metadata.Brokers = _metadata.Brokers.Concat(newBrokers).ToArray();
 
             RebuildBrokerIndexes(_metadata);

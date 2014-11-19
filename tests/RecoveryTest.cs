@@ -44,15 +44,14 @@ namespace tests
             fileTarget.FileName = "${basedir}../../../../log.txt";
             fileTarget.Layout = "${longdate} ${level} [${threadname}:${threadid}] ${logger:shortName=true} ${message} ${exception:format=tostring,stacktrace:innerFormat=tostring,stacktrace}";
 
-            config.LoggingRules.Add(new LoggingRule("tests.*", LogLevel.Debug, consoleTarget) { Final = true });
             var rule = new LoggingRule("*", LogLevel.Info, consoleTarget);
             rule.Targets.Add(fileTarget);
-            rule.Final = true;
+            //rule.Final = true;
 
 
-            var r1 = new LoggingRule("kafka4net.Internal.PartitionRecoveryMonitor", LogLevel.Info, fileTarget) { Final = true };
-            r1.Targets.Add(consoleTarget);
-            config.LoggingRules.Add(r1);
+            //var r1 = new LoggingRule("kafka4net.Internal.PartitionRecoveryMonitor", LogLevel.Info, fileTarget) { Final = true };
+            //r1.Targets.Add(consoleTarget);
+            //config.LoggingRules.Add(r1);
 
             rule = new LoggingRule("*", LogLevel.Debug, fileTarget);
             rule.ChildRules.Add(new LoggingRule("tests.*", LogLevel.Debug, consoleTarget));
@@ -69,8 +68,7 @@ namespace tests
 
             LogManager.Configuration = config;
 
-            var logger = LogManager.GetLogger("Main");
-            logger.Debug("=============== Starting =================");
+            _log.Debug("=============== Starting =================");
 
             // set nlog logger in kafka
             Logger.SetupNLog();
@@ -84,8 +82,8 @@ namespace tests
             //logger.Info("=============== Starting =================");
             //Logger.SetupLog4Net();
 
-            TaskScheduler.UnobservedTaskException += (sender, args) => logger.Error("Unhandled task exception", (Exception)args.Exception);
-            AppDomain.CurrentDomain.UnhandledException += (sender, args) => logger.Error("Unhandled exception", (Exception)args.ExceptionObject);
+            TaskScheduler.UnobservedTaskException += (sender, args) => _log.Error("Unhandled task exception", (Exception)args.Exception);
+            AppDomain.CurrentDomain.UnhandledException += (sender, args) => _log.Error("Unhandled exception", (Exception)args.ExceptionObject);
 
             // make sure brokers are up from last run
             VagrantBrokerUtil.RestartBrokers();
@@ -132,9 +130,9 @@ namespace tests
             var receivedTxt = new List<string>();
             var consumerSubscription = consumer.OnMessageArrived.
                 Select(m => Encoding.UTF8.GetString(m.Value)).
-                Do(m => _log.Info("Received {0}", m)).
-                Synchronize(). // protect receivedTxt
-                Do(receivedTxt.Add).
+                ObserveOn(SynchronizationContext.Current). // protect receivedTxt
+                Do(m => _log.Info("Received {0}", m)). 
+                Do(m => receivedTxt.Add(m)).
                 Subscribe();
 
             _log.Debug("Waiting for consumer");
@@ -170,7 +168,9 @@ namespace tests
         [Test]
         public async void LeaderDownProducerAndConsumerRecovery()
         {
-            const string topic = "part33";
+            string topic = "part32." + _rnd.Next();
+            VagrantBrokerUtil.CreateTopic(topic, 3, 2);
+
             var sent = new List<string>();
             var confirmedSent1 = new List<string>();
 
