@@ -119,10 +119,23 @@ namespace kafka4net.ConsumerImpl
             }
             else
             {
-                _subscribedConsumer.OnMessageArrivedInput.OnNext(value);
+                if (_partitionFetchState.Offset <= value.Offset)
+                {
+                    // if we are sending back an offset greater than we asked for then we likely skipped an offset. 
+                    // Is this OK??
+                    if (_partitionFetchState.Offset < value.Offset)
+                        _log.Warn("{0} was expecting offset {1} but received larger offset {2}",this,_partitionFetchState.Offset,value.Offset);
 
-                // track that we handled this offset so the next time around, we fetch the next message
-                _partitionFetchState.Offset = value.Offset+1;
+                    _subscribedConsumer.OnMessageArrivedInput.OnNext(value);
+                    // track that we handled this offset so the next time around, we fetch the next message
+                    _partitionFetchState.Offset = value.Offset + 1;
+                }
+                else
+                {
+                    // the returned message offset was less than the offset we asked for, just skip this message.
+                    _log.Debug("{0} Skipping message offset {1} as it is less than requested offset {2}",this,value.Offset,_partitionFetchState.Offset);
+                }
+
             }
         }
 
