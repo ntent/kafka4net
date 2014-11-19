@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Net.Sockets;
 using System.Text;
@@ -103,6 +104,11 @@ namespace kafka4net.Protocols
                     catch (ObjectDisposedException)
                     {
                         _log.Info("CorrelationLoop socket exception. Object disposed. {0}", _id);
+                        throw;
+                    }
+                    catch (IOException)
+                    {
+                        _log.Info("CorrelationLoop IO exception. {0}", _id);
                         throw;
                     }
                     catch (Exception e)
