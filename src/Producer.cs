@@ -99,7 +99,7 @@ namespace kafka4net
                         }
 
                         queue.IsOnline = p.ErrorCode == ErrorCode.NoError;
-                        Monitor.Pulse(_allPartitionQueues);
+                        _queueEventWaitHandler.Set();
 
                         if (_log.IsDebugEnabled)
                         {
