@@ -4,6 +4,7 @@ using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
 using kafka4net.Protocols;
+using kafka4net.Tracing;
 
 namespace kafka4net
 {
@@ -72,8 +73,9 @@ namespace kafka4net
                 {
 
                     _client = new TcpClient();
-                    _log.Debug("Opening new connection {0}:{1} with hash {2}", _host, _port, _client.GetHashCode());
+                    ConnectionEtw.Log.Connecting(_host, _port);
                     await _client.ConnectAsync(_host, _port);
+                    ConnectionEtw.Log.Connected(_host, _port);
 
                     var currentClient = _client;
                     Correlation = new ResponseCorrelation(async e => 
@@ -94,7 +96,10 @@ namespace kafka4net
                         try
                         {
                             if (_client != null)
+                            {
                                 _client.Close();
+                                ConnectionEtw.Log.Disconnected(_host, _port);
+                            }
                         }
                         finally 
                         { 
@@ -140,6 +145,7 @@ namespace kafka4net
                 if (_client != null)
                     try { _client.Close(); }
                     catch { /*empty*/ }
+                    finally { ConnectionEtw.Log.Disconnected(_host, _port); }
                 _client = null;
             }
             finally
