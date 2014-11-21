@@ -32,13 +32,14 @@ namespace kafka4net
 
         // cancellation token used to notify all producer components to stop.
         private readonly CancellationTokenSource _shutdown = new CancellationTokenSource();
+        private readonly CancellationTokenSource _drain = new CancellationTokenSource();
 
         // the _allPartitionQueues dictionary contains queues for all of the "PartitionBatches" indexed by topic/partition. 
         // the sending loop will send out of these queues as quickly as possible, however when there is an issue with 
         // sending, these queues will back up. Note that it ispossible when some partitions work and some are recovering abd backed up.
         // TODO: the Queue in here needs to eventually be wrapped with logic to have size bounds
         private readonly Dictionary<int,PartitionQueueInfo> _allPartitionQueues = new Dictionary<int, PartitionQueueInfo>();
-        ManualResetEventSlim _queueEventWaitHandler = new ManualResetEventSlim(false, 0);
+        private readonly ManualResetEventSlim _queueEventWaitHandler = new ManualResetEventSlim(false, 0);
 
         public Producer(Cluster cluster, ProducerConfiguration producerConfiguration)
         {
@@ -89,7 +90,7 @@ namespace kafka4net
                         PartitionQueueInfo queue;
                         if (!_allPartitionQueues.TryGetValue(p.PartitionId, out queue))
                         {
-                            queue = new PartitionQueueInfo {Partition = p.PartitionId};
+                            queue = new PartitionQueueInfo(Configuration.SendBuffersInitialSize) { Partition = p.PartitionId };
                             _allPartitionQueues.Add(p.PartitionId, queue);
                         }
 
@@ -126,16 +127,45 @@ namespace kafka4net
                             PartitionQueueInfo queue;
                             if (!_allPartitionQueues.TryGetValue(batch.Key, out queue))
                             {
-                                queue = new PartitionQueueInfo {Partition = batch.Key};
+                                queue = new PartitionQueueInfo(Configuration.SendBuffersInitialSize) { Partition = batch.Key };
                                 _allPartitionQueues.Add(batch.Key, queue);
-                                queue.IsOnline = topicPartitions.First(p => p.Id == batch.Key).ErrorCode ==
-                                                    ErrorCode.NoError;
+                                queue.IsOnline = topicPartitions.First(p => p.Id == batch.Key).ErrorCode == ErrorCode.NoError;
                                 _log.Debug("{0} added new partition queue", this);
                             }
 
-                            // now go through each group and queue them up
+                            // now queue them up
                             var batchAr = batch.ToArray();
-                            queue.Queue.Enqueue(batchAr);
+
+                            // make sure we have space.
+                            if (queue.Queue.Size + batchAr.Length > queue.Queue.Capacity)
+                            {
+                                // try to increase the capacity.
+                                if (Configuration.AutoGrowSendBuffers)
+                                {
+                                    var growBy = Math.Max(queue.Queue.Capacity/2 + 1, 2 * batchAr.Length);
+                                    if (_log.IsDebugEnabled)
+                                        _log.Debug("Capacity of send buffer with size {3} not large enough to accept {2} new messages. Increasing capacity from {0} to {1}", queue.Queue.Capacity, queue.Queue.Capacity+growBy, batchAr.Length, queue.Queue.Size);
+
+                                    queue.Queue.Capacity += growBy;
+                                }
+                                else
+                                {
+                                    // we're full and not allowed to grow. Throw the batch back to the caller, and continue on.
+                                    if (OnPermError != null)
+                                        OnPermError(
+                                            new Exception(string.Format("Send Buffer Full for partition {0}. ",
+                                                Cluster.PartitionStateChanges.Where(
+                                                    ps => ps.Topic == Configuration.Topic && ps.PartitionId == queue.Partition)
+                                                    .Take(1)
+                                                    .Wait()))
+                                            , batchAr);
+                                    continue;
+                                }
+                            }
+
+                            // we have the space, add to the queue
+                            queue.Queue.Put(batchAr);
+
                             if (_log.IsDebugEnabled)
                                 _log.Debug("Enqueued batch of size {0} for topic '{1}' partition {2}",
                                     batchAr.Length, Configuration.Topic, batch.Key);
@@ -164,7 +194,7 @@ namespace kafka4net
 
         public void Send(Message msg)
         {
-            if (_shutdown.IsCancellationRequested)
+            if (_shutdown.IsCancellationRequested || _drain.IsCancellationRequested)
                 throw new Exception("Cannot send messages after producer is canceled / closed.");
 
             if (!IsConnected)
@@ -178,7 +208,7 @@ namespace kafka4net
         {
             _log.Debug("Closing...");
             // mark the cancellation token to cause the sending to finish up and don't allow any new messages coming in.
-            _shutdown.Cancel();
+            _drain.Cancel();
             
             // flush messages to partition queues
             _log.Debug("Completing _sendMessagesSubject...");
@@ -189,12 +219,17 @@ namespace kafka4net
             _queueEventWaitHandler.Set();
             
             // wait for sending to complete 
-            _log.Debug("Waiting for send loop complete...");
+            _log.Debug("Waiting for Send buffers to drain...");
             if(_sendLoopTask != null)
-                if(await _sendLoopTask.TimeoutAfter(timeout).ConfigureAwait(false))
+                if (await _sendLoopTask.TimeoutAfter(timeout).ConfigureAwait(false))
                     _log.Debug("Send loop completed");
                 else
-                    _log.Error("Timed out while waiting for _sendLoop");
+                {
+                    _log.Error("Timed out while waiting for Send buffers to drain. Canceling.");
+                    _shutdown.Cancel();
+                    if (!await _sendLoopTask.TimeoutAfter(timeout).ConfigureAwait(false))
+                        _log.Fatal("Timed out even after cancelling send loop! This shouldn't happen, there will likely be message loss.");
+                }
 
             // close down the cluster ONLY if we created it
             if (_internalCluster)
@@ -221,9 +256,9 @@ namespace kafka4net
                 if (_allPartitionQueues.Values.All(q => !q.IsReadyForServing))
                 {
                     // TODO: bug: if messages are accumulating in buffer, this will quit. Wait for buffer drainage
-                    if (_shutdown.Token.IsCancellationRequested && _allPartitionQueues.Values.All(q => q.Queue.Count == 0))
+                    if (_drain.IsCancellationRequested && _allPartitionQueues.Values.All(q => q.Queue.Size == 0))
                     {
-                        _log.Debug("Cancel detected. Quitting SendLoop");
+                        _log.Debug("Cancel detected and send buffers are empty. Quitting SendLoop");
                         break;
                     }
                     
@@ -243,11 +278,33 @@ namespace kafka4net
                         _log.Debug("There are batches in queues, continue working");
                 }
 
+                // if we are being told to shut down (already waited for drain), then send all messages back over OnPermError, and quit.
+                if (_shutdown.IsCancellationRequested)
+                {
+                    var messages = _allPartitionQueues.SelectMany(pq=>pq.Value.Queue.Get(pq.Value.Queue.Size)).ToArray();
+                    if (messages.Length > 0)
+                    {
+                        var msg = string.Format("Not all messages could be sent before shutdown. {0} messages remain.", messages.Length);
+                        if (OnPermError != null)
+                        {
+                            OnPermError(new Exception(msg), messages);
+                            _log.Error(msg);
+                        }
+                        else
+                        {
+                            _log.Fatal("{0} There is no OnPermError handler so these messages are LOST!", msg);
+                        }
+                    }
+
+                    break;
+                }
+
                 var queuesToBeSent = _allPartitionQueues.Values.
                     Where(q => q.IsReadyForServing).
                     ToArray();
 
-                _log.Debug("queuesToBeSent.Length {0}", queuesToBeSent.Length);
+                if (_log.IsDebugEnabled)
+                    _log.Debug("There are {0} partition queues with {1} total messages to send.", queuesToBeSent.Length, queuesToBeSent.Sum(qi=>qi.Queue.Size));
 
                 if(queuesToBeSent.Length == 0)
                     continue;
@@ -265,13 +322,54 @@ namespace kafka4net
                         Select(q => new { partsMeta.First(m => m.Id == q.Partition).Leader, Queue = q }).
                         // leader,queue -> leader,queue[]
                         GroupBy(q => q.Leader, (i, queues) => new { Leader = i, Queues = queues.Select(q1 => q1.Queue).ToArray() }).
-                        Select(queues => new { queues.Leader, queues.Queues, Messages = queues.Queues.SelectMany(q => q.Queue.Peek()) }).
+                        Select(queues => new { queues.Leader, queues.Queues }).
                         Select(async brokerBatch =>
                         {
                             try
                             {
+                                var maxMessages = Configuration.MaxMessagesPerProduceRequest;
+                                var totalPending = brokerBatch.Queues.Sum(q => q.Queue.Size);
+
+                                if (_log.IsDebugEnabled)
+                                    _log.Debug("Sending {0} of {1} total messages pending for broker {2}.", Math.Min(maxMessages,totalPending), totalPending, brokerBatch.Leader);
+
+                                // traverse pending queues, taking what we can, and tracking "extra" to give to other partitions.
+                                // we will take all if we can, otherwise take only up to our "fair" share.
+                                // if there are less than maxMessages to be sent to this broker, just take all of them.
+                                var messages = new Message[Math.Min(maxMessages,totalPending)];
+                                var totalTaken = 0;
+                                var ration = maxMessages/brokerBatch.Queues.Length;
+                                var carryover = 0;
+                                var currentBatch = 0;
+
+                                brokerBatch.Queues.OrderBy(q=>q.Queue.Size).ForEach(q =>
+                                {
+                                    // take the lesser of our total size or the amount rationed to us.
+                                    var take = Math.Min(ration , q.Queue.Size);
+
+                                    // if we don't need our full ration, give it to the big guys
+                                    if (take < ration)
+                                        carryover += ration - take;
+                                    else if (carryover > 0)
+                                    {
+                                        // this queue is over his ration. reset the carryover and re-calculate the ration.
+                                        ration = (messages.Length-totalTaken)/(brokerBatch.Queues.Length-currentBatch);
+                                        carryover = 0;
+                                    }
+
+                                    // track how many we're taking 
+                                    q.CountInProgress = take;
+                                    q.Queue.Peek(messages, totalTaken, take);
+                                    totalTaken += take;
+                                    currentBatch++;
+                                });
+
+
+                                if (messages.Take(totalTaken).Any(m=>m==null))
+                                    _log.Error("Null Messages Detected!");
+
                                 // TODO: freeze permanent errors and throw consumer exceptions upon sending to perm error partition
-                                var response = await _cluster.SendBatchAsync(brokerBatch.Leader, brokerBatch.Messages, this);
+                                var response = await _cluster.SendBatchAsync(brokerBatch.Leader, messages.Take(totalPending), this);
 
                                 var failedResponsePartitions = response.Topics.
                                     Where(t => t.TopicName == Configuration.Topic). // should contain response only for our topic, but just in case...
@@ -288,9 +386,8 @@ namespace kafka4net
                                 // notify of any errors from send response
                                 failedResponsePartitions.ForEach(failedPart => 
                                     _cluster.NotifyPartitionStateChange(new PartitionStateChangeEvent(Topic, failedPart.Partition, failedPart.ErrorCode)));
-
-
-                                var successMessages = successPartitionQueues.SelectMany(q => q.Queue.Dequeue()).ToArray();
+                                
+                                var successMessages = successPartitionQueues.SelectMany(q => q.Queue.Get(q.CountInProgress)).ToArray();
 
                                 if (OnSuccess != null && successMessages.Length != 0)
                                     OnSuccess(successMessages);
@@ -321,12 +418,18 @@ namespace kafka4net
 
         class PartitionQueueInfo
         {
-            public readonly Queue<Message[]> Queue = new Queue<Message[]>();
+            public PartitionQueueInfo(int maxBufferSize)
+            {
+                Queue = new CircularBuffer<Message>(maxBufferSize); // TODO: Max Enqueued Batches configuration!
+            }
+
+            public readonly CircularBuffer<Message> Queue;
             public int Partition;
             public bool InProgress;
+            public int CountInProgress;
             public bool IsOnline;
 
-            public bool IsReadyForServing { get { return !InProgress && IsOnline && Queue.Count > 0; } }
+            public bool IsReadyForServing { get { return !InProgress && IsOnline && Queue.Size > 0; } }
         }
     }
 }

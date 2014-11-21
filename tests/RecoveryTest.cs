@@ -7,6 +7,7 @@ using System.Reactive.Concurrency;
 using System.Reactive.Linq;
 using System.Reactive.Subjects;
 using System.Reactive.Threading.Tasks;
+using System.Security.Policy;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -360,7 +361,8 @@ namespace tests
                     current++;
                     if (current == 18)
                     {
-                        await Task.Factory.StartNew(() => VagrantBrokerUtil.StopBrokerLeaderForPartition(consumer.Cluster, consumer.Topic, msg.Partition), CancellationToken.None, TaskCreationOptions.None, TaskScheduler.Default);
+                        var brokerStopped = await Task.Factory.StartNew(() => VagrantBrokerUtil.StopBrokerLeaderForPartition(consumer.Cluster, consumer.Topic, msg.Partition), CancellationToken.None, TaskCreationOptions.None, TaskScheduler.Default);
+                        _log.Info("Stopped Broker Leader {0}",brokerStopped);
                     }
                     received.OnNext(msg);
                     _log.Info("Got: {0}", BitConverter.ToInt32(msg.Value, 0));
@@ -419,9 +421,10 @@ namespace tests
             var actuallySentList = new List<int>(200);
             producer.OnSuccess += msgs => actuallySentList.AddRange(msgs.Select(msg => BitConverter.ToInt32(msg.Value, 0)));
 
+            Task stopBrokerTask = null;
             var sentList = await Observable.Interval(TimeSpan.FromMilliseconds(100))
                 .Select(l => (int)l)
-                .Do(l => { if(l==30) Task.Factory.StartNew(() => VagrantBrokerUtil.StopBroker("broker2"), CancellationToken.None, TaskCreationOptions.None, TaskScheduler.Default); })
+                .Do(l => { if (l == 30) stopBrokerTask = Task.Factory.StartNew(() => VagrantBrokerUtil.StopBroker("broker2"), CancellationToken.None, TaskCreationOptions.None, TaskScheduler.Default); })
                 .Select(i => new Message { Value = BitConverter.GetBytes(i) })
                 .Take(count)
                 .Do(producer.Send)
@@ -432,6 +435,9 @@ namespace tests
             _log.Info("Done waiting for sending. Closing producer.");
             await producer.Close(TimeSpan.FromSeconds(5));
             _log.Info("Producer closed.");
+
+            if (stopBrokerTask != null)
+                await stopBrokerTask;
 
             //
             // Check length of result topic
@@ -501,7 +507,9 @@ namespace tests
                     current++;
                     if (current == 18)
                     {
-                        await Task.Factory.StartNew(() => VagrantBrokerUtil.StopBrokerLeaderForPartition(consumer.Cluster, consumer.Topic, msg.Partition), CancellationToken.None, TaskCreationOptions.None, TaskScheduler.Default);
+                        var brokerStopped = await Task.Factory.StartNew(() => VagrantBrokerUtil.StopBrokerLeaderForPartition(consumer.Cluster, consumer.Topic, msg.Partition), CancellationToken.None, TaskCreationOptions.None, TaskScheduler.Default);
+                        _log.Info("Stopped Broker Leader {0}", brokerStopped);
+
                     }
                     received.OnNext(msg);
                     //_log.Info("Got: {0}", BitConverter.ToInt32(msg.Value, 0));
@@ -589,6 +597,8 @@ namespace tests
             await consumer.CloseAsync(TimeSpan.FromSeconds(4));
             _log.Info("Closed consumer");
 
+            await producer.Close(TimeSpan.FromSeconds(5));
+
             // assert we received all the messages
 
             Assert.AreEqual(sent.Count, received.Count, string.Format("Sent and Receved size differs. Sent: {0} Recevied: {1}", sent.Count, received.Count));
@@ -632,8 +642,8 @@ namespace tests
             Assert.True(partitionMeta.GroupBy(p=>p.Leader).Count()==1);
 
             // now publish messages
-            const int count = 48000;
-            var producer = new Producer(_seedAddresses, new ProducerConfiguration(topic));
+            const int count = 25000;
+            var producer = new Producer(cluster, new ProducerConfiguration(topic));
             _log.Debug("Connecting");
             await producer.ConnectAsync();
 
@@ -647,12 +657,13 @@ namespace tests
 
             await Task.Delay(TimeSpan.FromSeconds(1));
 
-            var heads = await producer.Cluster.FetchPartitionOffsetsAsync(topic, ConsumerStartLocation.TopicHead);
-            var tails = await producer.Cluster.FetchPartitionOffsetsAsync(topic, ConsumerStartLocation.TopicTail);
-
             _log.Info("Done sending messages. Closing producer.");
             await producer.Close(TimeSpan.FromSeconds(5));
             _log.Info("Producer closed, starting consumer subscription.");
+
+            await Task.Delay(TimeSpan.FromSeconds(1));
+            var heads = await cluster.FetchPartitionOffsetsAsync(topic, ConsumerStartLocation.TopicHead);
+            var tails = await cluster.FetchPartitionOffsetsAsync(topic, ConsumerStartLocation.TopicTail);
 
             var messagesInTopic = (int)tails.MessagesSince(heads);
             _log.Info("Topic offsets indicate producer sent {0} messages.", messagesInTopic);
@@ -662,13 +673,14 @@ namespace tests
             await consumer.ConnectAsync();
             var current = 0;
             var received = new ReplaySubject<ReceivedMessage>();
+            Task rebalanceTask = null;
             var consumerSubscription = consumer.OnMessageArrived.
                 Subscribe(async msg =>
                 {
                     current++;
                     if (current == 18)
                     {
-                        await Task.Factory.StartNew(VagrantBrokerUtil.RebalanceLeadership, CancellationToken.None, TaskCreationOptions.None, TaskScheduler.Default);
+                        rebalanceTask = Task.Factory.StartNew(VagrantBrokerUtil.RebalanceLeadership, CancellationToken.None, TaskCreationOptions.None, TaskScheduler.Default);
                     }
                     received.OnNext(msg);
                     //_log.Info("Got: {0}", BitConverter.ToInt32(msg.Value, 0));
@@ -676,14 +688,18 @@ namespace tests
 
             _log.Info("Waiting for receiver complete");
             var receivedList = await received.Select(msg => BitConverter.ToInt32(msg.Value, 0)).Take(messagesInTopic).TakeUntil(DateTime.Now.AddSeconds(120)).ToList().ToTask();
-
-            tails = await consumer.Cluster.FetchPartitionOffsetsAsync(topic, ConsumerStartLocation.TopicTail);
+            if (rebalanceTask != null)
+                await rebalanceTask;
 
             _log.Info("Receiver complete. Disposing Subscription");
             consumerSubscription.Dispose();
             _log.Info("Consumer subscription disposed. Closing consumer.");
             await consumer.CloseAsync(TimeSpan.FromSeconds(5));
             _log.Info("Consumer closed.");
+
+            tails = await cluster.FetchPartitionOffsetsAsync(topic, ConsumerStartLocation.TopicTail);
+
+            await cluster.CloseAsync(TimeSpan.FromSeconds(5));
 
             _log.Info("Sum of offsets: {0}", tails.MessagesSince(heads));
             _log.Info("Offsets: [{0}]", string.Join(",", tails.Partitions.Select(p => string.Format("{0}:{1}", p, tails.NextOffset(p)))));
@@ -696,6 +712,7 @@ namespace tests
             }
 
             Assert.AreEqual(messagesInTopic, receivedList.Count);
+
 
 
         }
@@ -817,6 +834,56 @@ namespace tests
             return l1.Zip(l2, (l, r) => new {l, r}).
                 SkipWhile(_ => _.l == _.r).Take(100).
                 Select(_ => Tuple.Create(_.l, _.r));
+        }
+
+        [Test]
+        public async void ProducerSendBufferGrowsAutomatically()
+        {
+
+            // now publish messages
+            const int count2 = 25000;
+            var topic = "part13." + _rnd.Next();
+            var producer = new Producer(_seedAddresses, new ProducerConfiguration(topic));
+            _log.Debug("Connecting");
+            await producer.ConnectAsync();
+
+            _log.Debug("Filling out {0} with {1} messages", topic, count2);
+            var sentList = await Enumerable.Range(0, count2)
+                .Select(i => new Message { Value = BitConverter.GetBytes(i) })
+                .ToObservable()
+                .Do(producer.Send)
+                .Select(msg => BitConverter.ToInt32(msg.Value, 0))
+                .ToList();
+
+            await Task.Delay(TimeSpan.FromSeconds(1));
+
+            _log.Info("Done sending messages. Closing producer.");
+            await producer.Close(TimeSpan.FromSeconds(5));
+            _log.Info("Producer closed, starting consumer subscription.");
+
+            
+            
+            // create a topic with 3 partitions
+            var topicName = "part33." + _rnd.Next();
+            VagrantBrokerUtil.CreateTopic(topicName, 3, 3);
+
+            // sender is configured with 50ms batch period
+            var receivedSubject = new ReplaySubject<Message>();
+            producer = new Producer(_seedAddresses, new ProducerConfiguration(topicName, TimeSpan.FromMilliseconds(50), sendBuffersInitialSize:1)) { OnSuccess = ms => ms.ForEach(receivedSubject.OnNext)};
+            await producer.ConnectAsync();
+
+            // send 1000 messages
+            const int count = 1000;
+            await Observable.Interval(TimeSpan.FromMilliseconds(10))
+                .Do(l => producer.Send(new Message() {Value = BitConverter.GetBytes((int) l)}))
+                .Take(count);
+
+            var receivedMessages = await receivedSubject.Take(count).TakeUntil(DateTime.Now.AddSeconds(2)).ToArray();
+
+            Assert.AreEqual(count,receivedMessages.Length);
+
+            await producer.Close(TimeSpan.FromSeconds(5));
+
         }
 
         // explicit offset works
@@ -1054,7 +1121,7 @@ namespace tests
                 await sentEvents.Take(count).ToTask();
 
                 // re-read offsets after messages published
-                await Task.Delay(TimeSpan.FromMilliseconds(50)); // NOTE: There seems to be a race condition on the Kafka broker that the offsets are not immediately available after getting a successful produce response 
+                await Task.Delay(TimeSpan.FromMilliseconds(200)); // NOTE: There seems to be a race condition on the Kafka broker that the offsets are not immediately available after getting a successful produce response 
                 tails = await cluster.FetchPartitionOffsetsAsync(topic, ConsumerStartLocation.TopicTail);
                 _log.Info("2:After loop {0} of {1} messages, Next Offset is {2}", i + 1, count, tails.NextOffset(tails.Partitions.First()));
                 Assert.AreEqual(count * (i + 1), tails.NextOffset(tails.Partitions.First()), "Expected end at " + count * (i + 1));
@@ -1113,14 +1180,19 @@ namespace tests
 
             }).Take(100);
 
+            _log.Info("Done Sending, await on producer close.");
+
             // now stop them.
             await Task.WhenAll(new [] { producer1.Close(TimeSpan.FromSeconds(5)), producer2.Close(TimeSpan.FromSeconds(5)) });
 
+            await Task.Delay(TimeSpan.FromSeconds(2));
+
             // check we got all 100 on each topic.
+            _log.Info("Closed Producers. Checking Offsets");
             var topic1Heads = await cluster.FetchPartitionOffsetsAsync(topic1, ConsumerStartLocation.TopicHead);
             var topic2Heads = await cluster.FetchPartitionOffsetsAsync(topic2, ConsumerStartLocation.TopicHead);
-            var topic1Tails = await cluster.FetchPartitionOffsetsAsync(topic1, ConsumerStartLocation.TopicHead);
-            var topic2Tails = await cluster.FetchPartitionOffsetsAsync(topic2, ConsumerStartLocation.TopicHead);
+            var topic1Tails = await cluster.FetchPartitionOffsetsAsync(topic1, ConsumerStartLocation.TopicTail);
+            var topic2Tails = await cluster.FetchPartitionOffsetsAsync(topic2, ConsumerStartLocation.TopicTail);
 
             Assert.AreEqual(100, topic1Tails.MessagesSince(topic1Heads));
             Assert.AreEqual(100, topic2Tails.MessagesSince(topic2Heads));

@@ -280,6 +280,7 @@ namespace kafka4net
                     if (retry)
                     {
                         _log.Warn("Could not fetch offsets for topic {0}. Will Retry. Message: {1}", topic, exception.Message);
+                        MergeTopicMeta(await FetchMetaWithRetryAsync(topic));
                         await Task.Delay(TimeSpan.FromSeconds(1));
                     }
                     else
