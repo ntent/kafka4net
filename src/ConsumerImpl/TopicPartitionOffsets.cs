@@ -133,5 +133,10 @@ namespace kafka4net.ConsumerImpl
             }
             return offsets;
         }
+
+        public override string ToString()
+        {
+            return string.Format("{0} Offsets:[{1}]",Topic,string.Join(",", _offsets.Select(o=>o.Key + "|" + o.Value)));
+        }
     }
 }

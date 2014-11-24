@@ -110,7 +110,7 @@ namespace kafka4net.ConsumerImpl
         internal IObservable<ReceivedMessage> ReceivedMessages { get; private set; }
         private void BuildReceivedMessages() {
             ReceivedMessages = _fetchResponses.SelectMany(response => {
-                _log.Debug("#{0} Received fetch response", _id);
+                //_log.Debug("#{0} Received fetch response", _id);
                 return (
                     from topic in response.Topics
                     from part in topic.Partitions where part.ErrorCode == ErrorCode.NoError
@@ -202,23 +202,46 @@ namespace kafka4net.ConsumerImpl
                     //    // in uniform way
                     //    continue;
                     //}
+                    catch (ObjectDisposedException e)
+                    {
+                        if (!_cancel.IsCancellationRequested)
+                        {
+                            _log.Debug("#{0} connection closed", _id);
+                            observer.OnError(e);
+                            return;
+                        }
+                        
+                        break;
+                    }
                     catch (CorrelationLoopException e)
                     {
-                        _log.Debug("#{0} connection closed", _id);
-                        observer.OnError(e);
-                        return;
+                        if (!_cancel.IsCancellationRequested)
+                        {
+                            _log.Debug("#{0} connection closed", _id);
+                            observer.OnError(e);
+                            return;
+                        }
+                        break;
                     }
                     catch (SocketException e)
                     {
-                        _log.Info(e, "#{0} Connection failed. {1}", _id, e.Message);
-                        observer.OnError(e);
-                        return;
+                        if (!_cancel.IsCancellationRequested)
+                        {
+                            _log.Info(e, "#{0} Connection failed. {1}", _id, e.Message);
+                            observer.OnError(e);
+                            return;
+                        }
+                        break;
                     }
                     catch (Exception e)
                     {
-                        _log.Error(e, "#{0} Fetcher failed", _id);
-                        observer.OnError(e);
-                        return;
+                        if (!_cancel.IsCancellationRequested)
+                        {
+                            _log.Error(e, "#{0} Fetcher failed", _id);
+                            observer.OnError(e);
+                            return;
+                        }
+                        break;
                     }
 
                     // if timeout, we got empty response
@@ -228,6 +251,7 @@ namespace kafka4net.ConsumerImpl
                     }
                 }
 
+                _log.Info("Cancellation Requested. Shutting Down.");
                 observer.OnCompleted();
             });
         }

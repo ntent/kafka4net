@@ -15,9 +15,12 @@ namespace kafka4net
         private readonly int _port;
         private readonly Action<Exception> _onError;
         private TcpClient _client;
-        internal ResponseCorrelation Correlation;
-        readonly SemaphoreSlim _connectionLock = new SemaphoreSlim(1, 1);
+        private readonly SemaphoreSlim _connectionLock = new SemaphoreSlim(1, 1);
         private bool _closed;
+        private Task _loopTask;
+        private CancellationTokenSource _loopTaskCancel;
+
+        internal ResponseCorrelation Correlation;
 
         internal Connection(string host, int port, Action<Exception> onError = null)
         {
@@ -80,28 +83,37 @@ namespace kafka4net
                     {
                         await MarkSocketAsFailed(currentClient);
                         _onError(e);
-                    }, _host+":"+_port+" conn object hash: "+this.GetHashCode());
+                    }, _host+":"+_port+" conn object hash: " + GetHashCode());
                     
-                    // TODO: Who and when is going to cancel reading?
-                    var loopTask = Correlation.CorrelateResponseLoop(_client, CancellationToken.None);
+                    // If there wasa a prior connection and loop task, cancel them before creating a new one.
+                    if (_loopTask != null && _loopTaskCancel != null)
+                    {
+                        _loopTaskCancel.Cancel();
+                        _loopTask = null;
+                    }
+
+                    _loopTaskCancel = new CancellationTokenSource();
 
                     // Close connection in case of any exception. It is important, because in case of deserialization exception,
                     // we are out of sync and can't continue.
-                    loopTask.ContinueWith(async t => 
-                    {
-                        _log.Debug("CorrelationLoop errored. Closing connection because of error. {0}", t.Exception.Message);
-                        await _connectionLock.WaitAsync();
-                        try
+                    _loopTask = Correlation.CorrelateResponseLoop(_client, _loopTaskCancel.Token)
+                        .ContinueWith(async t => 
                         {
-                            if (_client != null)
-                                _client.Close();
-                        }
-                        finally 
-                        { 
-                            _client = null;
-                            _connectionLock.Release();
-                        }
-                    }, TaskContinuationOptions.OnlyOnFaulted);
+                            _log.Debug("CorrelationLoop completed with status {0}. {1}", t.Status, t.Exception==null?"": string.Format("Closing connection because of error. {0}",t.Exception.Message));
+                            await _connectionLock.WaitAsync();//.ConfigureAwait(false);
+                            try
+                            {
+                                if (_client != null)
+                                    _client.Close();
+                            }
+                            // ReSharper disable once EmptyGeneralCatchClause
+                            catch {}
+                            finally 
+                            { 
+                                _client = null;
+                                _connectionLock.Release();
+                            }
+                        });
 
                     return _client;
                 }
@@ -138,7 +150,13 @@ namespace kafka4net
                 _log.Debug("Marking connection as failed. {0}", this);
 
                 if (_client != null)
-                    try { _client.Close(); }
+                    try
+                    {
+                        if (_loopTaskCancel != null)
+                            _loopTaskCancel.Cancel();
+                        _client.Close();
+                    }
+                    // ReSharper disable once EmptyGeneralCatchClause
                     catch { /*empty*/ }
                 _client = null;
             }
@@ -148,14 +166,29 @@ namespace kafka4net
             }
         }
 
-        public void ShutdownFactory()
+        public async Task ShutdownAsync()
         {
+            _closed = true;
+            _log.Debug("{0} Shutting down.", this);
             try
             {
-                _client.Close();
+                if (_loopTaskCancel != null)
+                    _loopTaskCancel.Cancel();
+
+                if (_loopTask != null)
+                {
+                    try
+                    {
+                        _client.Close();
+                        await _loopTask;
+                        _log.Debug("Loop task completed");
+                    }
+                    catch (TaskCanceledException){}
+                }
             }
+            // ReSharper disable once EmptyGeneralCatchClause
             catch { }
-            _closed = true;
+            _log.Debug("{0} closed.", this);
         }
     }
 }

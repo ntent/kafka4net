@@ -154,12 +154,13 @@ namespace kafka4net
             if (_state == ClusterState.Disconnected || _state == ClusterState.Closed)
                 return;
 
-            _log.Debug("#{0} Closing...", _id);
-            _cancel.Cancel();
+            _log.Info("#{0} Closing...", _id);
 
-            var success = await Task.WhenAll(new[] { 
-                _partitionRecoveryMonitor.Completion, 
-            }).TimeoutAfter(timeout).ConfigureAwait(false);
+            // wait on the partition recovery monitor and all of the correlation loops to shut down.
+            var success =
+                await await Scheduler.Ask(async () =>
+                    await CloseAsyncImpl().TimeoutAfter(timeout)
+                ).ConfigureAwait(false);
 
             if (!success)
             {
@@ -169,10 +170,31 @@ namespace kafka4net
             }
             else
             {
-                _log.Debug("#{0} Closed", _id);
+                _log.Info("#{0} Closed", _id);
             }
 
             _state = ClusterState.Disconnected;
+        }
+
+        private async Task CloseAsyncImpl()
+        {
+            _cancel.Cancel();
+
+            _log.Debug("#{0} Awaiting PartitionRecoveryMonitor exit.", this);
+            try
+            {
+                await _partitionRecoveryMonitor.Completion;//.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) {}
+
+            _log.Info("#{0} PartitionRecoveryMonitor closed. Waiting on closing of connections.", this);
+            try
+            {
+                await (Task.WhenAll(_metadata.Brokers.Select(b => b.Conn.ShutdownAsync()).ToArray()));//.ConfigureAwait(false);
+            }
+            catch (TaskCanceledException) { }
+
+            _log.Info("#{0} Finished Shutting down connections.", this);
         }
 
         /// <summary>Get list of all topics which are already cached. Does not issue a metadata request.</summary>
@@ -590,7 +612,7 @@ namespace kafka4net
             _metadata.Brokers = _metadata.Brokers.Concat(newBrokers).ToArray();
 
             // Close old seed connection and make sure nobody can use it anymore
-            resolvedSeedBrokers.ForEach(old => old.seed.Conn.ShutdownFactory());
+            resolvedSeedBrokers.ForEach(old => old.seed.Conn.ShutdownAsync());
 
             RebuildBrokerIndexes(_metadata);
 

@@ -19,6 +19,7 @@ namespace kafka4net.Protocols
         private readonly Action<Exception> _onError;
         private static readonly ILogger _log = Logger.GetLogger();
         readonly string _id;
+        private CancellationToken _cancellation;
 
         public ResponseCorrelation(Action<Exception> onError, string id = "")
         {
@@ -30,9 +31,10 @@ namespace kafka4net.Protocols
         {
             try
             {
+                _cancellation = cancel;
                 _log.Debug("Starting reading loop from socket. {0}", _id);
                 // TODO: if corrup message, dump bin log of 100 bytes for further investigation
-                while (client.Connected)
+                while (client.Connected && !cancel.IsCancellationRequested)
                 {
                     try
                     {
@@ -41,7 +43,7 @@ namespace kafka4net.Protocols
                         var read = await client.GetStream().ReadAsync(buff, 0, 4, cancel);
                         if (cancel.IsCancellationRequested)
                         {
-                            _log.Debug("Stopped reading from {0} because socket cancelled, {1}", client.Client.RemoteEndPoint, _id);
+                            _log.Debug("Stopped reading from {0} because socket cancelled", _id);
                             return;
                         }
 
@@ -59,7 +61,7 @@ namespace kafka4net.Protocols
                         var left = size;
                         do
                         {
-                            read = await client.GetStream().ReadAsync(body, pos, left);
+                            read = await client.GetStream().ReadAsync(body, pos, left, cancel);
                             if (read == 0)
                             {
                                 _log.Info("Server closed connection. {0}", _id);
@@ -103,7 +105,7 @@ namespace kafka4net.Protocols
                     }
                     catch (ObjectDisposedException)
                     {
-                        _log.Info("CorrelationLoop socket exception. Object disposed. {0}", _id);
+                        _log.Debug("CorrelationLoop socket exception. Object disposed. {0}", _id);
                         throw;
                     }
                     catch (IOException)
@@ -114,8 +116,6 @@ namespace kafka4net.Protocols
                     catch (Exception e)
                     {
                         _log.Error(e, "CorrelateResponseLoop error. {0}", _id);
-                        if (_onError != null)
-                            _onError(e);
                         throw;
                     }
                 }
@@ -125,13 +125,17 @@ namespace kafka4net.Protocols
             catch (Exception e)
             {
                 _corelationTable.Values.ForEach(c => c(null, e));
-                if (_onError != null)
+                if (_onError != null && !cancel.IsCancellationRequested) // don't call back OnError if we were told to cancel
                     _onError(e);
-                throw;
+
+                if (!cancel.IsCancellationRequested)
+                    throw;
             }
             finally
             {
+                _log.Debug("Finishing CorrelationLoop. Calling back error to clear waiters.");
                 _corelationTable.Values.ForEach(c => c(null, new CorrelationLoopException("Correlation loop closed. Request will never get a response.")));
+                _log.Debug("Finished CorrelationLoop.");
             }
         }
 

@@ -1,4 +1,5 @@
-﻿using kafka4net.Metadata;
+﻿using System.Reactive.Disposables;
+using kafka4net.Metadata;
 using kafka4net.Protocols;
 using kafka4net.Protocols.Requests;
 using kafka4net.Protocols.Responses;
@@ -31,6 +32,7 @@ namespace kafka4net.Internal
         public IObservable<MetadataResponse> NewMetadataEvents { get { return _newMetadataEvent; } }
 
         public Task Completion { get { return Task.WhenAll(_recoveryTasks); } }
+        private readonly CompositeDisposable _subscriptionsDisposable = new CompositeDisposable(2);
 
         // keep a list of partitions that are failed, and their broker
         private readonly Dictionary<Tuple<string,int>,ErrorCode> _failedList = new Dictionary<Tuple<string, int>, ErrorCode>();
@@ -47,21 +49,26 @@ namespace kafka4net.Internal
             _log.Debug("Created PartitionRecoveryMonitor {0}", this);
 
             // listen for new brokers
-            cluster.NewBrokers.Subscribe(
+            _subscriptionsDisposable.Add(cluster.NewBrokers.Subscribe(
                 broker =>
                 {
                     // check and add this broker
                     if (_brokers.ContainsKey(broker.NodeId)) return;
-                    _recoveryTasks.Add(RecoveryLoop(broker));
+                    _recoveryTasks.Add(RecoveryLoop(broker)
+                        .ContinueWith(t =>
+                        {
+                            _log.Debug("Recovery loop task for broker {0} completed with status {1}", broker.ToString(), t.Status);
+                            _subscriptionsDisposable.Dispose();
+                        }));
                     _brokers.Add(broker.NodeId, broker);
                 },
                 ex => _log.Error("Error thrown in NewBrokers subscription!")
-                );
+                ));
 
             //
             // listen for any topic status changes and keep our "failed" list updated
             //
-            cluster.PartitionStateChanges.Subscribe(
+            _subscriptionsDisposable.Add(cluster.PartitionStateChanges.Subscribe(
                 state =>
                 {
                     var key = new Tuple<string, int>(state.Topic, state.PartitionId);
@@ -88,7 +95,7 @@ namespace kafka4net.Internal
                         }
                     }
                 },
-                ex => _log.Error(ex, "#{0} Error thrown in PartitionStateChanges subscription!", _id));
+                ex => _log.Error(ex, "#{0} Error thrown in PartitionStateChanges subscription!", _id)));
         }
 
         private async Task RecoveryLoop(BrokerMeta broker)
