@@ -210,7 +210,8 @@ namespace kafka4net.Internal
                                 Topics = response2.Topics.Select(t => new TopicMeta { 
                                     TopicErrorCode = t.TopicErrorCode,
                                     TopicName = t.TopicName,
-                                    Partitions = t.Partitions.Where(p => healedPartitions.Any(hp => hp.Item1 == t.TopicName && hp.Item2 == p.Id)).ToArray()
+                                    // assign only healed partitions who's "new" leader is the broker we just checked.
+                                    Partitions = t.Partitions.Where(p => brokerGrp.Any(hp => hp.Item1 == t.TopicName && hp.Item2 == p.Id && hp.Item3 == newBroker.NodeId)).ToArray()
                                 }).ToArray()
                             };
                             

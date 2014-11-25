@@ -34,7 +34,7 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
 
   config.vm.provider "virtualbox" do |v|
     #v.gui = true
-    v.customize ["modifyvm", :id, "--cpuexecutioncap", "50", "--memory", "1024"]
+    v.customize ["modifyvm", :id, "--cpuexecutioncap", "50", "--memory", "2048"]
   end
 end
 
