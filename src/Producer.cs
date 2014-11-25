@@ -204,7 +204,7 @@ namespace kafka4net
 
         }
 
-        public async Task Close(TimeSpan timeout)
+        public async Task CloseAsync(TimeSpan timeout)
         {
             _log.Debug("Closing...");
             // mark the cancellation token to cause the sending to finish up and don't allow any new messages coming in.

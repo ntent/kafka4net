@@ -122,7 +122,7 @@ namespace tests
                 Take(producedCount).
                 Do(_ => producer.Send(new Message { Value = lala })).
                 ToTask();
-            await producer.Close(TimeSpan.FromSeconds(10));
+            await producer.CloseAsync(TimeSpan.FromSeconds(10));
 
             //
             // Validate by reading published messages
@@ -255,7 +255,7 @@ namespace tests
             _log.Info("Waiting for #2 sender to complete");
             await sender2.ToTask();
             _log.Info("Waiting for producer.Close");
-            await producer.Close(TimeSpan.FromSeconds(5));
+            await producer.CloseAsync(TimeSpan.FromSeconds(5));
 
             _log.Info("Waiting 4sec for remaining messages");
             await Task.Delay(TimeSpan.FromSeconds(4)); // if unexpected messages arrive, let them in to detect failure
@@ -317,7 +317,7 @@ namespace tests
                 ForEach(producer.Send);
 
             await Task.Delay(TimeSpan.FromSeconds(2));
-            await producer.Close(TimeSpan.FromSeconds(5));
+            await producer.CloseAsync(TimeSpan.FromSeconds(5));
 
             // wait another little while, and stop the producer.
             await Task.Delay(TimeSpan.FromSeconds(2));
@@ -380,7 +380,7 @@ namespace tests
             var tails = await consumer.Cluster.FetchPartitionOffsetsAsync(topic, ConsumerStartLocation.TopicTail);
 
             _log.Info("Done waiting for receiver. Closing producer.");
-            await producer.Close(TimeSpan.FromSeconds(5));
+            await producer.CloseAsync(TimeSpan.FromSeconds(5));
             _log.Info("Producer closed, disposing consumer subscription.");
             consumerSubscription.Dispose();
             _log.Info("Consumer subscription disposed. Closing consumer.");
@@ -437,7 +437,7 @@ namespace tests
 
 
             _log.Info("Done waiting for sending. Closing producer.");
-            await producer.Close(TimeSpan.FromSeconds(5));
+            await producer.CloseAsync(TimeSpan.FromSeconds(5));
             _log.Info("Producer closed.");
 
             if (stopBrokerTask != null)
@@ -494,7 +494,7 @@ namespace tests
             var tails = await producer.Cluster.FetchPartitionOffsetsAsync(topic, ConsumerStartLocation.TopicTail);
 
             _log.Info("Done sending messages. Closing producer.");
-            await producer.Close(TimeSpan.FromSeconds(5));
+            await producer.CloseAsync(TimeSpan.FromSeconds(5));
             _log.Info("Producer closed, starting consumer subscription.");
 
             var messagesInTopic = (int)tails.MessagesSince(heads);
@@ -590,7 +590,7 @@ namespace tests
             _log.Debug("Waiting for sender");
             await sender;
             _log.Debug("Waiting for producer complete");
-            await producer.Close(TimeSpan.FromSeconds(4));
+            await producer.CloseAsync(TimeSpan.FromSeconds(4));
 
             // how to make sure nothing is sent after shutdown? listen to logger?  have connection events?
 
@@ -662,7 +662,7 @@ namespace tests
             await Task.Delay(TimeSpan.FromSeconds(1));
 
             _log.Info("Done sending messages. Closing producer.");
-            await producer.Close(TimeSpan.FromSeconds(5));
+            await producer.CloseAsync(TimeSpan.FromSeconds(5));
             _log.Info("Producer closed, starting consumer subscription.");
 
             await Task.Delay(TimeSpan.FromSeconds(1));
@@ -784,7 +784,7 @@ namespace tests
             _log.Info("Closing senders intervals");
             senders.ForEach(s => s.Dispose());
             _log.Info("Closing producer");
-            await producer.Close(TimeSpan.FromSeconds(5));
+            await producer.CloseAsync(TimeSpan.FromSeconds(5));
 
             // wait for 3 sec for listener to catch up
             _log.Info("Waiting for additional 3sec");
@@ -862,7 +862,7 @@ namespace tests
             await Task.Delay(TimeSpan.FromSeconds(1));
 
             _log.Info("Done sending messages. Closing producer.");
-            await producer.Close(TimeSpan.FromSeconds(5));
+            await producer.CloseAsync(TimeSpan.FromSeconds(5));
             _log.Info("Producer closed, starting consumer subscription.");
 
             
@@ -886,7 +886,7 @@ namespace tests
 
             Assert.AreEqual(count,receivedMessages.Length);
 
-            await producer.Close(TimeSpan.FromSeconds(5));
+            await producer.CloseAsync(TimeSpan.FromSeconds(5));
 
         }
 
@@ -918,7 +918,7 @@ namespace tests
             _log.Info("Producer sent {0} messages.", sentMsgs.Count);
 
             _log.Debug("Closing producer");
-            await producer.Close(TimeSpan.FromSeconds(5));
+            await producer.CloseAsync(TimeSpan.FromSeconds(5));
 
             var offsetFetchCluster = new Cluster(_seedAddresses);
             await offsetFetchCluster.ConnectAsync();
@@ -965,7 +965,7 @@ namespace tests
                 ForEach(producer.Send);
 
             _log.Debug("Closing producer");
-            await producer.Close(TimeSpan.FromSeconds(5));
+            await producer.CloseAsync(TimeSpan.FromSeconds(5));
 
             // read starting from the head
             var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, ConsumerStartLocation.TopicHead));
@@ -1034,7 +1034,7 @@ namespace tests
             var offsets1 = await producer.Cluster.FetchPartitionOffsetsAsync(topic, ConsumerStartLocation.TopicHead);
 
             _log.Info("Closing producer");
-            await producer.Close(TimeSpan.FromSeconds(5));
+            await producer.CloseAsync(TimeSpan.FromSeconds(5));
 
 
             // now consume the "first" 50. Stop, save offsets, and restart.
@@ -1135,7 +1135,7 @@ namespace tests
             }
 
             _log.Info("Closing producer");
-            await producer.Close(TimeSpan.FromSeconds(5));
+            await producer.CloseAsync(TimeSpan.FromSeconds(5));
 
             await Task.Delay(TimeSpan.FromSeconds(1));
 
@@ -1189,7 +1189,7 @@ namespace tests
             _log.Info("Done Sending, await on producer close.");
 
             // now stop them.
-            await Task.WhenAll(new [] { producer1.Close(TimeSpan.FromSeconds(5)), producer2.Close(TimeSpan.FromSeconds(5)) });
+            await Task.WhenAll(new [] { producer1.CloseAsync(TimeSpan.FromSeconds(5)), producer2.CloseAsync(TimeSpan.FromSeconds(5)) });
 
             await Task.Delay(TimeSpan.FromSeconds(2));
 
@@ -1284,11 +1284,11 @@ namespace tests
             Assert.AreNotEqual(threadName, Thread.CurrentThread.Name);
 
             // now close down
-            await producer.Close(TimeSpan.FromSeconds(5));
+            await producer.CloseAsync(TimeSpan.FromSeconds(5));
             _log.Debug("After Consumer Close using thread {0}", Thread.CurrentThread.Name);
             Assert.AreNotEqual(threadName, Thread.CurrentThread.Name);
 
-            await producerWithCluster.Close(TimeSpan.FromSeconds(5));
+            await producerWithCluster.CloseAsync(TimeSpan.FromSeconds(5));
             _log.Debug("After Producer Subscribe using thread {0}", Thread.CurrentThread.Name);
             Assert.AreNotEqual(threadName, Thread.CurrentThread.Name);
 
