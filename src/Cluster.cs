@@ -7,6 +7,7 @@ using System.Net.Sockets;
 using System.Reactive.Concurrency;
 using System.Reactive.Linq;
 using System.Reactive.Subjects;
+using System.Runtime.Remoting.Messaging;
 using System.Threading;
 using System.Threading.Tasks;
 using kafka4net.ConsumerImpl;
@@ -198,13 +199,16 @@ namespace kafka4net
         }
 
         /// <summary>Get list of all topics which are already cached. Does not issue a metadata request.</summary>
-        public string[] GetAllTopics()
+        public async Task<string[]> GetAllTopicsAsync()
         {
             CheckConnected();
 
-            if (_metadata == null)
-                return new string[0];
-            return Scheduler.Ask(() => _metadata.Topics.Select(t => t.TopicName).ToArray()).Result;
+            return await await Scheduler.Ask(async () =>
+            {
+                var meta = await _protocol.MetadataRequest(new TopicRequest { Topics = new string[0] });
+                MergeTopicMeta(meta);
+                return _metadata.Topics.Select(t => t.TopicName).ToArray();
+            });
         }
 
 

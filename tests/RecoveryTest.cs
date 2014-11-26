@@ -186,7 +186,7 @@ namespace tests
             };
             await producer.ConnectAsync();
 
-            if (!producer.Cluster.GetAllTopics().Contains(topic))
+            if (!(await producer.Cluster.GetAllTopicsAsync()).Contains(topic))
                 VagrantBrokerUtil.CreateTopic(topic, 3, 3);
 
             var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic));
@@ -1221,7 +1221,7 @@ namespace tests
             await cluster.FetchPartitionOffsetsAsync(topic, ConsumerStartLocation.TopicHead);
             Assert.AreNotEqual(threadName, Thread.CurrentThread.Name);
 
-            var topics = cluster.GetAllTopics();
+            var topics = await cluster.GetAllTopicsAsync();
             Assert.AreNotEqual(threadName, Thread.CurrentThread.Name);
 
             // now create a producer
