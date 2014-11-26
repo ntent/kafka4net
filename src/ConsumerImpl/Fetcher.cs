@@ -32,6 +32,7 @@ namespace kafka4net.ConsumerImpl
         private readonly Protocol _protocol;
         private readonly CancellationToken _cancel;
         private readonly ConsumerConfiguration _consumerConfig;
+        private readonly IObservable<bool> _flowControl;
 
         // keep list of TopicPartitions that are subscribed
         private readonly HashSet<TopicPartition> _topicPartitions = new HashSet<TopicPartition>();
@@ -43,7 +44,7 @@ namespace kafka4net.ConsumerImpl
         public BrokerMeta Broker { get { return _broker; } }
 
         // "bool" is a fake param, it does not carry any meaning
-        readonly Subject<bool> _partitionsUpdated = new Subject<bool>();
+        readonly Subject<bool> _wakeupSignal = new Subject<bool>();
 
 
         public Fetcher(Cluster cluster, BrokerMeta broker, Protocol protocol, ConsumerConfiguration consumerConfig, CancellationToken cancel)
@@ -54,11 +55,11 @@ namespace kafka4net.ConsumerImpl
             _cancel = cancel;
 
             _consumerConfig = consumerConfig;
-
+            
             _fetchResponses = FetchLoop().Publish().RefCount();
             BuildReceivedMessages();
 
-            _cancel.Register(() => _partitionsUpdated.OnNext(true));
+            _cancel.Register(() => _wakeupSignal.OnNext(true));
 
             if(_log.IsDebugEnabled)
                 _log.Debug("Created new fetcher #{0} for broker: {1}", _id, _broker);
@@ -85,23 +86,30 @@ namespace kafka4net.ConsumerImpl
         {
             _topicPartitions.Add(topicPartition);
 
-            // create a disposable that allows us to remove the topic partition
-            var disposable = new CompositeDisposable
+            // cleanup
+            var topicPartitionCleanup = Disposable.Create(() => _topicPartitions.Remove(topicPartition));
+            var receivedMessagesSubscriptionCleanup = ReceivedMessages.Where(rm => rm.Topic == topicPartition.Topic && rm.Partition == topicPartition.PartitionId)
+                    .Subscribe(topicPartition);
+            var flowControlCleanup = topicPartition.FlowControl.
+                // we need to wake up from waiting loop any time flow control hits low watermark and becomes enabled
+                Where(enabled => enabled).
+                Subscribe(_ => _wakeupSignal.OnNext(true));
+            
+            var cleanup = new CompositeDisposable
             {
-                Disposable.Create(() => _topicPartitions.Remove(topicPartition)),
-                ReceivedMessages.Where(rm => rm.Topic == topicPartition.Topic && rm.Partition == topicPartition.PartitionId)
-                    .Subscribe(topicPartition)
+                topicPartitionCleanup,
+                receivedMessagesSubscriptionCleanup,
+                flowControlCleanup
             };
 
             if (_log.IsDebugEnabled)
             {
-                disposable.Add(Disposable.Create(() => _log.Debug("Fetcher #{0} {1} topicPartition is unsubscribing", _id, topicPartition)));
+                cleanup.Add(Disposable.Create(() => _log.Debug("Fetcher #{0} {1} topicPartition is unsubscribing", _id, topicPartition)));
             }
 
             _log.Debug("Fetcher #{0} added {1}", _id, topicPartition);
 
-            // TODO: Add FlowControlState handling
-            return disposable;
+            return cleanup;
         }
 
         /// <summary>
@@ -134,7 +142,7 @@ namespace kafka4net.ConsumerImpl
 
         internal void PartitionsUpdated() 
         {
-            _partitionsUpdated.OnNext(true);
+            _wakeupSignal.OnNext(true);
         }
 
         private IObservable<FetchResponse> FetchLoop()
@@ -147,22 +155,30 @@ namespace kafka4net.ConsumerImpl
                     {
                         MaxWaitTime = _consumerConfig.MaxWaitTimeMs,
                         MinBytes = _consumerConfig.MinBytesPerFetch,
-                        Topics = _topicPartitions.GroupBy(tp=>tp.Topic).Select(t => new FetchRequest.TopicData { 
-                            Topic = t.Key,
-                            Partitions = t.
-                                Select(p => new FetchRequest.PartitionData
-                                {
-                                    Partition = p.PartitionId,
-                                    FetchOffset = p.CurrentOffset,
-                                    MaxBytes = _consumerConfig.MaxBytesPerFetch
-                                }).ToArray()
-                        }).ToArray()
+                        Topics = _topicPartitions.
+                            Where(tp => {
+                                var enabled = tp.FlowControlEnabled;
+                                if(!enabled)
+                                    _log.Debug("#{0} Ignoring partition because flow controll is off {1}", _id, tp);
+                                return enabled;
+                            }).
+                            GroupBy(tp=>tp.Topic).
+                            Select(t => new FetchRequest.TopicData { 
+                                Topic = t.Key,
+                                Partitions = t.
+                                    Select(p => new FetchRequest.PartitionData
+                                    {
+                                        Partition = p.PartitionId,
+                                        FetchOffset = p.CurrentOffset,
+                                        MaxBytes = _consumerConfig.MaxBytesPerFetch
+                                    }).ToArray()
+                            }).ToArray()
                     };
 
                     if (fetchRequest.Topics.Length == 0)
                     {
-                        _log.Debug("#{0} No partitions subscribed to fetcher. Waiting for _partitionsUpdated signal", _id);
-                        await _partitionsUpdated.FirstAsync();
+                        _log.Debug("#{0} No partitions subscribed to fetcher. Waiting for _wakeupSignal signal", _id);
+                        await _wakeupSignal.FirstAsync();
                         
                         if(_cancel.IsCancellationRequested)
                         {
@@ -170,7 +186,7 @@ namespace kafka4net.ConsumerImpl
                             break;
                         }
                         
-                        _log.Debug("#{0} Received _partitionsUpdated. Have {1} partitions subscribed", _id, _topicPartitions.Count);
+                        _log.Debug("#{0} Received _wakeupSignal. Have {1} partitions subscribed", _id, _topicPartitions.Count);
                         continue;
                     }
 

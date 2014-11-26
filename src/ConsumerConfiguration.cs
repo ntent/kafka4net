@@ -38,13 +38,27 @@ namespace kafka4net
             int maxWaitTimeMs=500, 
             int minBytesPerFetch = 1, 
             int maxBytesPerFetch=256*1024,
-            Func<int,long> partitionOffsetProvider = null)
+            Func<int,long> partitionOffsetProvider = null,
+            int lowWatermark = 500,
+            int highWatermark = 2000
+)
         {
+            LowWatermark = lowWatermark;
+            HighWatermark = highWatermark;
             if(startLocation==ConsumerStartLocation.SpecifiedLocations && partitionOffsetProvider == null)
                 throw new ArgumentException("If StartLocation is ConsumerStartLocation.SpecifiedLocations, PartitionOffsetProvider must be set");
 
             if (startLocation != ConsumerStartLocation.SpecifiedLocations && partitionOffsetProvider != null)
                 throw new ArgumentException("If StartLocation is NOT ConsumerStartLocation.SpecifiedLocations then PartitionOffsetProvider must NOT be set");
+
+            if(lowWatermark < 0)
+                throw new ArgumentException("Can not be negative", "lowWatermark");
+
+            if (highWatermark < 0)
+                throw new ArgumentException("Can not be negative", "highWatermark");
+
+            if(highWatermark < lowWatermark)
+                throw new InvalidOperationException("highWatermark must be greater than lowWatermark");
 
             SeedBrokers = seedBrokers;
             PartitionOffsetProvider = partitionOffsetProvider;
@@ -62,6 +76,7 @@ namespace kafka4net
         public int MaxWaitTimeMs  { get; private set; }
         public int MinBytesPerFetch { get; private set; }
         public int MaxBytesPerFetch { get; private set; }
-
+        public readonly int LowWatermark;
+        public readonly int HighWatermark;
     }
 }

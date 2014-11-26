@@ -1,5 +1,7 @@
 ﻿using System.Linq;
+using System.Reactive;
 using System.Reactive.Concurrency;
+using System.Threading;
 using kafka4net.ConsumerImpl;
 using System;
 using System.Collections.Generic;
@@ -27,6 +29,15 @@ namespace kafka4net
         // we should only ever subscribe once, and we want to keep that around to check if it was disposed when we are disposed
         private readonly CompositeDisposable _partitionsSubscription = new CompositeDisposable();
 
+        int _outstandingMessageProcessingCount;
+        int _haveSubscriber;
+
+        public bool FlowControlEnabled { get; private set; }
+
+        readonly BehaviorSubject<int> _flowControlInput = new BehaviorSubject<int>(1);
+        public IObservable<bool> FlowControl;
+
+
         /// <summary>
         /// Create a new consumer using the specified configuration. See @ConsumerConfiguration
         /// </summary>
@@ -36,19 +47,54 @@ namespace kafka4net
             Configuration = consumerConfig;
             _cluster = new Cluster(consumerConfig.SeedBrokers);
 
-            OnMessageArrived = Observable.Create<ReceivedMessage>(observer => 
+            // Low/high watermark implementation
+            FlowControl = _flowControlInput.
+                Scan(1, (last, current) =>
+                {
+                    if (current < Configuration.LowWatermark)
+                        return 1;
+                    if (current > Configuration.HighWatermark)
+                        return -1;
+                    return last; // While in between watermarks, carry over previous on/off state
+                }).
+                    DistinctUntilChanged().
+                    Select(i => i > 0).
+                    Do(f =>FlowControlEnabled = f).
+                    Do(f => _log.Debug("Flow control {0} on {1}", f ? "ON" : "OFF", this));
+
+            var onMessage = Observable.Create<ReceivedMessage>(observer =>
             {
+                if (Interlocked.CompareExchange(ref _haveSubscriber, 1, 0) == 1)
+                    throw new InvalidOperationException("Only one subscriber is allowed. Use OnMessageArrived.Publish().RefCount()");
+
                 // Subscription to OnMessageArrived is tricky because users would expect offsets to be resolved at the time
                 // of OnMessageArrived.Subscribe(), which is synchronous. But fetchers offset resolution is async.
                 // Using blocking Wait combined with ConfigureAwaiter(false) inside in SubscribeClient seems the only way to do it.
                 var task = SubscribeClient(observer);
-                task.Wait();
                 return task.Result;
             }).
-            Publish().
-            RefCount()
-            //.Do(msg=> _log.Debug("Received Message on final observable"))
-            .ObserveOn(Scheduler.Default);
+            // Increment counter of messages sent for processing
+            Do(msg =>
+            {
+                var count = Interlocked.Increment(ref _outstandingMessageProcessingCount);
+                _flowControlInput.OnNext(count);
+            }).
+            // Propagate exceptions in subscribe directly to caller by using Scheduler.Immediate
+            SubscribeOn(Scheduler.Immediate);
+
+            // Isolate driver's scheduler thread from the caller because driver's scheduler is sensitive for delays
+            var scheduledMessages = SynchronizationContext.Current != null ? onMessage.ObserveOn(SynchronizationContext.Current) : onMessage.ObserveOn(Scheduler.Default);
+
+            //
+            // Intercept OnNext AFTER scheduling and to decrement counter of messages waiting to be processed
+            //
+            OnMessageArrived = Observable.Create<ReceivedMessage>(observer => 
+                scheduledMessages.Subscribe(x =>
+                {
+                    observer.OnNext(x);
+                    var count = Interlocked.Decrement(ref _outstandingMessageProcessingCount);
+                    _flowControlInput.OnNext(count);
+                }, observer.OnError, observer.OnCompleted));
         }
 
         async Task<IDisposable> SubscribeClient(IObserver<ReceivedMessage> observer)
@@ -56,6 +102,8 @@ namespace kafka4net
             return await await _cluster.Scheduler.Ask(async () =>
             {
                 // Relay messages from partition to consumer's output
+                // Ensure that only single subscriber is allowed because it is important to count
+                // outstanding messaged consumed by user
                 OnMessageArrivedInput
                     //.Do(msg=>_log.Debug("Received Message on ArrivedInput"))
                     .Subscribe(observer);
@@ -149,6 +197,7 @@ namespace kafka4net
         }
 
         private bool _isDisposed;
+
         public void Dispose()
         {
             if (_isDisposed)

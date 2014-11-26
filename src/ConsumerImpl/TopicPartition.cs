@@ -45,6 +45,9 @@ namespace kafka4net.ConsumerImpl
             }
         }
 
+        public IObservable<bool> FlowControl { get { return _subscribedConsumer.FlowControl; } }
+        public bool FlowControlEnabled { get { return _subscribedConsumer.FlowControlEnabled; } }
+
         /// <summary>
         /// Subscribe a consumer to this topic partition. The act of subscribing 
         /// will cause this partition to seek out and connect to the "correct" Fetcher.
