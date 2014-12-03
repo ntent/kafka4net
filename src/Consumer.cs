@@ -35,7 +35,8 @@ namespace kafka4net
         public bool FlowControlEnabled { get; private set; }
 
         readonly BehaviorSubject<int> _flowControlInput = new BehaviorSubject<int>(1);
-        public IObservable<bool> FlowControl;
+        // Is used by Fetchers to wake up from sleep when flow turns ON
+        internal IObservable<bool> FlowControl;
 
 
         /// <summary>
@@ -72,29 +73,35 @@ namespace kafka4net
                 // Using blocking Wait combined with ConfigureAwaiter(false) inside in SubscribeClient seems the only way to do it.
                 var task = SubscribeClient(observer);
                 return task.Result;
-            }).
+            });
+
+            if (Configuration.UseFlowControl) { 
             // Increment counter of messages sent for processing
-            Do(msg =>
-            {
-                var count = Interlocked.Increment(ref _outstandingMessageProcessingCount);
-                _flowControlInput.OnNext(count);
-            }).
+                onMessage = onMessage.Do(msg =>
+                {
+                    var count = Interlocked.Increment(ref _outstandingMessageProcessingCount);
+                    _flowControlInput.OnNext(count);
+                });
+            }
+
             // Propagate exceptions in subscribe directly to caller by using Scheduler.Immediate
-            SubscribeOn(Scheduler.Immediate);
+            onMessage = onMessage.SubscribeOn(Scheduler.Immediate);
 
             // Isolate driver's scheduler thread from the caller because driver's scheduler is sensitive for delays
             var scheduledMessages = SynchronizationContext.Current != null ? onMessage.ObserveOn(SynchronizationContext.Current) : onMessage.ObserveOn(Scheduler.Default);
 
-            //
-            // Intercept OnNext AFTER scheduling and to decrement counter of messages waiting to be processed
-            //
-            OnMessageArrived = Observable.Create<ReceivedMessage>(observer => 
-                scheduledMessages.Subscribe(x =>
-                {
-                    observer.OnNext(x);
-                    var count = Interlocked.Decrement(ref _outstandingMessageProcessingCount);
-                    _flowControlInput.OnNext(count);
-                }, observer.OnError, observer.OnCompleted));
+            ////
+            //// Intercept OnNext AFTER scheduling and to decrement counter of messages waiting to be processed
+            ////
+            //OnMessageArrived = Observable.Create<ReceivedMessage>(observer =>
+            //    scheduledMessages.Subscribe(x =>
+            //    {
+            //        observer.OnNext(x);
+            //        var count = Interlocked.Decrement(ref _outstandingMessageProcessingCount);
+            //        _flowControlInput.OnNext(count);
+            //    }, observer.OnError, observer.OnCompleted));
+
+            OnMessageArrived = scheduledMessages;
         }
 
         async Task<IDisposable> SubscribeClient(IObserver<ReceivedMessage> observer)
@@ -124,6 +131,15 @@ namespace kafka4net
                     _topicPartitions.Clear();
                 });
             }).ConfigureAwait(false);
+        }
+
+        public void Ack(int messageCount = 1)
+        {
+            if(!Configuration.UseFlowControl)
+                throw new InvalidOperationException("UseFlowControl is OFF, Ack is not allowed");
+
+            var count = Interlocked.Add(ref _outstandingMessageProcessingCount, - messageCount);
+            _flowControlInput.OnNext(count);
         }
 
         /// <summary>

@@ -29,7 +29,15 @@ namespace kafka4net
         /// <param name="minBytesPerFetch"></param>
         /// <param name="maxBytesPerFetch"></param>
         /// <param name="partitionOffsetProvider">
-        ///     If not provided or null, all partitions are positioned at the end (only new messages will be picked up)
+        ///     If not provided or null, all partitions are positioned at the end  (only new messages will be picked up)
+        /// </param>
+        /// <param name="useFlowControl">
+        ///     If set to true, subscriber must call consumers Ack function to keep data flowing.
+        ///     Is used to prevent out of memory errors when subscriber is slow and data velocity is high 
+        ///     (re-reading the log from beginning for example).
+        ///     Make sure that subscriber consumes more than lowWatermark, or data might stop flowing because driver would
+        ///     wait for subscriber to drain until lowWatermark and subscriber would wait for more data until continue processing 
+        ///     (could happen when buffering is used).
         /// </param>
         public ConsumerConfiguration(
             string seedBrokers,
@@ -40,11 +48,13 @@ namespace kafka4net
             int maxBytesPerFetch=256*1024,
             Func<int,long> partitionOffsetProvider = null,
             int lowWatermark = 500,
-            int highWatermark = 2000
-)
+            int highWatermark = 2000,
+            bool useFlowControl = false)
         {
             LowWatermark = lowWatermark;
             HighWatermark = highWatermark;
+            UseFlowControl = useFlowControl;
+
             if(startLocation==ConsumerStartLocation.SpecifiedLocations && partitionOffsetProvider == null)
                 throw new ArgumentException("If StartLocation is ConsumerStartLocation.SpecifiedLocations, PartitionOffsetProvider must be set");
 
@@ -78,5 +88,6 @@ namespace kafka4net
         public int MaxBytesPerFetch { get; private set; }
         public readonly int LowWatermark;
         public readonly int HighWatermark;
+        public readonly bool UseFlowControl;
     }
 }
