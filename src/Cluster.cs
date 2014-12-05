@@ -531,7 +531,10 @@ namespace kafka4net
                 }
                 catch (Exception e)
                 {
-                    _log.Error(e, "Error while trying to fetch topic '{0}' metadata", topic);
+                    if (_cancel.IsCancellationRequested)
+                        _log.Info(e, "Exception during shutdown while trying to fetch topic '{0}' metadata", topic);
+                    else
+                        _log.Error(e, "Error while trying to fetch topic '{0}' metadata", topic);
                 }
 
                 await Task.Delay(500, _cancel.Token);
