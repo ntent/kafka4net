@@ -69,6 +69,8 @@ namespace kafka4net.ConsumerImpl
 
         public IEnumerable<int> Partitions { get { return new List<int>(_offsets.Keys); }}
 
+        public Dictionary<int, long> GetPartitionsOffset { get { return new Dictionary<int, long>(_offsets); } }
+
         /// <summary>
         /// Update the offset for the given partition ID to include the given offset. This will cause offset+1 to be returned by the NextOffset function.
         /// Note that this function expects to be passed the *Current* offset that has been processed.
