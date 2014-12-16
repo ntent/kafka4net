@@ -29,6 +29,7 @@ namespace kafka4net
         private Subject<Message> _sendMessagesSubject;
         private readonly Cluster _cluster;
         private readonly bool _internalCluster;
+        private readonly SemaphoreSlim _sync = new SemaphoreSlim(1,1);
 
         // cancellation token used to notify all producer components to stop.
         private readonly CancellationTokenSource _shutdown = new CancellationTokenSource();
@@ -71,124 +72,136 @@ namespace kafka4net
 
             await await _cluster.Scheduler.Ask(async () =>
             {
-                _log.Debug("Connecting");
-                _sendMessagesSubject = new Subject<Message>();
+                await _sync.WaitAsync();
 
-                if (_cluster.State != Cluster.ClusterState.Connected)
+                try
                 {
-                    _log.Debug("Connecting cluster");
-                    await _cluster.ConnectAsync();
-                    _log.Debug("Connected cluster");
-                }
+                    if (IsConnected)
+                        return;
 
-                // Recovery: subscribe to partition offline/online events
-                _cluster.PartitionStateChanges.
-                    Where(p => p.Topic == Configuration.Topic).
-                    Synchronize(_allPartitionQueues).
-                    Subscribe(p =>
+                    _log.Debug("Connecting");
+                    _sendMessagesSubject = new Subject<Message>();
+
+                    if (_cluster.State != Cluster.ClusterState.Connected)
                     {
-                        PartitionQueueInfo queue;
-                        if (!_allPartitionQueues.TryGetValue(p.PartitionId, out queue))
+                        _log.Debug("Connecting cluster");
+                        await _cluster.ConnectAsync();
+                        _log.Debug("Connected cluster");
+                    }
+
+                    // Recovery: subscribe to partition offline/online events
+                    _cluster.PartitionStateChanges.
+                        Where(p => p.Topic == Configuration.Topic).
+                        Synchronize(_allPartitionQueues).
+                        Subscribe(p =>
                         {
-                            queue = new PartitionQueueInfo(Configuration.SendBuffersInitialSize) { Partition = p.PartitionId };
-                            _allPartitionQueues.Add(p.PartitionId, queue);
-                        }
-
-                        if (_log.IsDebugEnabled)
-                        {
-                            _log.Debug("Changing '{0}'/{1} IsOnline {2}->{3}", Configuration.Topic, p.PartitionId, queue.IsOnline, p.ErrorCode == ErrorCode.NoError);
-                        }
-
-                        queue.IsOnline = p.ErrorCode == ErrorCode.NoError;
-                        _queueEventWaitHandler.Set();
-
-                        if (_log.IsDebugEnabled)
-                        {
-                            _log.Debug("Detected change in topic/partition '{0}'/{1}/{2}. Triggered queue event", Configuration.Topic, p.PartitionId, p.ErrorCode);
-                        }
-                    });
-
-                // get all of the partitions for this topic. Allows the MessagePartitioner to select a partition.
-                var topicPartitions = await _cluster.GetOrFetchMetaForTopicAsync(Configuration.Topic);
-                _log.Debug("Producer found {0} partitions for '{1}'", topicPartitions.Length, Configuration.Topic);
-
-                _sendMessagesSubject.
-                    ObserveOn(_cluster.Scheduler).
-                    Do(msg => msg.PartitionId = Configuration.Partitioner.GetMessagePartition(msg, topicPartitions).Id).
-                    Buffer(Configuration.BatchFlushTime, Configuration.BatchFlushSize).
-                    Where(b => b.Count > 0).
-                    Select(msgs => msgs.GroupBy(msg => msg.PartitionId)).
-                    ObserveOn(_cluster.Scheduler).
-                    Subscribe(partitionGroups =>
-                    {
-                        foreach (var batch in partitionGroups)
-                        {
-                            // partition queue might be created if metadata broadcast fired already
                             PartitionQueueInfo queue;
-                            if (!_allPartitionQueues.TryGetValue(batch.Key, out queue))
+                            if (!_allPartitionQueues.TryGetValue(p.PartitionId, out queue))
                             {
-                                queue = new PartitionQueueInfo(Configuration.SendBuffersInitialSize) { Partition = batch.Key };
-                                _allPartitionQueues.Add(batch.Key, queue);
-                                queue.IsOnline = topicPartitions.First(p => p.Id == batch.Key).ErrorCode == ErrorCode.NoError;
-                                _log.Debug("{0} added new partition queue", this);
+                                queue = new PartitionQueueInfo(Configuration.SendBuffersInitialSize) { Partition = p.PartitionId };
+                                _allPartitionQueues.Add(p.PartitionId, queue);
                             }
-
-                            // now queue them up
-                            var batchAr = batch.ToArray();
-
-                            // make sure we have space.
-                            if (queue.Queue.Size + batchAr.Length > queue.Queue.Capacity)
-                            {
-                                // try to increase the capacity.
-                                if (Configuration.AutoGrowSendBuffers)
-                                {
-                                    var growBy = Math.Max(queue.Queue.Capacity/2 + 1, 2 * batchAr.Length);
-                                    if (_log.IsDebugEnabled)
-                                        _log.Debug("Capacity of send buffer with size {3} not large enough to accept {2} new messages. Increasing capacity from {0} to {1}", queue.Queue.Capacity, queue.Queue.Capacity+growBy, batchAr.Length, queue.Queue.Size);
-
-                                    queue.Queue.Capacity += growBy;
-                                }
-                                else
-                                {
-                                    // we're full and not allowed to grow. Throw the batch back to the caller, and continue on.
-                                    if (OnPermError != null)
-                                        OnPermError(
-                                            new Exception(string.Format("Send Buffer Full for partition {0}. ",
-                                                Cluster.PartitionStateChanges.Where(
-                                                    ps => ps.Topic == Configuration.Topic && ps.PartitionId == queue.Partition)
-                                                    .Take(1)
-                                                    .Wait()))
-                                            , batchAr);
-                                    continue;
-                                }
-                            }
-
-                            // we have the space, add to the queue
-                            queue.Queue.Put(batchAr);
 
                             if (_log.IsDebugEnabled)
-                                _log.Debug("Enqueued batch of size {0} for topic '{1}' partition {2}",
-                                    batchAr.Length, Configuration.Topic, batch.Key);
+                            {
+                                _log.Debug("Changing '{0}'/{1} IsOnline {2}->{3}", Configuration.Topic, p.PartitionId, queue.IsOnline, p.ErrorCode == ErrorCode.NoError);
+                            }
 
-                            // After batch enqueued, send wake up signal to sending queue
+                            queue.IsOnline = p.ErrorCode == ErrorCode.NoError;
                             _queueEventWaitHandler.Set();
-                        }
-                    }, e => _log.Fatal(e, "Error in _sendMessagesSubject pipeline"),
-                    () => _log.Debug("_sendMessagesSubject complete")
-                );
 
-                // start the send loop task
-                _cluster.Scheduler.Schedule(() => {
-                    _sendLoopTask = SendLoop().
-                    ContinueWith(t =>
-                    {
-                        if (t.IsFaulted)
-                            _log.Fatal(t.Exception, "SendLoop failed");
-                        else
-                            _log.Debug("SendLoop complete with status: {0}", t.Status);
+                            if (_log.IsDebugEnabled)
+                            {
+                                _log.Debug("Detected change in topic/partition '{0}'/{1}/{2}. Triggered queue event", Configuration.Topic, p.PartitionId, p.ErrorCode);
+                            }
+                        });
+
+                    // get all of the partitions for this topic. Allows the MessagePartitioner to select a partition.
+                    var topicPartitions = await _cluster.GetOrFetchMetaForTopicAsync(Configuration.Topic);
+                    _log.Debug("Producer found {0} partitions for '{1}'", topicPartitions.Length, Configuration.Topic);
+
+                    _sendMessagesSubject.
+                        ObserveOn(_cluster.Scheduler).
+                        Do(msg => msg.PartitionId = Configuration.Partitioner.GetMessagePartition(msg, topicPartitions).Id).
+                        Buffer(Configuration.BatchFlushTime, Configuration.BatchFlushSize).
+                        Where(b => b.Count > 0).
+                        Select(msgs => msgs.GroupBy(msg => msg.PartitionId)).
+                        ObserveOn(_cluster.Scheduler).
+                        Subscribe(partitionGroups =>
+                        {
+                            foreach (var batch in partitionGroups)
+                            {
+                                // partition queue might be created if metadata broadcast fired already
+                                PartitionQueueInfo queue;
+                                if (!_allPartitionQueues.TryGetValue(batch.Key, out queue))
+                                {
+                                    queue = new PartitionQueueInfo(Configuration.SendBuffersInitialSize) { Partition = batch.Key };
+                                    _allPartitionQueues.Add(batch.Key, queue);
+                                    queue.IsOnline = topicPartitions.First(p => p.Id == batch.Key).ErrorCode == ErrorCode.NoError;
+                                    _log.Debug("{0} added new partition queue", this);
+                                }
+
+                                // now queue them up
+                                var batchAr = batch.ToArray();
+
+                                // make sure we have space.
+                                if (queue.Queue.Size + batchAr.Length > queue.Queue.Capacity)
+                                {
+                                    // try to increase the capacity.
+                                    if (Configuration.AutoGrowSendBuffers)
+                                    {
+                                        var growBy = Math.Max(queue.Queue.Capacity/2 + 1, 2 * batchAr.Length);
+                                        if (_log.IsDebugEnabled)
+                                            _log.Debug("Capacity of send buffer with size {3} not large enough to accept {2} new messages. Increasing capacity from {0} to {1}", queue.Queue.Capacity, queue.Queue.Capacity+growBy, batchAr.Length, queue.Queue.Size);
+
+                                        queue.Queue.Capacity += growBy;
+                                    }
+                                    else
+                                    {
+                                        // we're full and not allowed to grow. Throw the batch back to the caller, and continue on.
+                                        if (OnPermError != null)
+                                            OnPermError(
+                                                new Exception(string.Format("Send Buffer Full for partition {0}. ",
+                                                    Cluster.PartitionStateChanges.Where(
+                                                        ps => ps.Topic == Configuration.Topic && ps.PartitionId == queue.Partition)
+                                                        .Take(1)
+                                                        .Wait()))
+                                                , batchAr);
+                                        continue;
+                                    }
+                                }
+
+                                // we have the space, add to the queue
+                                queue.Queue.Put(batchAr);
+
+                                if (_log.IsDebugEnabled)
+                                    _log.Debug("Enqueued batch of size {0} for topic '{1}' partition {2}",
+                                        batchAr.Length, Configuration.Topic, batch.Key);
+
+                                // After batch enqueued, send wake up signal to sending queue
+                                _queueEventWaitHandler.Set();
+                            }
+                        }, e => _log.Fatal(e, "Error in _sendMessagesSubject pipeline"),
+                            () => _log.Debug("_sendMessagesSubject complete")
+                        );
+
+                    // start the send loop task
+                    _cluster.Scheduler.Schedule(() => {
+                                                          _sendLoopTask = SendLoop().
+                                                              ContinueWith(t =>
+                                                              {
+                                                                  if (t.IsFaulted)
+                                                                      _log.Fatal(t.Exception, "SendLoop failed");
+                                                                  else
+                                                                      _log.Debug("SendLoop complete with status: {0}", t.Status);
+                                                              });
                     });
-                });
-                _log.Debug("Connected");
+                    _log.Debug("Connected");
+                }
+                finally
+                {
+                    _sync.Release();
+                }
             }).ConfigureAwait(false);
         }
 
@@ -206,43 +219,55 @@ namespace kafka4net
 
         public async Task CloseAsync(TimeSpan timeout)
         {
-            _log.Debug("Closing...");
-            // mark the cancellation token to cause the sending to finish up and don't allow any new messages coming in.
-            _drain.Cancel();
-            
-            // flush messages to partition queues
-            _log.Debug("Completing _sendMessagesSubject...");
-            _sendMessagesSubject.OnCompleted();
-            _log.Debug("Completed _sendMessagesSubject");
+            await _sync.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                if (!IsConnected)
+                    return;
 
-            // trigger send loop into action, if it is waiting on empty queue
-            _queueEventWaitHandler.Set();
+                _log.Debug("Closing...");
+                // mark the cancellation token to cause the sending to finish up and don't allow any new messages coming in.
+                _drain.Cancel();
             
-            // wait for sending to complete 
-            _log.Debug("Waiting for Send buffers to drain...");
-            if(_sendLoopTask != null)
-                if (await _sendLoopTask.TimeoutAfter(timeout).ConfigureAwait(false))
-                    _log.Debug("Send loop completed");
+                // flush messages to partition queues
+                _log.Debug("Completing _sendMessagesSubject...");
+                _sendMessagesSubject.OnCompleted();
+                _log.Debug("Completed _sendMessagesSubject");
+
+                // trigger send loop into action, if it is waiting on empty queue
+                _queueEventWaitHandler.Set();
+            
+                // wait for sending to complete 
+                _log.Debug("Waiting for Send buffers to drain...");
+                if(_sendLoopTask != null)
+                    if (await _sendLoopTask.TimeoutAfter(timeout).ConfigureAwait(false))
+                        _log.Debug("Send loop completed");
+                    else
+                    {
+                        _log.Error("Timed out while waiting for Send buffers to drain. Canceling.");
+                        _shutdown.Cancel();
+                        if (!await _sendLoopTask.TimeoutAfter(timeout).ConfigureAwait(false))
+                            _log.Fatal("Timed out even after cancelling send loop! This shouldn't happen, there will likely be message loss.");
+                    }
+
+                // close down the cluster ONLY if we created it
+                if (_internalCluster)
+                {
+                    _log.Debug("Closing internal cluster...");
+                    await _cluster.CloseAsync(timeout).ConfigureAwait(false);
+                }
                 else
                 {
-                    _log.Error("Timed out while waiting for Send buffers to drain. Canceling.");
-                    _shutdown.Cancel();
-                    if (!await _sendLoopTask.TimeoutAfter(timeout).ConfigureAwait(false))
-                        _log.Fatal("Timed out even after cancelling send loop! This shouldn't happen, there will likely be message loss.");
+                    _log.Debug("Not closing external shared cluster.");
                 }
 
-            // close down the cluster ONLY if we created it
-            if (_internalCluster)
-            {
-                _log.Debug("Closing internal cluster...");
-                await _cluster.CloseAsync(timeout).ConfigureAwait(false);
+                _sendMessagesSubject = null;
+                _log.Debug("Close complete");
             }
-            else
+            finally
             {
-                _log.Debug("Not closing external shared cluster.");
+                _sync.Release();
             }
-
-            _log.Debug("Close complete");
         }
 
         private async Task SendLoop()
