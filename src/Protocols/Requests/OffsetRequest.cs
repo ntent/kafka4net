@@ -14,11 +14,16 @@ namespace kafka4net.Protocols.Requests
             public int Id;
             public long Time;
             public int MaxNumOffsets;
+
+            public override string ToString()
+            {
+                return string.Format("[{0}:{1}:{2}]", Id, Time, MaxNumOffsets);
+            }
         }
 
         public override string ToString()
         {
-            return string.Format("{0} [{1}]", TopicName, string.Join(",", Partitions.Select(p=>p.Id)));
+            return string.Format("{0} [{1}]", TopicName, string.Join(",", Partitions.AsEnumerable()));
         }
     }
 }
