@@ -13,7 +13,12 @@ namespace kafka4net.Protocols.Responses
 
             public override string ToString()
             {
-                return string.Format("Topic: {0} parts: [{1}]", Topic, string.Join(",", Partitions.AsEnumerable()));
+                return ToString(false);
+            }
+
+            public string ToString(bool onlyPartitionsWithMessages)
+            {
+                return string.Format("Topic: {0} parts: [{1}]", Topic, string.Join(",", Partitions.Where(p => !onlyPartitionsWithMessages || p.Messages.Length > 0).AsEnumerable()));
             }
         }
 
@@ -32,7 +37,11 @@ namespace kafka4net.Protocols.Responses
 
         public override string ToString()
         {
-            return string.Format("[{0}]", string.Join(",", Topics.AsEnumerable()));
+            return ToString(false);
+        }
+        public string ToString(bool onlyPartitionsWithMessages)
+        {
+            return string.Format("[{0}]", string.Join(",", Topics.Select(t=>t.ToString(onlyPartitionsWithMessages))));
         }
     }
 }

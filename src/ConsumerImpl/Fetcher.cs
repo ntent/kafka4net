@@ -194,8 +194,6 @@ namespace kafka4net.ConsumerImpl
                     FetchResponse fetch;
                     try
                     {
-                        if(_log.IsDebugEnabled) 
-                            _log.Debug("#{0}: sending FetchRequest: {1}", _id, fetchRequest);
                         
                         fetch = await _protocol.Fetch(fetchRequest, _broker.Conn);
 
@@ -204,8 +202,8 @@ namespace kafka4net.ConsumerImpl
                             .Where(ps => ps.ErrorCode != ErrorCode.NoError)
                             .ForEach(ps => _cluster.NotifyPartitionStateChange(ps));
                         
-                        if (_log.IsDebugEnabled)
-                            _log.Debug("#{0}: got FetchResponse: {1}", _id, fetch);
+                        if (_log.IsDebugEnabled && fetch.Topics.Any(t=>t.Partitions.Any(p=>p.Messages.Length > 0)))
+                            _log.Debug("#{0}: got FetchResponse from {2} with messages: {1}", _id, _broker.Conn, fetch.ToString(true));
                     }
                     //catch (TaskCanceledException)
                     //{

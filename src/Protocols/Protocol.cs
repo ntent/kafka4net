@@ -99,7 +99,7 @@ namespace kafka4net.Protocols
 
         internal async Task<FetchResponse> Fetch(FetchRequest req, Connection conn)
         {
-            _log.Debug("Sending FetchRequest {0}", req);
+            _log.Debug("Sending FetchRequest to broker {1}. Request: {0}", req, conn);
             
             // Detect disconnected server. Wait no less than 5sec. 
             // If wait time exceed wait time + 3sec, consider it a timeout too
