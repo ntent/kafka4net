@@ -23,7 +23,7 @@ namespace kafka4net.Protocols.Requests
 
         public override string ToString()
         {
-            return string.Format("{0} [{1}]", TopicName, string.Join(",", Partitions.AsEnumerable()));
+            return string.Format("{0} [{1}]", TopicName, Partitions == null ? "null" : string.Join(",", Partitions.AsEnumerable()));
         }
     }
 }

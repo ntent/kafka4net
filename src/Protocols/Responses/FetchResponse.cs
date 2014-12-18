@@ -18,7 +18,7 @@ namespace kafka4net.Protocols.Responses
 
             public string ToString(bool onlyPartitionsWithMessages)
             {
-                return string.Format("Topic: {0} parts: [{1}]", Topic, string.Join(",", Partitions.Where(p => !onlyPartitionsWithMessages || p.Messages.Length > 0).AsEnumerable()));
+                return string.Format("Topic: {0} parts: [{1}]", Topic, Partitions == null ? "null" : string.Join(",", Partitions.Where(p => !onlyPartitionsWithMessages || p.Messages.Length > 0).AsEnumerable()));
             }
         }
 
@@ -31,7 +31,7 @@ namespace kafka4net.Protocols.Responses
 
             public override string ToString()
             {
-                return string.Format("Part: {0}, Err: {1}, HighOffs: {2}, Messages: {3}", Partition, ErrorCode, HighWatermarkOffset, Messages.Length);
+                return string.Format("Part: {0}, Err: {1}, HighOffs: {2}, Messages: {3}", Partition, ErrorCode, HighWatermarkOffset, Messages == null ? "null" : Messages.Length.ToString());
             }
         }
 
@@ -39,9 +39,10 @@ namespace kafka4net.Protocols.Responses
         {
             return ToString(false);
         }
+
         public string ToString(bool onlyPartitionsWithMessages)
         {
-            return string.Format("[{0}]", string.Join(",", Topics.Select(t=>t.ToString(onlyPartitionsWithMessages))));
+            return string.Format("[{0}]", Topics == null ? "null" : string.Join(",", Topics.Select(t=>t.ToString(onlyPartitionsWithMessages))));
         }
     }
 }

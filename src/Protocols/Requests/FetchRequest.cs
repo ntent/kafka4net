@@ -32,7 +32,7 @@ namespace kafka4net.Protocols.Requests
 
             public override string ToString()
             {
-                return string.Format("Topic: {0} Parts: [{1}]", Topic, string.Join(", ", Partitions.AsEnumerable()));
+                return string.Format("Topic: {0} Parts: [{1}]", Topic, Partitions == null ? "null" : string.Join(", ", Partitions.AsEnumerable()));
             }
         }
 
@@ -50,7 +50,7 @@ namespace kafka4net.Protocols.Requests
 
         public override string ToString()
         {
-            return string.Format("MaxTime: {0} MinBytes: {1} [{2}]", MaxWaitTime, MinBytes, string.Join(",", Topics.AsEnumerable()));
+            return string.Format("MaxTime: {0} MinBytes: {1} [{2}]", MaxWaitTime, MinBytes, Topics == null ? "null" : string.Join(",", Topics.AsEnumerable()));
         }
     }
 }

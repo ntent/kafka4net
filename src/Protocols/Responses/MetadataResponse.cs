@@ -10,7 +10,10 @@ namespace kafka4net.Protocols.Responses
 
         public override string ToString()
         {
-            return string.Format("Brokers: [{0}], TopicMeta: [{1}]", string.Join(",", Brokers.AsEnumerable()), string.Join(",", Topics.AsEnumerable()));
+            return string.Format("Brokers: [{0}], TopicMeta: [{1}]", 
+                Brokers == null ? "null" : string.Join(",", Brokers.AsEnumerable()), 
+                Topics == null ? "null" : string.Join(",", Topics.AsEnumerable())
+            );
         }
     }
 }

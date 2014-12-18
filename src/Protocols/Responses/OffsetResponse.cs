@@ -17,13 +17,13 @@ namespace kafka4net.Protocols.Responses
             public override string ToString()
             {
                 return string.Format("{0}:{1}:[{2}]", Partition, ErrorCode,
-                    string.Join(",", Offsets.Select(o => o.ToString(CultureInfo.InvariantCulture))));
+                    Offsets == null ? "null" : string.Join(",", Offsets.Select(o => o.ToString(CultureInfo.InvariantCulture))));
             }
         }
 
         public override string ToString()
         {
-            return string.Format("{0}:[{1}]", TopicName, string.Join(",", Partitions.Select(p => p.ToString())));
+            return string.Format("{0}:[{1}]", TopicName, Partitions == null ? "null" : string.Join(",", Partitions.Select(p => p.ToString())));
         }
     }
 }
