@@ -9,7 +9,8 @@ namespace kafka4net.Protocols.Requests
 
         public override string ToString()
         {
-            return string.Format("Topic: {0} Parts: [{1}]", TopicName, string.Join(", ", PartitionsData));
+            var partDataStr = PartitionsData == null ? "" : string.Join(", ", PartitionsData);
+            return string.Format("Topic: {0} Parts: [{1}]", TopicName, partDataStr);
         }
     }
 }

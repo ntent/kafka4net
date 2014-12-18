@@ -23,7 +23,7 @@ namespace kafka4net.Protocols.Requests
 
         public override string ToString()
         {
-            return string.Format("Part: {0} Messages: {1}", Partition, Messages.Count());
+            return string.Format("Part: {0} Messages: {1}", Partition, Messages == null ? "null" : Messages.Count().ToString());
         }
     }
 }
