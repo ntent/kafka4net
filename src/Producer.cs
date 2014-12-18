@@ -42,6 +42,10 @@ namespace kafka4net
         private readonly Dictionary<int,PartitionQueueInfo> _allPartitionQueues = new Dictionary<int, PartitionQueueInfo>();
         private readonly ManualResetEventSlim _queueEventWaitHandler = new ManualResetEventSlim(false, 0);
 
+        // Producer ID (unique number for each Producer instance. used in debugging messages.)
+        private static int _idCount;
+        private readonly int _id = Interlocked.Increment(ref _idCount);
+
         public Producer(Cluster cluster, ProducerConfiguration producerConfiguration)
         {
             Configuration = producerConfiguration;
@@ -79,7 +83,7 @@ namespace kafka4net
                     if (IsConnected)
                         return;
 
-                    _log.Debug("Connecting");
+                    _log.Debug("Connecting producer {1} for topic {0}", Topic, _id);
                     _sendMessagesSubject = new Subject<Message>();
 
                     if (_cluster.State != Cluster.ClusterState.Connected)
@@ -198,8 +202,14 @@ namespace kafka4net
                     });
                     _log.Debug("Connected");
                 }
+                catch (Exception e)
+                {
+                    _log.Error(e, "Exception during connect");
+					throw;
+                }
                 finally
                 {
+                    _log.Debug("#{0} Releasing Producer Semaphore.", _id);
                     _sync.Release();
                 }
             }).ConfigureAwait(false);
