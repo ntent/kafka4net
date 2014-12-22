@@ -1036,7 +1036,6 @@ namespace tests
             _log.Info("Closing producer");
             await producer.CloseAsync(TimeSpan.FromSeconds(5));
 
-
             // now consume the "first" 50. Stop, save offsets, and restart.
             var consumer1 = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, ConsumerStartLocation.SpecifiedLocations, 500, 1, 262144, offsets1.NextOffset));
             var receivedEvents = new List<int>(100);
@@ -1301,20 +1300,74 @@ namespace tests
 
         }
 
+        [Test]
+        public async void SlowConsumer()
+        {
+            //
+            // 1. Create a topic with 100K messages.
+            // 2. Create slow consumer and start consuming at rate 1msg/sec
+            // 3. ???
+            //
+            var topic = "test32." + _rnd.Next();
+
+            await FillOutQueue(topic, (int)100e3);
+
+            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic,
+                ConsumerStartLocation.TopicHead,
+                maxBytesPerFetch: 1024, 
+                lowWatermark:20, highWatermark: 200, useFlowControl: true));
+            await consumer.ConnectAsync();
+
+            var readWaiter = new SemaphoreSlim(0, 1);
+            var share = consumer.OnMessageArrived.Publish().RefCount();
+            var sub1 = share.Subscribe(msg =>
+            {
+                var str = Encoding.UTF8.GetString(msg.Value);
+                _log.Debug("Received msg '{0}'", str);
+                Thread.Sleep(100);
+                consumer.Ack();
+            }, e => _log.Error("Consumer error", e), () => readWaiter.Release());
+
+            // 2nd subscriber to test that Consumer does not count 2x of message delivery rate
+            var sub2 = share.Subscribe(_ => { }, e => { throw e; });
+
+            _log.Debug("Waiting for reader");
+            await readWaiter.WaitAsync();
+            _log.Debug("Reader complete");
+        }
+
+        private async Task FillOutQueue(string topic, int count)
+        {
+            var producer = new Producer(_seedAddresses, new ProducerConfiguration(topic, TimeSpan.FromSeconds(20)));
+
+            _log.Debug("Connecting producer");
+            await producer.ConnectAsync();
+
+            _log.Info("Starting sender");
+            var sender = Observable.Range(1, count).
+                Select(i => string.Format("msg {0} {1}", i, Guid.NewGuid())).
+                Synchronize().
+                Select(msg => new Message
+                {
+                    Value = Encoding.UTF8.GetBytes(msg)
+                }).
+                Publish().RefCount();
+            sender.Subscribe(producer.Send);
+
+            _log.Debug("Waiting for sender");
+            await sender.LastOrDefaultAsync().ToTask();
+            _log.Debug("Waiting for producer complete");
+            await producer.CloseAsync(TimeSpan.FromSeconds(4));
+            _log.Debug("Producer complete");
+        }
+
         // if last leader is down, all in-buffer messages are errored and the new ones
         // are too.
 
         // How to test timeout error?
 
-        // shutdown:
-        // swamp with messages and make sure it flushes cleanly (can read upon new connect)
-
         // shutdown dirty: connection is off while partially saved. Make sure that 
         // message is either committed or errored
-
-        // if created disconnected, send cause exception
-
-        // if connecting syncronously, sending causes an exception.
 
         // If connecting async, messages are saved and than sent
 
@@ -1329,23 +1382,15 @@ namespace tests
 
         // Parallel producers send messages to proper topics
 
-        // Test keyed messages. What to test, sequence?
-
         // Test non-keyed messages. What to test?
 
         // Big message batching does not cause too big payload exception
-
-        // TODO: change MessageData.Value to byte[]
 
         // when kafka delete is implemented, test deleting topic cause delete metadata in driver
         // and proper message error
 
         // Analize correlation example
         // C:\funprojects\rx\Rx.NET\Samples\EventCorrelationSample\EventCorrelationSample\Program.cs 
-
-        // Fetch API: "partial message at the end of the message set"
-        // Q: How to test this???
-        // A: by setting max bytes parameter.
 
         // Adaptive timeout and buffer size on fetch?
 
