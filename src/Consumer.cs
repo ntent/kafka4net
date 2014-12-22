@@ -90,17 +90,6 @@ namespace kafka4net
             // Isolate driver's scheduler thread from the caller because driver's scheduler is sensitive for delays
             var scheduledMessages = SynchronizationContext.Current != null ? onMessage.ObserveOn(SynchronizationContext.Current) : onMessage.ObserveOn(Scheduler.Default);
 
-            ////
-            //// Intercept OnNext AFTER scheduling and to decrement counter of messages waiting to be processed
-            ////
-            //OnMessageArrived = Observable.Create<ReceivedMessage>(observer =>
-            //    scheduledMessages.Subscribe(x =>
-            //    {
-            //        observer.OnNext(x);
-            //        var count = Interlocked.Decrement(ref _outstandingMessageProcessingCount);
-            //        _flowControlInput.OnNext(count);
-            //    }, observer.OnError, observer.OnCompleted));
-
             OnMessageArrived = scheduledMessages;
         }
 
