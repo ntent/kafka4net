@@ -16,6 +16,7 @@ using kafka4net.Utils;
 
 namespace kafka4net.Protocols
 {
+    // TODO: can this class be made static?
     internal class Protocol
     {
         private static readonly ILogger _log = Logger.GetLogger();
@@ -103,14 +104,14 @@ namespace kafka4net.Protocols
             
             // Detect disconnected server. Wait no less than 5sec. 
             // If wait time exceed wait time + 3sec, consider it a timeout too
-            var timeout = Math.Max(5000, req.MaxWaitTime + 3000);
-            var cancel = new CancellationTokenSource(timeout);
+            //var timeout = Math.Max(5000, req.MaxWaitTime + 3000);
+            //var cancel = new CancellationTokenSource(timeout);
 
             var tcp = await conn.GetClientAsync();
             var response = await conn.Correlation.SendAndCorrelateAsync(
                 id => Serializer.Serialize(req, id),
                 Serializer.DeserializeFetchResponse,
-                tcp, cancel.Token);
+                tcp, /*cancel.Token*/ CancellationToken.None);
 
             if(response.Topics.Length > 0 && _log.IsDebugEnabled)
                 _log.Debug("Got fetch response from {0} Response: {1}", conn, response);
