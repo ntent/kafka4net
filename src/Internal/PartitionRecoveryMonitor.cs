@@ -3,6 +3,7 @@ using kafka4net.Metadata;
 using kafka4net.Protocols;
 using kafka4net.Protocols.Requests;
 using kafka4net.Protocols.Responses;
+using kafka4net.Tracing;
 using kafka4net.Utils;
 using System;
 using System.Collections.Generic;
@@ -47,6 +48,7 @@ namespace kafka4net.Internal
             _id = Interlocked.Increment(ref _idGenerator);
 
             _log.Debug("Created PartitionRecoveryMonitor {0}", this);
+            EtwTrace.Log.RecoveryMonitor_Create(_id);
 
             // listen for new brokers
             _subscriptionsDisposable.Add(cluster.NewBrokers.Subscribe(
@@ -78,6 +80,7 @@ namespace kafka4net.Internal
                         if (_failedList.ContainsKey(key))
                         {
                             _log.Debug("#{0} Partition {1}-{2} is recovered. Removing from failed list.", _id, state.Topic, state.PartitionId);
+                            EtwTrace.Log.RecoveryMonitor_PartitionRecovered(_id, state.Topic, state.PartitionId);
                             _failedList.Remove(key);
                         }
                     }
@@ -86,11 +89,13 @@ namespace kafka4net.Internal
                         if (!_failedList.ContainsKey(key))
                         {
                             _log.Debug("#{0} Partition {1}-{2} is in error state {3}. Adding to failed list.", _id, state.Topic, state.PartitionId, state.ErrorCode);
+                            EtwTrace.Log.RecoveryMonitor_PartitionFailed(_id, state.Topic, state.PartitionId, (int)state.ErrorCode);
                             _failedList.Add(key, state.ErrorCode);
                         }
                         else
                         {
                             _log.Debug("#{0} Partition {1}-{2} is updated but still errored. Updating ErrorCode in failed list.", _id, state.Topic, state.PartitionId);
+                            EtwTrace.Log.RecoveryMonitor_PartitionFailedAgain(_id, state.Topic, state.PartitionId, (int)state.ErrorCode);
                             _failedList[key] = state.ErrorCode;
                         }
                     }
@@ -101,6 +106,7 @@ namespace kafka4net.Internal
         private async Task RecoveryLoop(BrokerMeta broker)
         {
             _log.Debug("{0} Starting recovery loop on broker: {1}", this, broker);
+            EtwTrace.Log.RecoveryMonitor_RecoveryLoopStarted(_id, broker.Host, broker.Port, broker.NodeId);
             while (!_cancel.IsCancellationRequested)
             {
                 //_log.Debug("RecoveryLoop iterating {0}", this);
@@ -110,6 +116,7 @@ namespace kafka4net.Internal
                 //
                 if (_failedList.Count == 0)
                 {
+                    // TODO: await for the list to receive 1st item instead of looping
                     await Task.Delay(1000, _cancel);
                     continue;
                 }
@@ -120,11 +127,14 @@ namespace kafka4net.Internal
                 MetadataResponse response;
                 try
                 {
+                    EtwTrace.Log.RecoveryMonitor_SendingPing(_id, broker.Host, broker.Port);
                     response = await _protocol.MetadataRequest(new TopicRequest { Topics = _failedList.Keys.Select(t => t.Item1).Distinct().ToArray() }, broker);
+                    EtwTrace.Log.RecoveryMonitor_PingResponse(_id, broker.Host, broker.Port);
                 }
                 catch (Exception ex)
                 {
                     _log.Debug("PartitionRecoveryMonitor error. Broker: {0}, error: {1}", broker, ex.Message);
+                    EtwTrace.Log.RecoveryMonitor_PingFailed(_id, broker.Host, broker.Port, ex.Message);
                     response = null;
                 }
 
@@ -178,6 +188,18 @@ namespace kafka4net.Internal
                     }
                 }
 
+                if(EtwTrace.Log.IsEnabled()) 
+                {
+                    if (healedPartitions.Length != 0)
+                    {
+                        EtwTrace.Log.RecoveryMonitor_PossiblyHealedPartitions(_id, healedPartitions.Length);
+                    }
+                    else
+                    {
+                        EtwTrace.Log.RecoveryMonitor_NoHealedPartitions(_id);
+                    }
+                }
+
                 //
                 // Make sure that brokers for healed partitions are accessible, because it is possible that
                 // broker B1 said that partition belongs to B2 and B2 can not be reach.
@@ -197,7 +219,9 @@ namespace kafka4net.Internal
 
                         try
                         {
+                            EtwTrace.Log.RecoveryMonitor_CheckingBrokerAccessibility(_id, newBroker.Host, newBroker.Port, newBroker.NodeId);
                             MetadataResponse response2 = await _protocol.MetadataRequest(new TopicRequest { Topics = brokerGrp.Select(g=>g.Item1).Distinct().ToArray() }, newBroker);
+                            EtwTrace.Log.RecoveryMonitor_BrokerIsAccessible(_id, newBroker.Host, newBroker.Port, newBroker.NodeId);
 
                             // success!
                             // raise new metadata event 
@@ -206,7 +230,7 @@ namespace kafka4net.Internal
                             // broadcast only healed partitions which belong to newBroker
                             var filteredResponse = new MetadataResponse
                             {
-                                Brokers = response2.Brokers,
+                                Brokers = response2.Brokers, // we may broadcast more than 1 broker, but it should be ok because discovery of new broker metadata does not cause any actions
                                 Topics = response2.Topics.Select(t => new TopicMeta { 
                                     TopicErrorCode = t.TopicErrorCode,
                                     TopicName = t.TopicName,
@@ -216,6 +240,9 @@ namespace kafka4net.Internal
                             };
                             
                             _log.Debug("Broadcasting filtered response {0}", filteredResponse);
+                            if(EtwTrace.Log.IsEnabled())
+                                foreach(var topic in filteredResponse.Topics)
+                                    EtwTrace.Log.RecoveryMonitor_HealedPartitions(_id, newBroker.Host, newBroker.Port, newBroker.NodeId, topic.TopicName, topic.Partitions.Length);
                             _newMetadataEvent.OnNext(filteredResponse);
 
                         }
@@ -229,6 +256,7 @@ namespace kafka4net.Internal
             }
 
             _log.Debug("RecoveryLoop exiting. Setting completion");
+            EtwTrace.Log.RecoveryMonitor_RecoveryLoopStop(_id);
         }
 
         public override string ToString()

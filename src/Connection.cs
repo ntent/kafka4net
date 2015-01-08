@@ -62,23 +62,25 @@ namespace kafka4net
             if (_closed)
                 throw new ApplicationException("Attempt to reuse connection which is not supposed to be used anymore");
 
+            //EtwTrace.Log.ConnectionWaitingForLock(_host, _port);
             await _connectionLock.WaitAsync();
+            //EtwTrace.Log.ConnectionGotLock(_host, _port);
 
             try
             {
                 if (_client != null && !_client.Connected)
                 {
                     _log.Debug("Replacing closed connection {0}:{1} with a new one", _host, _port);
+                    EtwTrace.Log.ConnectionReplaceClosedClient(_host, _port);
                     _client = null;
                 }
 
                 if (_client == null)
                 {
-
                     _client = new TcpClient();
-                    ConnectionEtw.Log.Connecting(_host, _port);
+                    EtwTrace.Log.ConnectionConnecting(_host, _port);
                     await _client.ConnectAsync(_host, _port);
-                    ConnectionEtw.Log.Connected(_host, _port);
+                    EtwTrace.Log.ConnectionConnected(_host, _port);
 
                     var currentClient = _client;
                     Correlation = new ResponseCorrelation(async e => 
@@ -87,7 +89,7 @@ namespace kafka4net
                         _onError(e);
                     }, _host+":"+_port+" conn object hash: " + GetHashCode());
                     
-                    // If there wasa a prior connection and loop task, cancel them before creating a new one.
+                    // If there was a prior connection and loop task, cancel them before creating a new one.
                     if (_loopTask != null && _loopTaskCancel != null)
                     {
                         _loopTaskCancel.Cancel();
@@ -106,10 +108,10 @@ namespace kafka4net
                             try
                             {
                                 if (_client != null)
-                            {
-                                    _client.Close();
-                                    ConnectionEtw.Log.Disconnected(_host, _port);
-                            }
+                                {
+                                        _client.Close();
+                                        EtwTrace.Log.ConnectionDisconnected(_host, _port);
+                                }
                             }
                             // ReSharper disable once EmptyGeneralCatchClause
                             catch {}
@@ -134,6 +136,7 @@ namespace kafka4net
             finally
             {
                 _connectionLock.Release();
+                //EtwTrace.Log.ConnectionLockRelease(_host, _port);
             }
 
             return _client;
@@ -144,6 +147,12 @@ namespace kafka4net
             return string.Format("Connection: {0}:{1}", _host, _port);
         }
 
+        /// <summary>
+        /// If correlation loop experienced an error, data in Tcp stream become unreliable because we've lost synchronization.
+        /// So it is needed to close socket and reopen a new one later to recover from error.
+        /// </summary>
+        /// <param name="tcp"></param>
+        /// <returns></returns>
         async Task MarkSocketAsFailed(TcpClient tcp)
         {
             await _connectionLock.WaitAsync();
@@ -155,16 +164,22 @@ namespace kafka4net
                 _log.Debug("Marking connection as failed. {0}", this);
 
                 if (_client != null)
+                {
                     try
                     {
                         if (_loopTaskCancel != null)
+                        {
+                            EtwTrace.Log.Connection_MarkSocketAsFailed_CorrelationLoopCancelling(_host, _port);
                             _loopTaskCancel.Cancel();
+                        }
+                        EtwTrace.Log.Connection_MarkSocketAsFailed_TcpClosing(_host, _port);
                         _client.Close();
                     }
                     // ReSharper disable once EmptyGeneralCatchClause
                     catch { /*empty*/ }
-                    finally { ConnectionEtw.Log.Disconnected(_host, _port); }
-                _client = null;
+                    finally { EtwTrace.Log.ConnectionDisconnected(_host, _port); }
+                    _client = null;
+                }
             }
             finally
             {
@@ -172,6 +187,9 @@ namespace kafka4net
             }
         }
 
+        /// <summary>
+        /// Is called when Cluster is shut down, or when seed broker is replaced with a permanent one.
+        /// </summary>
         public async Task ShutdownAsync()
         {
             _closed = true;

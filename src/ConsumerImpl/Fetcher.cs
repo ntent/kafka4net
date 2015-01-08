@@ -12,6 +12,7 @@ using System.Reactive.Disposables;
 using System.Reactive.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using kafka4net.Tracing;
 using kafka4net.Utils;
 
 namespace kafka4net.ConsumerImpl
@@ -63,6 +64,7 @@ namespace kafka4net.ConsumerImpl
 
             if(_log.IsDebugEnabled)
                 _log.Debug("Created new fetcher #{0} for broker: {1}", _id, _broker);
+            EtwTrace.Log.FetcherStart(_id, consumerConfig.Topic);
         }
 
         public override string ToString()
@@ -85,6 +87,7 @@ namespace kafka4net.ConsumerImpl
         public IDisposable Subscribe(TopicPartition topicPartition)
         {
             _topicPartitions.Add(topicPartition);
+            EtwTrace.Log.FetcherPartitionSubscribed(_id, topicPartition.PartitionId);
 
             // cleanup
             var topicPartitionCleanup = Disposable.Create(() => _topicPartitions.Remove(topicPartition));
@@ -118,7 +121,6 @@ namespace kafka4net.ConsumerImpl
         internal IObservable<ReceivedMessage> ReceivedMessages { get; private set; }
         private void BuildReceivedMessages() {
             ReceivedMessages = _fetchResponses.SelectMany(response => {
-                //_log.Debug("#{0} Received fetch response", _id);
                 return (
                     from topic in response.Topics
                     from part in topic.Partitions where part.ErrorCode == ErrorCode.NoError
@@ -131,7 +133,8 @@ namespace kafka4net.ConsumerImpl
                         Value = msg.Value,
                         Offset = msg.Offset
                     });
-            })
+            }).
+            Do(msg => EtwTrace.Log.FetcherMessage(_id, msg.Key != null ? msg.Key.Length : -1, msg.Value != null ? msg.Value.Length : -1, msg.Offset, msg.Partition, msg.Topic))
             .Do(
                 _ => { }, 
                 err => _log.Warn("Error in ReceivedMessages stream from broker {0}. Message: {1}", _broker, err.Message), 
@@ -178,7 +181,9 @@ namespace kafka4net.ConsumerImpl
                     if (fetchRequest.Topics.Length == 0)
                     {
                         _log.Debug("#{0} No partitions subscribed to fetcher. Waiting for _wakeupSignal signal", _id);
+                        EtwTrace.Log.FetcherSleep(_id);
                         await _wakeupSignal.FirstAsync();
+                        EtwTrace.Log.FetcherWakeup(_id);
                         
                         if(_cancel.IsCancellationRequested)
                         {
@@ -194,8 +199,9 @@ namespace kafka4net.ConsumerImpl
                     FetchResponse fetch;
                     try
                     {
-                        
+                        EtwTrace.Log.FetcherFetchRequest(_id, fetchRequest.Topics.Length, fetchRequest.Topics.Sum(td => td.Partitions.Length), _broker.Host, _broker.Port, _broker.NodeId);
                         fetch = await _protocol.Fetch(fetchRequest, _broker.Conn);
+                        EtwTrace.Log.FetcherFetchResponse(_id);
 
                         // if any TopicPartitions have an error, fail them with the Cluster.
                         fetch.Topics.SelectMany(t => t.Partitions.Select(p => new PartitionStateChangeEvent(t.Topic, p.Partition, p.ErrorCode)))

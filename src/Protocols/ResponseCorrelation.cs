@@ -1,12 +1,14 @@
 ﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics.Tracing;
 using System.IO;
 using System.Linq;
 using System.Net.Sockets;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using kafka4net.Tracing;
 using kafka4net.Utils;
 
 namespace kafka4net.Protocols
@@ -20,11 +22,13 @@ namespace kafka4net.Protocols
         private static readonly ILogger _log = Logger.GetLogger();
         readonly string _id;
         private CancellationToken _cancellation;
+        static readonly EtwTrace _etw = EtwTrace.Log;
 
         public ResponseCorrelation(Action<Exception> onError, string id = "")
         {
             _onError = onError;
             _id = id;
+            _etw.CorrelationCreate();
         }
 
         internal async Task CorrelateResponseLoop(TcpClient client, CancellationToken cancel)
@@ -33,13 +37,15 @@ namespace kafka4net.Protocols
             {
                 _cancellation = cancel;
                 _log.Debug("Starting reading loop from socket. {0}", _id);
-                // TODO: if corrup message, dump bin log of 100 bytes for further investigation
+                _etw.CorrelationStart();
+
                 while (client.Connected && !cancel.IsCancellationRequested)
                 {
                     try
                     {
                         // read message size
                         var buff = new byte[4];
+                        _etw.CorrelationReadingMessageSize();
                         var read = await client.GetStream().ReadAsync(buff, 0, 4, cancel);
                         if (cancel.IsCancellationRequested)
                         {
@@ -51,32 +57,41 @@ namespace kafka4net.Protocols
                         if (read == 0)
                         {
                             _log.Info("Server closed connection. {0}", _id);
+                            _etw.CorrelationServerClosedConnection();
                             client.Close();
                             return;
                         }
+
                         var size = BigEndianConverter.ToInt32(buff);
+                        _etw.CorrelationReadMessageSize(size);
                         // read message body
+                        // TODO: size sanity check. What is the reasonable max size?
                         var body = new byte[size];
                         var pos = 0;
                         var left = size;
                         do
                         {
+                            _etw.Correlation_ReadingBodyChunk(left);
                             read = await client.GetStream().ReadAsync(body, pos, left, cancel);
                             if (read == 0)
                             {
                                 _log.Info("Server closed connection. {0}", _id);
+                                _etw.CorrelationServerClosedConnection();
                                 client.Close();
                                 return;
                             }
                             pos += read;
                             left -= read;
+                            _etw.CorrelationReadBodyChunk(read, left);
                         } while (left > 0);
+                        _etw.CorrelationReadBody(size);
 
                         try
                         {
                             int correlationId = -1;
                             // TODO: check read==size && read > 4
                             correlationId = BigEndianConverter.ToInt32(body);
+                            _etw.CorrelationReceivedCorrelationId(correlationId);
                             //_log.Debug("<-{0}\n {1}", correlationId, FormatBytes(body));
                             //_log.Debug("<-{0}", correlationId);
 
@@ -89,11 +104,15 @@ namespace kafka4net.Protocols
                                 _log.Error("Unknown correlationId: " + correlationId);
                                 continue;
                             }
+                            _etw.CorrelationExecutingHandler();
                             handler(body, null);
+                            _etw.CorrelationExecutedHandler();
                         }
                         catch (Exception ex)
                         {
-                            _log.Error(ex, "Error with handling message. Message bytes:\r\n{0}", FormatBytes(body));
+                            var error = string.Format("Error with handling message. Message bytes:\r\n{0}", FormatBytes(body));
+                            _etw.CorrelationError(ex.Message + " " + error);
+                            _log.Error(ex, error);
                             throw;
                         }
                     }
@@ -121,6 +140,7 @@ namespace kafka4net.Protocols
                 }
 
                 _log.Debug("Finished reading loop from socket. {0}", _id);
+                EtwTrace.Log.CorrelationComplete();
             }
             catch (Exception e)
             {
@@ -163,6 +183,7 @@ namespace kafka4net.Protocols
                 var buff = serialize(correlationId);
                 //_log.Debug("{0}->\n{1}", correlationId, FormatBytes(buff));
                 //_log.Debug("{0}->", correlationId);
+                _etw.CorrelationWritingMessage(correlationId, buff.Length);
                 await tcp.GetStream().WriteAsync(buff, 0, buff.Length, cancel);
             }
             catch (Exception e)
