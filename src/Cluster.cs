@@ -615,11 +615,15 @@ namespace kafka4net
             // remove old seeds which have been resolved
             _metadata.Brokers = _metadata.Brokers.Except(resolvedSeedBrokers.Select(b => b.seed)).ToArray();
 
-            newBrokers/*.Where(b => b.Conn == null)*/.ForEach(b => b.Conn = new Connection(b.Host, b.Port, e => HandleTransportError(e, b)));
+            newBrokers.ForEach(b => b.Conn = new Connection(b.Host, b.Port, e => HandleTransportError(e, b)));
             _metadata.Brokers = _metadata.Brokers.Concat(newBrokers).ToArray();
 
             // Close old seed connection and make sure nobody can use it anymore
-            resolvedSeedBrokers.ForEach(old => old.seed.Conn.ShutdownAsync());
+            resolvedSeedBrokers.ForEach(old =>
+            {
+                _log.Debug("Closing seed connection because found brokerId {0} NodeId: {1}", old.seed.Conn, old.resolved.NodeId);
+                old.seed.Conn.ShutdownAsync();
+            });
 
             RebuildBrokerIndexes(_metadata);
 
