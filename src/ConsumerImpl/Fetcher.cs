@@ -80,7 +80,7 @@ namespace kafka4net.ConsumerImpl
 
         /// <summary>
         /// Handles the subscription of a new TopicPartition to this fetcher.
-        /// Keeps track of the subscribed partitions in order to not fetch messages if the FlowControlState is Off.
+        /// Keeps track of the subscribed partitions in order to not fetch messages if the FlowControlState is Closed.
         /// </summary>
         /// <param name="topicPartition"></param>
         /// <returns></returns>
