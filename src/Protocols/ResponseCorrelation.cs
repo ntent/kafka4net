@@ -31,6 +31,30 @@ namespace kafka4net.Protocols
             _etw.CorrelationCreate();
         }
 
+        static async Task<int> ReadBuffer(TcpClient client, byte[] buff, int len, CancellationToken cancel)
+        {
+            var pos = 0;
+            var left = len;
+            do
+            {
+                _etw.Correlation_ReadingBodyChunk(left);
+                var read = await client.GetStream().ReadAsync(buff, pos, left, cancel);
+
+                if (read == 0)
+                {
+                    _log.Info("Server closed connection");
+                    _etw.CorrelationServerClosedConnection();
+                    throw new Exception("Server closed connection");
+                }
+
+                pos += read;
+                left -= read;
+                _etw.CorrelationReadBodyChunk(read, left);
+            } while (left > 0);
+
+            return pos;
+        }
+
         internal async Task CorrelateResponseLoop(TcpClient client, CancellationToken cancel)
         {
             try
@@ -46,44 +70,19 @@ namespace kafka4net.Protocols
                         // read message size
                         var buff = new byte[4];
                         _etw.CorrelationReadingMessageSize();
-                        var read = await client.GetStream().ReadAsync(buff, 0, 4, cancel);
+                        await ReadBuffer(client, buff, 4, cancel);
                         if (cancel.IsCancellationRequested)
                         {
-                            _log.Debug("Stopped reading from {0} because socket cancelled", _id);
-                            return;
-                        }
-
-                        // TODO: what to do if read<4 ? Recycle connection?
-                        if (read == 0)
-                        {
-                            _log.Info("Server closed connection. {0}", _id);
-                            _etw.CorrelationServerClosedConnection();
-                            client.Close();
+                            _log.Debug("Stopped reading from {0} because cancell requested", _id);
                             return;
                         }
 
                         var size = BigEndianConverter.ToInt32(buff);
                         _etw.CorrelationReadMessageSize(size);
-                        // read message body
+
                         // TODO: size sanity check. What is the reasonable max size?
                         var body = new byte[size];
-                        var pos = 0;
-                        var left = size;
-                        do
-                        {
-                            _etw.Correlation_ReadingBodyChunk(left);
-                            read = await client.GetStream().ReadAsync(body, pos, left, cancel);
-                            if (read == 0)
-                            {
-                                _log.Info("Server closed connection. {0}", _id);
-                                _etw.CorrelationServerClosedConnection();
-                                client.Close();
-                                return;
-                            }
-                            pos += read;
-                            left -= read;
-                            _etw.CorrelationReadBodyChunk(read, left);
-                        } while (left > 0);
+                        await ReadBuffer(client, body, size, cancel);
                         _etw.CorrelationReadBody(size);
 
                         try
