@@ -100,10 +100,10 @@ namespace kafka4net.Tracing
         }
 
         [Event(5, Task = Tasks.Fetcher, Opcode = Opcodes.Message)]
-        public void FetcherMessage(int id, int keyLen, int valueLen, long offset, int partition, string topic)
+        public void FetcherMessage(int id, int keyLen, int valueLen, long offset, int partition)
         {
             if (IsEnabled())
-                Log.WriteEvent(5, id, keyLen, valueLen, offset, partition, topic);
+                Log.WriteEvent(5, id, keyLen, valueLen, offset, partition);
         }
 
         [Event(6, Task = Tasks.Fetcher, Opcode = Opcodes.Sleep)]

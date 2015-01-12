@@ -134,7 +134,7 @@ namespace kafka4net.ConsumerImpl
                         Offset = msg.Offset
                     });
             }).
-            Do(msg => EtwTrace.Log.FetcherMessage(_id, msg.Key != null ? msg.Key.Length : -1, msg.Value != null ? msg.Value.Length : -1, msg.Offset, msg.Partition, msg.Topic))
+            Do(msg => EtwTrace.Log.FetcherMessage(_id, msg.Key != null ? msg.Key.Length : -1, msg.Value != null ? msg.Value.Length : -1, msg.Offset, msg.Partition))
             .Do(
                 _ => { }, 
                 err => _log.Warn("Error in ReceivedMessages stream from broker {0}. Message: {1}", _broker, err.Message), 
