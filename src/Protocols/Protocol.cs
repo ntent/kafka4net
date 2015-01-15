@@ -12,6 +12,7 @@ using System.Threading.Tasks;
 using kafka4net.Metadata;
 using kafka4net.Protocols.Requests;
 using kafka4net.Protocols.Responses;
+using kafka4net.Tracing;
 using kafka4net.Utils;
 
 namespace kafka4net.Protocols
@@ -20,27 +21,12 @@ namespace kafka4net.Protocols
     internal class Protocol
     {
         private static readonly ILogger _log = Logger.GetLogger();
-
         private readonly Cluster _cluster;
+        //static readonly EtwTrace _etw = EtwTrace.Log;
 
         internal Protocol(Cluster cluster)
         {
             _cluster = cluster;
-        }
-
-        internal async Task<ProducerResponse> ProduceRaw(ProduceRequest request, CancellationToken cancel)
-        {
-            var conn = request.Broker.Conn;
-            var client = await conn.GetClientAsync();
-            var response = await conn.Correlation.SendAndCorrelateAsync(
-                id => Serializer.Serialize(request, id),
-                Serializer.GetProducerResponse,
-                client, cancel);
-            
-            if(response.Topics.Any(t => t.Partitions.Any(p => p.ErrorCode != ErrorCode.NoError)))
-                _log.Debug("_");
-
-            return response;
         }
 
         internal async Task<ProducerResponse> Produce(ProduceRequest request)

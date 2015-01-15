@@ -6,6 +6,7 @@ using System.Text;
 using kafka4net.Metadata;
 using kafka4net.Protocols.Requests;
 using kafka4net.Protocols.Responses;
+using kafka4net.Tracing;
 using kafka4net.Utils;
 
 namespace kafka4net.Protocols
@@ -27,7 +28,6 @@ namespace kafka4net.Protocols
         static Serializer()
         {
             var ms = new MemoryStream();
-            //Write(ms, "kafka-sharp");
             Write(ms, "kafka4net");
             _clientId = ms.ToArray();
         }
@@ -47,7 +47,7 @@ namespace kafka4net.Protocols
         public static MetadataResponse DeserializeMetadataResponse(byte[] body)
         {
             var stream = new MemoryStream(body);
-            stream.Position += 4; // skip body
+            stream.Position += 4; 
             var ret = new MetadataResponse();
             
             var count = BigEndianConverter.ReadInt32(stream);
