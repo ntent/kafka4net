@@ -21,7 +21,11 @@ namespace tests
             {"192.168.56.10","broker1"},
             {"192.168.56.20","broker2"},
             {"192.168.56.30","broker3"},
-        }; 
+        };
+
+        static readonly string _kafkaVersion = File.ReadLines(
+            Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..\\..\\..\\vagrant\\scripts\\kafka_version.txt")
+        ).First();
 
         public static string GetBrokerNameFromIp(string ip)
         {
@@ -34,7 +38,7 @@ namespace tests
         public static void CreateTopic(string topicName, int numPartitions, int replicationFactor)
         {
             _log.Info("Creating topic: '{0}'", topicName); 
-            const string createTopicScript = "ssh -c '/opt/kafka_2.10-0.8.1.1/bin/kafka-topics.sh --create --topic {0} --partitions {1} --replication-factor {2} --zookeeper 192.168.56.2' broker1";
+            string createTopicScript = "ssh -c '/opt/kafka_2.10-"+_kafkaVersion+"/bin/kafka-topics.sh --create --topic {0} --partitions {1} --replication-factor {2} --zookeeper 192.168.56.2' broker1";
             Vagrant(string.Format(createTopicScript, topicName, numPartitions, replicationFactor));
             _log.Info("Created topic: '{0}'", topicName);
         }
@@ -42,7 +46,7 @@ namespace tests
         public static void RebalanceLeadership()
         {
             _log.Info("Rebalancing Leadership");
-            const string rebalanceScript = "ssh -c '/opt/kafka_2.10-0.8.1.1/bin/kafka-preferred-replica-election.sh --zookeeper 192.168.56.2' broker1";
+            string rebalanceScript = "ssh -c '/opt/kafka_2.10-"+_kafkaVersion+"/bin/kafka-preferred-replica-election.sh --zookeeper 192.168.56.2' broker1";
             Vagrant(rebalanceScript);
             _log.Info("Rebalanced Leadership");
         }

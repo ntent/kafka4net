@@ -2,12 +2,7 @@
 
 # Executed as root
 
-apt-get update
-apt-get install -y openjdk-7-jre-headless
-
-kafka_url='http://www.eng.lsu.edu/mirrors/apache/kafka/0.8.1.1/kafka_2.10-0.8.1.1.tgz'
-kafka='kafka_2.10-0.8.1.1'
-kafka_bin="$kafka.tgz"
+. /vagrant/scripts/env.sh
 
 if [ ! -d "/opt/$kafka" ]; then
   mkdir -p /vagrant/files
