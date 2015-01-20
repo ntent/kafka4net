@@ -129,8 +129,9 @@ namespace tests
             //
             var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, maxWaitTimeMs: 1000, minBytesPerFetch: 1, startLocation: ConsumerStartLocation.TopicHead));
             await consumer.ConnectAsync();
+            var msgs = consumer.OnMessageArrived.Publish().RefCount();
             var receivedTxt = new List<string>();
-            var consumerSubscription = consumer.OnMessageArrived.
+            var consumerSubscription = msgs.
                 Select(m => Encoding.UTF8.GetString(m.Value)).
                 ObserveOn(SynchronizationContext.Current). // protect receivedTxt
                 Do(m => _log.Info("Received {0}", m)). 
@@ -138,7 +139,7 @@ namespace tests
                 Subscribe();
 
             _log.Debug("Waiting for consumer");
-            await consumer.OnMessageArrived.Take(producedCount).TakeUntil(DateTimeOffset.Now.AddSeconds(5)).LastOrDefaultAsync().ToTask();
+            await msgs.Take(producedCount).TakeUntil(DateTimeOffset.Now.AddSeconds(5)).LastOrDefaultAsync().ToTask();
 
             Assert.AreEqual(producedCount, receivedTxt.Count, "Did not received all messages");
             Assert.IsTrue(receivedTxt.All(m => m == "la-la-la"), "Unexpected message content");
@@ -1153,8 +1154,9 @@ namespace tests
         {
             var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, "part33"));
             await consumer.ConnectAsync();
-            var t1 = consumer.OnMessageArrived.TakeUntil(DateTimeOffset.Now.AddSeconds(5)).LastOrDefaultAsync().ToTask();
-            var t2 = consumer.OnMessageArrived.TakeUntil(DateTimeOffset.Now.AddSeconds(6)).LastOrDefaultAsync().ToTask();
+            var msgs = consumer.OnMessageArrived.Publish().RefCount();
+            var t1 = msgs.TakeUntil(DateTimeOffset.Now.AddSeconds(5)).LastOrDefaultAsync().ToTask();
+            var t2 = msgs.TakeUntil(DateTimeOffset.Now.AddSeconds(6)).LastOrDefaultAsync().ToTask();
             await Task.WhenAll(new[] { t1, t2 });
             await consumer.CloseAsync(TimeSpan.FromSeconds(2));
         }
