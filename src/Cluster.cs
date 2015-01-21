@@ -95,7 +95,7 @@ namespace kafka4net
             ).ForEach(p =>
             {
                 _log.Debug("Marking topic {2} partition {1} with transport error for broker {0}", broker, p.part, p.TopicName);
-                p.part.ErrorCode = ErrorCode.TransportError;
+                p.part.RawErrorCode = ErrorCode.TransportError;
                 _partitionStateChangesSubject.OnNext(new PartitionStateChangeEvent(p.TopicName, p.part.Id, ErrorCode.TransportError));
             });
         }
@@ -584,8 +584,8 @@ namespace kafka4net
                 select new { oldPart, updatedPart }
             ).ForEach(_ =>
             {
-                if (_.oldPart.ErrorCode != _.updatedPart.ErrorCode)
-                    _.oldPart.ErrorCode = _.updatedPart.ErrorCode;
+                if (_.oldPart.DifferentErrorCode(_.updatedPart))
+                    _.oldPart.RawErrorCode = _.updatedPart.RawErrorCode;
                 if (!_.oldPart.Isr.SequenceEqual(_.updatedPart.Isr))
                     _.oldPart.Isr = _.updatedPart.Isr;
                 if (_.oldPart.Leader != _.updatedPart.Leader)
@@ -632,7 +632,7 @@ namespace kafka4net
 
             // broadcast the current partition state for all partitions.
             topicMeta.Topics.
-                SelectMany(t => t.Partitions.Select(part => new PartitionStateChangeEvent(t.TopicName, part.Id, part.ErrorCode))).
+                SelectMany(t => t.Partitions.Select(part => new PartitionStateChangeEvent(t.TopicName, part.Id, part.RawErrorCode))).
                 ForEach(tp => _partitionStateChangesSubject.OnNext(tp));
 
         }

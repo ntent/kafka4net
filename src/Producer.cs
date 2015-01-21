@@ -141,7 +141,7 @@ namespace kafka4net
                                 {
                                     queue = new PartitionQueueInfo(Configuration.SendBuffersInitialSize) { Partition = batch.Key };
                                     _allPartitionQueues.Add(batch.Key, queue);
-                                    queue.IsOnline = topicPartitions.First(p => p.Id == batch.Key).ErrorCode == ErrorCode.NoError;
+                                    queue.IsOnline = topicPartitions.First(p => p.Id == batch.Key).Success();
                                     _log.Debug("{0} added new partition queue", this);
                                 }
 

@@ -153,7 +153,7 @@ namespace kafka4net.Internal
                     let key = new Tuple<string, int>(responseTopic.TopicName, responsePart.Id)
                     where 
                         responseTopic.TopicErrorCode == ErrorCode.NoError 
-                        && responsePart.ErrorCode == ErrorCode.NoError 
+                        && responsePart.Success()
                         && _failedList.ContainsKey(key)
                     select Tuple.Create(responseTopic.TopicName, responsePart.Id, responsePart.Leader)
                     ).ToArray();
@@ -165,7 +165,7 @@ namespace kafka4net.Internal
                         _log.Debug("Out of {0} partitions returned from broker {2}, none of the {3} errored partitions are healed. Current partition states for errored partitions: [{1}]",
                             response.Topics.SelectMany(t => t.Partitions).Count(),
                             string.Join(",", response.Topics
-                                .SelectMany(t => t.Partitions.Select(p => new { t.TopicName, t.TopicErrorCode, PartitionId = p.Id, PartitionErrorCode = p.ErrorCode }))
+                                .SelectMany(t => t.Partitions.Select(p => new { t.TopicName, t.TopicErrorCode, PartitionId = p.Id, PartitionErrorCode = p.RawErrorCode }))
                                 .Where(p => _failedList.ContainsKey(new Tuple<string, int>(p.TopicName, p.PartitionId)))
                                 .Select(p => string.Format("{0}:{1}:{2}:{3}", p.TopicName, p.TopicErrorCode, p.PartitionId, p.PartitionErrorCode))),
                             broker,
