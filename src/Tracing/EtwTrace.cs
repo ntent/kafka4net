@@ -60,6 +60,11 @@ namespace kafka4net.Tracing
             public const EventOpcode BrokerIsAccessible = (EventOpcode)48;
             public const EventOpcode HealedPartitions = (EventOpcode)49;
             public const EventOpcode RecoveryLoopStop = (EventOpcode)50;
+            
+            // Protcol
+            public const EventOpcode MetadaaRequest = (EventOpcode)51;
+            public const EventOpcode MetadaaResponse = (EventOpcode)52;
+            
         }
 
         public class Tasks
@@ -68,6 +73,12 @@ namespace kafka4net.Tracing
             public const EventTask Connection = (EventTask)2;
             public const EventTask Correlation = (EventTask)3;
             public const EventTask RecoveryMonitor = (EventTask)4;
+            public const EventTask Protocol = (EventTask)5;
+        }
+
+        public class Keywords
+        {
+            public const EventKeywords DataDump = (EventKeywords)0x1;
         }
 
         #region Fetcher
@@ -386,10 +397,10 @@ namespace kafka4net.Tracing
         }
 
         [Event(313, Task = Tasks.RecoveryMonitor, Opcode = Opcodes.HealedPartitions)]
-        public void RecoveryMonitor_HealedPartitions(int monitorId, string host, int port, int nodeId, string topicName, int count)
+        public void RecoveryMonitor_HealedPartitions(int monitorId, string host, int port, int nodeId, string topicName, string partitions)
         {
             if (IsEnabled())
-                Log.WriteEvent(313, monitorId, host, port, nodeId, topicName, count);
+                Log.WriteEvent(313, monitorId, host, port, nodeId, topicName, partitions);
         }
 
         [Event(314, Task = Tasks.RecoveryMonitor, Opcode = Opcodes.RecoveryLoopStop)]
@@ -397,6 +408,22 @@ namespace kafka4net.Tracing
         {
             if (IsEnabled())
                 Log.WriteEvent(314, monitorId);
+        }
+        #endregion
+
+        #region Protocol
+        [Event(400, Task = Tasks.Protocol, Opcode = Opcodes.MetadaaRequest, Keywords = Keywords.DataDump)]
+        public void ProtocolMetadataRequest(string request)
+        {
+            if(IsEnabled())
+                Log.WriteEvent(400, request);
+        }
+
+        [Event(401, Task = Tasks.Protocol, Opcode = Opcodes.MetadaaResponse, Keywords = Keywords.DataDump)]
+        public void ProtocolMetadataResponse(string response, string host, int port, int nodeId)
+        {
+            if (IsEnabled())
+                Log.WriteEvent(401, response, host, port, nodeId);
         }
         #endregion
     }

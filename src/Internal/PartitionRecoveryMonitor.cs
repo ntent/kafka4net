@@ -242,7 +242,7 @@ namespace kafka4net.Internal
                             _log.Debug("Broadcasting filtered response {0}", filteredResponse);
                             if(EtwTrace.Log.IsEnabled())
                                 foreach(var topic in filteredResponse.Topics)
-                                    EtwTrace.Log.RecoveryMonitor_HealedPartitions(_id, newBroker.Host, newBroker.Port, newBroker.NodeId, topic.TopicName, topic.Partitions.Length);
+                                    EtwTrace.Log.RecoveryMonitor_HealedPartitions(_id, newBroker.Host, newBroker.Port, newBroker.NodeId, topic.TopicName, string.Join(",", topic.Partitions.Select(p => p.Id)));
                             _newMetadataEvent.OnNext(filteredResponse);
 
                         }

@@ -64,11 +64,26 @@ namespace kafka4net.Protocols
 
             //var tcp = await (broker != null ? broker.Conn.GetClientAsync() : _cluster.GetAnyClientAsync());
             _log.Debug("Sending MetadataRequest to {0}", tcp.Client.RemoteEndPoint);
+            if (EtwTrace.Log.IsEnabled())
+            {
+                EtwTrace.Log.ProtocolMetadataRequest(request.ToString());
+            }
 
-            return await conn.Correlation.SendAndCorrelateAsync(
+            var response = await conn.Correlation.SendAndCorrelateAsync(
                 id => Serializer.Serialize(request, id),
                 Serializer.DeserializeMetadataResponse,
                 tcp, CancellationToken.None);
+
+            if (EtwTrace.Log.IsEnabled())
+            {
+                EtwTrace.Log.ProtocolMetadataResponse(response.ToString(), 
+                    broker != null ? broker.Host : "", 
+                    broker != null ? broker.Port : -1,
+                    broker != null ? broker.NodeId : -1);
+            }
+
+
+            return response;
         }
 
         internal async Task<OffsetResponse> GetOffsets(OffsetRequest req, Connection conn)
