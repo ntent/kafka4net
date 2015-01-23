@@ -64,7 +64,11 @@ namespace kafka4net.Tracing
             // Protcol
             public const EventOpcode MetadaaRequest = (EventOpcode)51;
             public const EventOpcode MetadaaResponse = (EventOpcode)52;
-            
+
+            // Producer
+            public const EventOpcode PermanentFailure = (EventOpcode)53;
+            public const EventOpcode PermanentFailureDetails = (EventOpcode)54;
+            public const EventOpcode RecoverableErrors = (EventOpcode)55;
         }
 
         public class Tasks
@@ -74,6 +78,7 @@ namespace kafka4net.Tracing
             public const EventTask Correlation = (EventTask)3;
             public const EventTask RecoveryMonitor = (EventTask)4;
             public const EventTask Protocol = (EventTask)5;
+            public const EventTask Producer = (EventTask)6;
         }
 
         public class Keywords
@@ -424,6 +429,29 @@ namespace kafka4net.Tracing
         {
             if (IsEnabled())
                 Log.WriteEvent(401, response, host, port, nodeId);
+        }
+        #endregion
+
+        #region Producer 
+        [Event(500, Task = Tasks.Producer, Opcode = Opcodes.PermanentFailure, Level = EventLevel.Error)]
+        public void ProducerPermanentFailure(int producerId, int partitionCount)
+        {
+            if(IsEnabled())
+                Log.WriteEvent(500, producerId, partitionCount);
+        }
+
+        [Event(501, Task = Tasks.Producer, Opcode = Opcodes.PermanentFailureDetails, Level = EventLevel.Verbose, Keywords = Keywords.DataDump)]
+        public void ProducerPermanentFailureDetails(int producerId, string error)
+        {
+            if(IsEnabled())
+                Log.WriteEvent(501, producerId, error);
+        }
+
+        [Event(502, Task = Tasks.Producer, Opcode = Opcodes.RecoverableErrors, Level = EventLevel.Error)]
+        public void ProducerRecoverableErrors(int producerId, int partitionCount)
+        {
+            if(IsEnabled())
+                Log.WriteEvent(502, producerId, partitionCount);
         }
         #endregion
     }

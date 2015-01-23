@@ -133,9 +133,9 @@ namespace tests
             var receivedTxt = new List<string>();
             var consumerSubscription = msgs.
                 Select(m => Encoding.UTF8.GetString(m.Value)).
-                ObserveOn(SynchronizationContext.Current). // protect receivedTxt
+                Synchronize(). // protect receivedTxt
                 Do(m => _log.Info("Received {0}", m)). 
-                Do(m => receivedTxt.Add(m)).
+                Do(receivedTxt.Add).
                 Subscribe();
 
             _log.Debug("Waiting for consumer");
@@ -1095,7 +1095,10 @@ namespace tests
 
             var cluster = new Cluster(_seedAddresses);
             await cluster.ConnectAsync();
-            var producer = new Producer(cluster, new ProducerConfiguration(topic)) { OnSuccess = e => e.ForEach(sentEvents.OnNext) };
+            var producer = new Producer(cluster, new ProducerConfiguration(topic, maxMessageSetSizeInBytes: 1024*1024))
+            {
+                OnSuccess = e => e.ForEach(sentEvents.OnNext)
+            };
             await producer.ConnectAsync();
 
             // read offsets of empty queue
@@ -1119,7 +1122,7 @@ namespace tests
                 // NOTE that the configuration for the test machines through vagrant are set to 1MB rolling file segments
                 // so we need to generate large messages to force multiple segments to be created.
 
-                // send 100 messages
+                // send count messages
                 Enumerable.Range(1, count).
                     Select(_ => new Message { Value = new byte[1024] }).
                     ForEach(producer.Send);
@@ -1302,7 +1305,7 @@ namespace tests
 
         }
 
-        [Test]
+        [NUnit.Framework.Ignore]
         public async void SlowConsumer()
         {
             //

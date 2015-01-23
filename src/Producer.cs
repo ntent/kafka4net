@@ -7,6 +7,7 @@ using System.Reactive.Subjects;
 using System.Threading;
 using System.Threading.Tasks;
 using kafka4net.Internal;
+using kafka4net.Tracing;
 using kafka4net.Utils;
 
 namespace kafka4net
@@ -19,6 +20,7 @@ namespace kafka4net
         public string Topic { get { return Configuration.Topic; } }
         public Cluster Cluster { get { return _cluster; } }
 
+        // TODO: execute handlers safe. Possibly in the caller sync context
         public Action<Message[]> OnTempError;
         public Action<Exception, Message[]> OnPermError;
         public Action<Message[]> OnShutdownDirty;
@@ -362,54 +364,62 @@ namespace kafka4net
                         {
                             try
                             {
-                                var maxMessages = Configuration.MaxMessagesPerProduceRequest;
-                                var totalPending = brokerBatch.Queues.Sum(q => q.Queue.Size);
+                                //
+                                // Walk queuese in zig-zag manner from the tail towards the head until we are withing size limit
+                                // The point of zig-zag is fairness: if producing is slow, we do not want to keep sending only first 
+                                // partition in the queue while starving the last.
+                                //
+                                var maxSize = Configuration.MaxMessageSetSizeInBytes;
+                                var runningSize = 4; // array of messages len
+                                const int messageFixedSize =
+                                        8 + // offset
+                                        4 + // message size 
+                                        4 + // crc
+                                        1 + // magic
+                                        1 + // attributes
+                                        4 + // size of key array
+                                        4;  // size og value array
 
-                                if (_log.IsDebugEnabled)
-                                    _log.Debug("Sending {0} of {1} total messages pending for broker {2}.", Math.Min(maxMessages,totalPending), totalPending, brokerBatch.Leader);
-
-                                // traverse pending queues, taking what we can, and tracking "extra" to give to other partitions.
-                                // we will take all if we can, otherwise take only up to our "fair" share.
-                                // if there are less than maxMessages to be sent to this broker, just take all of them.
-                                var messages = new Message[Math.Min(maxMessages,totalPending)];
-                                var totalTaken = 0;
-                                var ration = maxMessages/brokerBatch.Queues.Length;
-                                var carryover = 0;
-                                var currentBatch = 0;
-
-                                brokerBatch.Queues.OrderBy(q=>q.Queue.Size).ForEach(q =>
+                                brokerBatch.Queues.ForEach(q => q.CountInProgress = 0);
+                                var queueCount = brokerBatch.Queues.Length;
+                                int finishedQueues=0;
+                                for (int i = 0; ; i=(i + 1) % queueCount)
                                 {
-                                    // take the lesser of our total size or the amount rationed to us.
-                                    var take = Math.Min(ration , q.Queue.Size);
+                                    // TODO: prevent enqueing of message of too lage size, which exceeds the limit. 
+                                    // Do it in syncronous part, before msg rich the queue
+                                    if (i == 0)
+                                        finishedQueues = 0;
 
-                                    // if we don't need our full ration, give it to the big guys
-                                    if (take < ration)
-                                        carryover += ration - take;
-                                    else if (carryover > 0)
+                                    var queue = brokerBatch.Queues[i];
+                                    
+                                    // whole queue is already taken
+                                    if (queue.Queue.Size == queue.CountInProgress)
                                     {
-                                        // this queue is over his ration. reset the carryover and re-calculate the ration.
-                                        ration = (messages.Length-totalTaken)/(brokerBatch.Queues.Length-currentBatch);
-                                        carryover = 0;
+                                        finishedQueues++;
+                                        if (finishedQueues == queueCount)
+                                            break;
+                                        continue;
                                     }
 
-                                    // track how many we're taking 
-                                    q.CountInProgress = take;
-                                    q.Queue.Peek(messages, totalTaken, take);
-                                    totalTaken += take;
-                                    currentBatch++;
-                                });
+                                    var msg = queue.Queue.PeekSingle(queue.CountInProgress);
+                                    var keyLen = msg.Key != null ? msg.Key.Length : 0;
+                                    var msgSize = messageFixedSize + keyLen + msg.Value.Length;
+                                    if (runningSize + msgSize > maxSize)
+                                        break;
+                                    
+                                    runningSize += msgSize;
+                                    queue.CountInProgress++;
+                                }
 
-
-                                if (messages.Take(totalTaken).Any(m=>m==null))
-                                    _log.Error("Null Messages Detected!");
+                                var messages = brokerBatch.Queues.SelectMany(q => q.Queue.PeekEnum(q.CountInProgress));
 
                                 // TODO: freeze permanent errors and throw consumer exceptions upon sending to perm error partition
-                                var response = await _cluster.SendBatchAsync(brokerBatch.Leader, messages.Take(totalPending), this);
+                                var response = await _cluster.SendBatchAsync(brokerBatch.Leader, messages, this);
 
                                 var failedResponsePartitions = response.Topics.
                                     Where(t => t.TopicName == Configuration.Topic). // should contain response only for our topic, but just in case...
                                     SelectMany(t => t.Partitions).
-                                    Where(p => p.ErrorCode != ErrorCode.NoError).ToList();
+                                    Where(p => p.ErrorCode != ErrorCode.NoError).ToArray();
 
                                 // some errors, figure out which batches to dismiss from queues
                                 var failedPartitionIds = new HashSet<int>(failedResponsePartitions.Select(p => p.Partition));
@@ -418,9 +428,47 @@ namespace kafka4net
                                     Where(q => !failedPartitionIds.Contains(q.Partition)).
                                     ToArray();
 
-                                // notify of any errors from send response
-                                failedResponsePartitions.ForEach(failedPart => 
-                                    _cluster.NotifyPartitionStateChange(new PartitionStateChangeEvent(Topic, failedPart.Partition, failedPart.ErrorCode)));
+                                var permanentErrorPartitions = failedResponsePartitions.
+                                    Where(p => p.IsPartitionPermanentError()).ToArray();
+
+                                var recoverableErrorPartitions = failedResponsePartitions.
+                                    Except(permanentErrorPartitions).ToArray();
+
+                                var permanentErrorPartitionIds = new HashSet<int>(permanentErrorPartitions.Select(p=>p.Partition));
+
+                                // notify of errors from send response and trigger recovery monitor tracking them
+                                recoverableErrorPartitions.
+                                    ForEach(failedPart => 
+                                        _cluster.NotifyPartitionStateChange(new PartitionStateChangeEvent(Topic, failedPart.Partition, failedPart.ErrorCode))
+                                    );
+
+
+                                if (permanentErrorPartitions.Length > 0 && EtwTrace.Log.IsEnabled())
+                                {
+                                    EtwTrace.Log.ProducerPermanentFailure(_id, permanentErrorPartitions.Length);
+                                    string error = string.Join(", ", permanentErrorPartitions.Select(p => string.Format("{0}:{1}", p.Partition, p.ErrorCode)));
+                                    error = string.Format("[{0}]", error);
+                                    EtwTrace.Log.ProducerPermanentFailureDetails(_id, error);
+                                }
+
+                                if (recoverableErrorPartitions.Length > 0 && EtwTrace.Log.IsEnabled())
+                                {
+                                    EtwTrace.Log.ProducerRecoverableErrors(_id, recoverableErrorPartitions.Length);
+                                }
+
+                                // Pop permanently failed messages from the queue
+                                var permanentFailedMessages = brokerBatch.Queues.
+                                    Where(q => permanentErrorPartitionIds.Contains(q.Partition)).
+                                    SelectMany(q => q.Queue.GetEnum(q.CountInProgress)).ToArray();
+                                // fire permanent error
+                                if (OnPermError != null)
+                                {
+                                    var msg = string.Join(",", permanentErrorPartitions.Select(p => p.ErrorCode).Distinct());
+                                    msg = string.Format("Produce request failed with errors: [{0}]", msg);
+                                    OnPermError(new BrokerException(msg), permanentFailedMessages);
+                                }
+
+                                // Do nothing with recoverable errors, they will be sent again next time
                                 
                                 var successMessages = successPartitionQueues.SelectMany(q => q.Queue.Get(q.CountInProgress)).ToArray();
 

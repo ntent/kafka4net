@@ -42,6 +42,12 @@
         ConsumerCoordinatorNotAvailableCode = 15,
         /// <summary>The broker returns this error code if it receives an offset fetch or commit request for a consumer group that it is not a coordinator for</summary>
         NotCoordinatorForConsumerCode = 16,
+        
+        // New in 0.8.2
+        InvalidTopicCode = 17,
+        MessageSetSizeTooLargeCode = 18,
+        NotEnoughReplicasCode = 19,
+        NotEnoughReplicasAfterAppendCode = 20,
 
         // Below are driver's error codes. They are not returned by kafka server but are "virtual" states, such as transport error for example.
         FetcherException = 1001,

@@ -1,33 +1,9 @@
 ﻿using System;
-using System.Threading;
 
 namespace kafka4net
 {
     public class ProducerConfiguration
     {
-        /// <summary>
-        /// Short constructor for ProducerConfiguration. Defaults used for not specified settings.
-        /// Default values are:
-        ///     RequiredAcks: 1
-        ///     Timeout: 1s
-        ///     BatchFlushTime: 500ms
-        ///     BatchFlushSize: 1000
-        /// </summary>
-        /// <param name="topic"></param>
-        public ProducerConfiguration(
-            string topic)
-        {
-            Topic = topic;
-            RequiredAcks = 1;
-            BatchFlushSize = 1000;
-            BatchFlushTime = TimeSpan.FromMilliseconds(500);
-            ProduceRequestTimeout = TimeSpan.FromSeconds(1);
-            Partitioner = new FletcherHashedMessagePartitioner();
-            AutoGrowSendBuffers = true;
-            SendBuffersInitialSize = 200;
-            MaxMessagesPerProduceRequest = 10000;
-        }
-
         /// <summary>
         /// Full constructor for ProducerConfiguration. Specify all settings.
         /// Default values are:
@@ -42,23 +18,28 @@ namespace kafka4net
         /// <param name="batchFlushSize">Max number of messages to accumulate before flushing messages. Default 1000.</param>
         /// <param name="autoGrowSendBuffers">Whether or not to automatically expand the send buffers (a buffer per partition of messages waiting to be sent). If set to false, an OnPermError will be triggered with messages that fail to get added to a full buffer.</param>
         /// <param name="sendBuffersInitialSize">The initial size (in number of messages) of each send buffer. There is one send buffer per partition. If AutoGrowSendBuffers is true, the size will be expanded if necessary.</param>
-        /// <param name="maxMessagesPerProduceRequest">The maximum number of messages to batch into one ProduceRequest to a particular Kafka Broker.</param>
+        /// <param name="maxMessageSetSizeInBytes">The maximum size of MessageSet to send to the server. If exceed server's Segment Size, 
+        /// server will fail with MessageSetSizeTooLargeCode error. Default is 1Gb</param>
         public ProducerConfiguration(
             string topic,
-            TimeSpan batchFlushTime,
+            TimeSpan? batchFlushTime = null,
             int batchFlushSize = 1000,
             short requiredAcks = 1,
             bool autoGrowSendBuffers = true,
             int sendBuffersInitialSize = 200,
-            int maxMessagesPerProduceRequest = 10000)
-            : this(topic)
+            int maxMessageSetSizeInBytes = 1024 * 1024 * 1024,
+            TimeSpan? producerRequestTimeout = null,
+            IMessagePartitioner partitioner = null)
         {
-            BatchFlushTime = batchFlushTime;
+            Topic = topic;
+            BatchFlushTime = batchFlushTime ?? TimeSpan.FromMilliseconds(500);
             BatchFlushSize = batchFlushSize;
             RequiredAcks = requiredAcks;
             AutoGrowSendBuffers = autoGrowSendBuffers;
             SendBuffersInitialSize = sendBuffersInitialSize;
-            MaxMessagesPerProduceRequest = maxMessagesPerProduceRequest;
+            MaxMessageSetSizeInBytes = maxMessageSetSizeInBytes;
+            ProduceRequestTimeout = producerRequestTimeout ?? TimeSpan.FromSeconds(1);
+            Partitioner = partitioner ?? new FletcherHashedMessagePartitioner();
         }
 
         public string Topic { get; private set; }
@@ -70,6 +51,6 @@ namespace kafka4net
         public IMessagePartitioner Partitioner { get; private set; }
         public bool AutoGrowSendBuffers { get; private set; }
         public int SendBuffersInitialSize { get; private set; }
-        public int MaxMessagesPerProduceRequest { get; private set; }
+        public int MaxMessageSetSizeInBytes { get; private set; }
     }
 }

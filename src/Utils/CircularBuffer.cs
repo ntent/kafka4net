@@ -7,7 +7,7 @@ using System.Threading;
 
 namespace kafka4net.Utils
 {
-    public class CircularBuffer<T> : ICollection<T>, IEnumerable<T>, ICollection, IEnumerable
+    internal class CircularBuffer<T> : ICollection<T>, IEnumerable<T>, ICollection, IEnumerable
     {
         private static readonly ILogger _log = Logger.GetLogger();
         private int capacity;
@@ -146,6 +146,24 @@ namespace kafka4net.Utils
             return realCount;
         }
 
+        public IEnumerable<T> PeekEnum(int count) 
+        {
+            if(count > size)
+                throw new ArgumentOutOfRangeException("count", string.Format("Count {0} > size {1}", count, size));
+            var readHead = head;
+            for (int i = 0; i < count; i++, readHead++)
+            {
+                if (readHead == capacity)
+                    readHead = 0;
+                yield return buffer[readHead];
+            }
+        }
+
+        public T PeekSingle(int offset)
+        {
+            return buffer[(head + offset) % capacity];
+        }
+
         public int Put(T[] src)
         {
             return Put(src, 0, src.Length);
@@ -229,6 +247,21 @@ namespace kafka4net.Utils
                 head = 0;
             size--;
             return item;
+        }
+
+        public IEnumerable<T> GetEnum(int count)
+        {
+            if (count > size)
+                throw new ArgumentOutOfRangeException("count", string.Format("Count is {0} but actual size {1}", count, size));
+
+            for (int i = 0; i < count; i++)
+            {
+                yield return buffer[head];
+
+                if (++head == capacity)
+                    head = 0;
+                size--;
+            }
         }
 
         public void CopyTo(T[] array)
