@@ -1,6 +1,8 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics.Tracing;
+using System.Runtime.InteropServices;
+using kafka4net.Protocols.Requests;
 
 namespace kafka4net.Tracing
 {
@@ -12,7 +14,11 @@ namespace kafka4net.Tracing
         public class Opcodes
         {
             // Shared
-            public const EventOpcode Create = (EventOpcode)11;
+            public const EventOpcode Create = (EventOpcode)200;
+            public const EventOpcode Starting = (EventOpcode)201;
+            public const EventOpcode Started = (EventOpcode)202;
+            public const EventOpcode Stopping = (EventOpcode)203;
+            public const EventOpcode Stopped = (EventOpcode)204;
 
             // Fetcher
             public const EventOpcode CancelSentWakeup = (EventOpcode)12;
@@ -62,13 +68,24 @@ namespace kafka4net.Tracing
             public const EventOpcode RecoveryLoopStop = (EventOpcode)50;
             
             // Protcol
-            public const EventOpcode MetadaaRequest = (EventOpcode)51;
-            public const EventOpcode MetadaaResponse = (EventOpcode)52;
+            public const EventOpcode MetadataRequest = (EventOpcode)51;
+            public const EventOpcode MetadataResponse = (EventOpcode)52;
+            public const EventOpcode ProduceRequest = (EventOpcode)53;
+            public const EventOpcode ProduceResponse = (EventOpcode)54;
+            public const EventOpcode OffsetRequest = (EventOpcode)55;
+            public const EventOpcode OffsetResponse = (EventOpcode)56;
 
             // Producer
-            public const EventOpcode PermanentFailure = (EventOpcode)53;
-            public const EventOpcode PermanentFailureDetails = (EventOpcode)54;
-            public const EventOpcode RecoverableErrors = (EventOpcode)55;
+            public const EventOpcode PermanentFailure = (EventOpcode)57;
+            public const EventOpcode PermanentFailureDetails = (EventOpcode)58;
+            public const EventOpcode RecoverableErrors = (EventOpcode)59;
+
+            // Metadata
+            public const EventOpcode NewTopic = (EventOpcode)60;
+            public const EventOpcode PartitionErrorChange = (EventOpcode)61;
+            public const EventOpcode PartitionIsrChange = (EventOpcode)62;
+            public const EventOpcode PartitionLeaderChange = (EventOpcode)63;
+            public const EventOpcode PartitionReplicasChange = (EventOpcode)64;
         }
 
         public class Tasks
@@ -79,6 +96,9 @@ namespace kafka4net.Tracing
             public const EventTask RecoveryMonitor = (EventTask)4;
             public const EventTask Protocol = (EventTask)5;
             public const EventTask Producer = (EventTask)6;
+            public const EventTask Cluster = (EventTask)7;
+            public const EventTask Metadata = (EventTask)8;
+            public const EventTask Consumer = (EventTask)9;
         }
 
         public class Keywords
@@ -417,30 +437,72 @@ namespace kafka4net.Tracing
         #endregion
 
         #region Protocol
-        [Event(400, Task = Tasks.Protocol, Opcode = Opcodes.MetadaaRequest, Keywords = Keywords.DataDump)]
+        [Event(400, Task = Tasks.Protocol, Opcode = Opcodes.MetadataRequest, Keywords = Keywords.DataDump)]
         public void ProtocolMetadataRequest(string request)
         {
             if(IsEnabled())
                 Log.WriteEvent(400, request);
         }
 
-        [Event(401, Task = Tasks.Protocol, Opcode = Opcodes.MetadaaResponse, Keywords = Keywords.DataDump)]
+        [Event(401, Task = Tasks.Protocol, Opcode = Opcodes.MetadataResponse, Keywords = Keywords.DataDump)]
         public void ProtocolMetadataResponse(string response, string host, int port, int nodeId)
         {
             if (IsEnabled())
                 Log.WriteEvent(401, response, host, port, nodeId);
         }
+
+        [Event(402, Task = Tasks.Protocol, Opcode = Opcodes.ProduceRequest, Keywords = Keywords.DataDump)]
+        public void ProtocolProduceRequest(string request, int nodeId)
+        {
+            if(IsEnabled())
+                Log.WriteEvent(402, request, nodeId);
+        }
+
+        [Event(403, Task = Tasks.Protocol, Opcode = Opcodes.ProduceResponse, Keywords = Keywords.DataDump)]
+        public void ProtocolProduceResponse(string response, int nodeId)
+        {
+            if(IsEnabled())
+                Log.WriteEvent(403, response, nodeId);
+        }
+
+        [Event(404, Task = Tasks.Protocol, Opcode = Opcodes.OffsetRequest, Keywords = Keywords.DataDump)]
+        public void ProtocolOffsetRequest(string request)
+        {
+            if(IsEnabled())
+                Log.WriteEvent(404, request);
+        }
+
+        [Event(405, Task = Tasks.Protocol, Opcode = Opcodes.OffsetResponse, Keywords = Keywords.DataDump)]
+        public void ProtocolOffsetResponse(string response)
+        {
+            if(IsEnabled())
+                Log.WriteEvent(405, response);
+        }
+
+        [Event(406, Task = Tasks.Protocol, Opcode = Opcodes.FetchRequest, Keywords = Keywords.DataDump)]
+        public void ProtocolFetchRequest(string request)
+        {
+            if(IsEnabled())
+                Log.WriteEvent(406, request);
+        }
+
+        [Event(407, Task = Tasks.Protocol, Opcode = Opcodes.FetchResponse, Keywords = Keywords.DataDump)]
+        public void ProtocolFetchResponse(string response)
+        {
+            if(IsEnabled())
+                Log.WriteEvent(407, response);
+        }
         #endregion
 
         #region Producer 
-        [Event(500, Task = Tasks.Producer, Opcode = Opcodes.PermanentFailure, Level = EventLevel.Error)]
+        [Event(500, Task = Tasks.Producer, Opcode = Opcodes.PermanentFailure)]
         public void ProducerPermanentFailure(int producerId, int partitionCount)
         {
             if(IsEnabled())
                 Log.WriteEvent(500, producerId, partitionCount);
         }
 
-        [Event(501, Task = Tasks.Producer, Opcode = Opcodes.PermanentFailureDetails, Level = EventLevel.Verbose, Keywords = Keywords.DataDump)]
+        [Event(501, Task = Tasks.Producer, Opcode = Opcodes.PermanentFailureDetails, Keywords = Keywords.DataDump)]
         public void ProducerPermanentFailureDetails(int producerId, string error)
         {
             if(IsEnabled())
@@ -452,6 +514,144 @@ namespace kafka4net.Tracing
         {
             if(IsEnabled())
                 Log.WriteEvent(502, producerId, partitionCount);
+        }
+
+        [Event(503, Task = Tasks.Producer, Opcode = Opcodes.Starting)]
+        public void ProducerStarting(string topic, int producerId)
+        {
+            if (IsEnabled())
+                Log.WriteEvent(503, topic, producerId);
+        }
+
+        [Event(504, Task = Tasks.Producer, Opcode = Opcodes.Started)]
+        public void ProducerStarted(string topic, int producerId)
+        {
+            if (IsEnabled())
+                Log.WriteEvent(504, topic, producerId);
+        }
+
+        [Event(505, Task = Tasks.Producer, Opcode = Opcodes.Error)]
+        public void ProducerError(string error, int producerId)
+        {
+            if (IsEnabled())
+                Log.WriteEvent(505, error, producerId);
+        }
+
+        [Event(506, Task = Tasks.Producer, Opcode = Opcodes.Stopping)]
+        public void ProducerStopping(string topic, int producerId)
+        {
+            if (IsEnabled())
+                Log.WriteEvent(506, topic, producerId);
+        }
+
+        [Event(507, Task = Tasks.Producer, Opcode = Opcodes.Stopped)]
+        public void ProducerStoped(string topic, int producerId)
+        {
+            if (IsEnabled())
+                Log.WriteEvent(507, topic, producerId);
+        }
+        #endregion
+
+        #region Cluster
+        [Event(600, Task = Tasks.Cluster, Opcode = Opcodes.Starting)]
+        public void ClusterStarting(int clusterId)
+        {
+            if(IsEnabled())
+                Log.WriteEvent(600, clusterId);
+        }
+
+        [Event(601, Task = Tasks.Cluster, Opcode = Opcodes.Started)]
+        public void ClusterStarted(int clusterId)
+        {
+            if(IsEnabled())
+                Log.WriteEvent(601, clusterId);
+        }
+
+        [Event(602, Task = Tasks.Cluster, Opcode = Opcodes.Stopping)]
+        public void ClusterStopping(int clusterId)
+        {
+            if(IsEnabled())
+                Log.WriteEvent(602, clusterId);
+        }
+
+        [Event(603, Task = Tasks.Cluster, Opcode = Opcodes.Error)]
+        public void ClusterError(int clusterId, string error)
+        {
+            if(IsEnabled())
+                Log.WriteEvent(603, clusterId, error);
+        }
+
+        [Event(604, Task = Tasks.Cluster, Opcode = Opcodes.Stopped)]
+        public void ClusterStopped(int clusterId)
+        {
+            if(IsEnabled())
+                Log.WriteEvent(604, clusterId);
+        }
+        #endregion
+
+        #region Metadata
+        [Event(700, Task = Tasks.Metadata, Opcode = Opcodes.NewTopic)]
+        public void MetadataNewTopic(int clusterId, string topic)
+        {
+            if(IsEnabled())
+                Log.WriteEvent(700, clusterId, topic);
+        }
+
+        [Event(702, Task = Tasks.Metadata, Opcode = Opcodes.PartitionErrorChange)]
+        public void MetadataPartitionErrorChange(int clusterId, string topic, int partId, int oldCode, int newCode)
+        {
+            if(IsEnabled())
+                Log.WriteEvent(702, clusterId, topic, partId,oldCode, newCode);
+        }
+
+        [Event(703, Task = Tasks.Metadata, Opcode = Opcodes.PartitionIsrChange)]
+        public void MetadataPartitionIsrChange(int clusterId, string topic, int partId, string oldIsrs, string newIsrs)
+        {
+            if(IsEnabled())
+                Log.WriteEvent(703, clusterId, topic, partId, oldIsrs, newIsrs);
+        }
+
+        [Event(704, Task = Tasks.Metadata, Opcode = Opcodes.PartitionLeaderChange)]
+        public void MetadataPartitionLeaderChange(int clusterId, string topic, int partId, int oldLeader, int newLeader)
+        {
+            if(IsEnabled())
+                Log.WriteEvent(704, clusterId, topic, partId, oldLeader, newLeader);
+        }
+
+        [Event(705, Task = Tasks.Metadata, Opcode = Opcodes.PartitionReplicasChange)]
+        public void MetadataPartitionReplicasChange(int clusterId, string topic, int partId, string oldReplicas, string newReplicas)
+        {
+            if(IsEnabled())
+                Log.WriteEvent(705, clusterId, topic, partId, oldReplicas, newReplicas);
+        }
+        #endregion
+
+        #region Consumer
+        [Event(800, Task = Tasks.Consumer, Opcode = Opcodes.Started)]
+        public void ConsumerStarted(int consumerId, string topic)
+        {
+            if (IsEnabled())
+                Log.WriteEvent(800, consumerId, topic);
+        }
+
+        [Event(801, Task = Tasks.Consumer, Opcode = Opcodes.Stopped)]
+        public void ConsumerStopped(int consumerId, string topic)
+        {
+            if (IsEnabled())
+                Log.WriteEvent(801, consumerId, topic);
+        }
+        #endregion
+
+        #region Custom Marker
+        [Event(900)]
+        public void Marker2(string marker) 
+        {
+            Log.WriteEvent(900, marker);
+        }
+
+        public static void Marker(string marker) 
+        {
+            Log.Marker2(marker);
         }
         #endregion
     }

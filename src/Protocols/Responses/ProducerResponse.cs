@@ -13,7 +13,7 @@ namespace kafka4net.Protocols.Responses
 
             public override string ToString()
             {
-                return string.Format("Topic: {0} [{1}]", TopicName, Partitions == null ? "null" : string.Join(", ", Partitions.AsEnumerable()));
+                return string.Format("{0} [{1}]", TopicName, Partitions == null ? "null" : string.Join("\n  ", Partitions.AsEnumerable()));
             }
         }
 
@@ -30,7 +30,7 @@ namespace kafka4net.Protocols.Responses
 
             public bool IsPartitionPermanentError()
             {
-                return ErrorCode == ErrorCode.MessageSetSizeTooLargeCode ||
+                return ErrorCode == ErrorCode.MessageSetSizeTooLarge ||
                     ErrorCode == ErrorCode.MessageSizeTooLarge ||
                     ErrorCode == ErrorCode.InvalidMessageSize ||
                     ErrorCode == ErrorCode.UnknownTopicOrPartition ||
@@ -41,7 +41,7 @@ namespace kafka4net.Protocols.Responses
 
         public override string ToString()
         {
-            return string.Format("[{0}]", Topics == null ? "null" : string.Join(", ", Topics.AsEnumerable()));
+            return string.Format("Topics: [{0}]", Topics == null ? "null" : string.Join("\n ", Topics.AsEnumerable()));
         }
     }
 }

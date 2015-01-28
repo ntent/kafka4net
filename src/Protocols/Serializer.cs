@@ -80,7 +80,7 @@ namespace kafka4net.Protocols
         private static PartitionMeta DeserializePartitionMeta(MemoryStream stream)
         {
             var ret = new PartitionMeta();
-            ret.RawErrorCode = (ErrorCode)BigEndianConverter.ReadInt16(stream);
+            ret.ErrorCode = (ErrorCode)BigEndianConverter.ReadInt16(stream);
             ret.Id = BigEndianConverter.ReadInt32(stream);
             ret.Leader = BigEndianConverter.ReadInt32(stream);
 

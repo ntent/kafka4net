@@ -22,7 +22,7 @@ namespace kafka4net.Protocols
     {
         private static readonly ILogger _log = Logger.GetLogger();
         private readonly Cluster _cluster;
-        //static readonly EtwTrace _etw = EtwTrace.Log;
+        static readonly EtwTrace _etw = EtwTrace.Log;
 
         internal Protocol(Cluster cluster)
         {
@@ -34,6 +34,9 @@ namespace kafka4net.Protocols
             var conn = request.Broker.Conn;
             var client = await conn.GetClientAsync();
             _log.Debug("Sending ProduceRequest to {0}, Request: {1}", conn, request);
+            if(_etw.IsEnabled())
+                _etw.ProtocolProduceRequest(request.ToString(), request.Broker.NodeId);
+
             var response = await conn.Correlation.SendAndCorrelateAsync(
                 id => Serializer.Serialize(request, id),
                 Serializer.GetProducerResponse,
@@ -41,6 +44,8 @@ namespace kafka4net.Protocols
                 CancellationToken.None
             );
             _log.Debug("Got ProduceResponse: {0}", response);
+            if (_etw.IsEnabled())
+                _etw.ProtocolProduceResponse(response.ToString(), request.Broker.NodeId);
 
             return response;
         }
@@ -64,9 +69,9 @@ namespace kafka4net.Protocols
 
             //var tcp = await (broker != null ? broker.Conn.GetClientAsync() : _cluster.GetAnyClientAsync());
             _log.Debug("Sending MetadataRequest to {0}", tcp.Client.RemoteEndPoint);
-            if (EtwTrace.Log.IsEnabled())
+            if (_etw.IsEnabled())
             {
-                EtwTrace.Log.ProtocolMetadataRequest(request.ToString());
+                _etw.ProtocolMetadataRequest(request.ToString());
             }
 
             var response = await conn.Correlation.SendAndCorrelateAsync(
@@ -74,9 +79,9 @@ namespace kafka4net.Protocols
                 Serializer.DeserializeMetadataResponse,
                 tcp, CancellationToken.None);
 
-            if (EtwTrace.Log.IsEnabled())
+            if (_etw.IsEnabled())
             {
-                EtwTrace.Log.ProtocolMetadataResponse(response.ToString(), 
+                _etw.ProtocolMetadataResponse(response.ToString(), 
                     broker != null ? broker.Host : "", 
                     broker != null ? broker.Port : -1,
                     broker != null ? broker.NodeId : -1);
@@ -89,19 +94,27 @@ namespace kafka4net.Protocols
         internal async Task<OffsetResponse> GetOffsets(OffsetRequest req, Connection conn)
         {
             var tcp = await conn.GetClientAsync();
-            if(_log.IsDebugEnabled)
-                _log.Debug("Sending OffsetRequest to {0}. request: {1}", tcp.Client.RemoteEndPoint, req);
+            
+            if(_etw.IsEnabled())
+                _etw.ProtocolOffsetRequest(req.ToString());
+
             var response = await conn.Correlation.SendAndCorrelateAsync(
                 id => Serializer.Serialize(req, id),
                 Serializer.DeserializeOffsetResponse,
                 tcp, CancellationToken.None);
+            
             _log.Debug("Got OffsetResponse {0}", response);
+            if (_etw.IsEnabled())
+                _etw.ProtocolOffsetResponse(response.ToString());
+            
             return response;
         }
 
         internal async Task<FetchResponse> Fetch(FetchRequest req, Connection conn)
         {
             _log.Debug("Sending FetchRequest to broker {1}. Request: {0}", req, conn);
+            if (_etw.IsEnabled())
+                _etw.ProtocolFetchRequest(req.ToString());
             
             // Detect disconnected server. Wait no less than 5sec. 
             // If wait time exceed wait time + 3sec, consider it a timeout too
@@ -114,8 +127,8 @@ namespace kafka4net.Protocols
                 Serializer.DeserializeFetchResponse,
                 tcp, /*cancel.Token*/ CancellationToken.None);
 
-            if(response.Topics.Length > 0 && _log.IsDebugEnabled)
-                _log.Debug("Got fetch response from {0} Response: {1}", conn, response);
+            if (_etw.IsEnabled())
+                _etw.ProtocolFetchResponse(response.ToString());
 
             return response;
         }

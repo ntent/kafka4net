@@ -32,25 +32,46 @@
         /// This error is thrown if the client attempt to produce a message larger than this maximum.</summary>
         MessageSizeTooLarge = 10,
         ///<summary>Internal error code for broker-to-broker communication</summary>
-        StaleControllerEpochCode = 11,
+        StaleControllerEpoch = 11,
         ///<summary>If you specify a string larger than configured maximum for offset metadata</summary>
-        OffsetMetadataTooLargeCode = 12,
+        OffsetMetadataTooLarge = 12,
         /// <summary> The broker returns this error code for an offset fetch request if it is still loading offsets (after a leader change for that offsets topic partition) </summary>
-        OffsetsLoadInProgressCode = 14,
+        OffsetsLoadInProgress = 14,
         /// <summary> The broker returns this error code for consumer metadata requests or offset commit requests 
         /// if the offsets topic has not yet been created </summary>
-        ConsumerCoordinatorNotAvailableCode = 15,
+        ConsumerCoordinatorNotAvailable = 15,
         /// <summary>The broker returns this error code if it receives an offset fetch or commit request for a consumer group that it is not a coordinator for</summary>
-        NotCoordinatorForConsumerCode = 16,
+        NotCoordinatorForConsumer = 16,
         
         // New in 0.8.2
-        InvalidTopicCode = 17,
-        MessageSetSizeTooLargeCode = 18,
-        NotEnoughReplicasCode = 19,
-        NotEnoughReplicasAfterAppendCode = 20,
+        InvalidTopic = 17,
+        MessageSetSizeTooLarge = 18,
+        NotEnoughReplicas = 19,
+        NotEnoughReplicasAfterAppend = 20,
 
         // Below are driver's error codes. They are not returned by kafka server but are "virtual" states, such as transport error for example.
         FetcherException = 1001,
         TransportError
+    }
+
+    static class ErrorCodeClassification
+    {
+        /// <summary>
+        /// Compare error codes, ignoring ReplicaNotAvailable
+        /// </summary>
+        public static bool IsDifferent(this ErrorCode c1, ErrorCode c2)
+        {
+            if (c1 == ErrorCode.ReplicaNotAvailable)
+                c1 = ErrorCode.NoError;
+            if (c2 == ErrorCode.ReplicaNotAvailable)
+                c2 = ErrorCode.NoError;
+
+            return c1 != c2;
+        }
+
+        public static bool Success(this ErrorCode errorCode)
+        {
+            return errorCode == ErrorCode.NoError || errorCode == ErrorCode.ReplicaNotAvailable;
+        }
     }
 }

@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics.Tracing;
 using System.Globalization;
 using System.Linq;
 using System.Net.Sockets;
@@ -16,6 +17,7 @@ using kafka4net.Metadata;
 using kafka4net.Protocols;
 using kafka4net.Protocols.Requests;
 using kafka4net.Protocols.Responses;
+using kafka4net.Tracing;
 using kafka4net.Utils;
 
 namespace kafka4net
@@ -95,7 +97,7 @@ namespace kafka4net
             ).ForEach(p =>
             {
                 _log.Debug("Marking topic {2} partition {1} with transport error for broker {0}", broker, p.part, p.TopicName);
-                p.part.RawErrorCode = ErrorCode.TransportError;
+                p.part.ErrorCode = ErrorCode.TransportError;
                 _partitionStateChangesSubject.OnNext(new PartitionStateChangeEvent(p.TopicName, p.part.Id, ErrorCode.TransportError));
             });
         }
@@ -132,6 +134,8 @@ namespace kafka4net
                         Port = seed.Item2,
                         NodeId = -99
                     }).ToArray();
+                EtwTrace.Log.ClusterStarting(_id);
+
                 var initMeta = new MetadataResponse { Topics = new TopicMeta[0], Brokers = initBrokers };
 
                 MergeTopicMeta(initMeta);
@@ -142,6 +146,7 @@ namespace kafka4net
                 // Merge metadata that recovery monitor discovers
                 _partitionRecoveryMonitor.NewMetadataEvents.Subscribe(MergeTopicMeta, ex => _log.Error(ex, "Error thrown by RecoveryMonitor.NewMetadataEvents!"));
                 _log.Debug("Connected");
+                EtwTrace.Log.ClusterStarted(_id);
             }).ConfigureAwait(false);
         }
 
@@ -156,6 +161,7 @@ namespace kafka4net
                 return;
 
             _log.Info("#{0} Closing...", _id);
+            EtwTrace.Log.ClusterStopping(_id);
 
             // wait on the partition recovery monitor and all of the correlation loops to shut down.
             var success =
@@ -166,12 +172,14 @@ namespace kafka4net
             if (!success)
             {
                 _log.Error("Timed out");
+                EtwTrace.Log.ClusterError(_id, "Timeout on close");
                 if (!_partitionRecoveryMonitor.Completion.IsCompleted)
                     _log.Error("_partitionRecoveryMonitor timed out");
             }
             else
             {
                 _log.Info("#{0} Closed", _id);
+                EtwTrace.Log.ClusterStopped(_id);
             }
 
             _state = ClusterState.Disconnected;
@@ -570,8 +578,10 @@ namespace kafka4net
         private void MergeTopicMeta(MetadataResponse topicMeta)
         {
             // append new topics
-            var newTopics = topicMeta.Topics.Except(_metadata.Topics, TopicMeta.NameComparer);
+            var newTopics = topicMeta.Topics.Except(_metadata.Topics, TopicMeta.NameComparer).ToArray();
             _metadata.Topics = _metadata.Topics.Concat(newTopics).ToArray();
+            if(EtwTrace.Log.IsEnabled() && newTopics.Length > 0)
+                newTopics.ForEach(t => EtwTrace.Log.MetadataNewTopic(_id, t.TopicName));
 
             // update existing topics
             (
@@ -581,20 +591,30 @@ namespace kafka4net
                 from oldPart in _metadata.Topics.Single(t => t.TopicName == updatedTopic.TopicName).Partitions
                 from updatedPart in updatedTopic.Partitions
                 where updatedPart.Id == oldPart.Id
-                select new { oldPart, updatedPart }
+                select new { oldPart, updatedPart, updatedTopic.TopicName }
             ).ForEach(_ =>
             {
-                if (_.oldPart.DifferentErrorCode(_.updatedPart))
-                    _.oldPart.RawErrorCode = _.updatedPart.RawErrorCode;
+                if (_.oldPart.ErrorCode.IsDifferent(_.updatedPart.ErrorCode))
+                {
+                    EtwTrace.Log.MetadataPartitionErrorChange(_id, _.TopicName, _.oldPart.Id, (int)_.oldPart.ErrorCode, (int)_.updatedPart.ErrorCode);
+                    _.oldPart.ErrorCode = _.updatedPart.ErrorCode;
+                }
                 if (!_.oldPart.Isr.SequenceEqual(_.updatedPart.Isr))
+                {
+                    EtwTrace.Log.MetadataPartitionIsrChange(_id, _.TopicName, _.oldPart.Id, string.Join(",", _.oldPart.Isr), string.Join(",", _.updatedPart.Isr));
                     _.oldPart.Isr = _.updatedPart.Isr;
+                }
                 if (_.oldPart.Leader != _.updatedPart.Leader)
                 {
                     _log.Info("Partition changed leader {0}->{1}", _.oldPart, _.updatedPart);
+                    EtwTrace.Log.MetadataPartitionLeaderChange(_id, _.TopicName, _.oldPart.Id, _.oldPart.Leader, _.updatedPart.Leader);
                     _.oldPart.Leader = _.updatedPart.Leader;
                 }
                 if (!_.oldPart.Replicas.SequenceEqual(_.updatedPart.Replicas))
+                {
+                    EtwTrace.Log.MetadataPartitionReplicasChange(_id, _.TopicName, _.oldPart.Id, string.Join(",", _.oldPart.Replicas), string.Join(",", _.updatedPart.Replicas));
                     _.oldPart.Replicas = _.updatedPart.Replicas;
+                }
             });
 
             // add new brokers
@@ -632,7 +652,7 @@ namespace kafka4net
 
             // broadcast the current partition state for all partitions.
             topicMeta.Topics.
-                SelectMany(t => t.Partitions.Select(part => new PartitionStateChangeEvent(t.TopicName, part.Id, part.RawErrorCode))).
+                SelectMany(t => t.Partitions.Select(part => new PartitionStateChangeEvent(t.TopicName, part.Id, part.ErrorCode))).
                 ForEach(tp => _partitionStateChangesSubject.OnNext(tp));
 
         }

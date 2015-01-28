@@ -23,7 +23,7 @@ namespace kafka4net.Protocols.Responses
 
         public override string ToString()
         {
-            return string.Format("{0}:[{1}]", TopicName, Partitions == null ? "null" : string.Join(",", Partitions.Select(p => p.ToString())));
+            return string.Format("'{0}' [{1}]", TopicName, Partitions == null ? "null" : string.Join(",", Partitions.Select(p => p.ToString())));
         }
     }
 }

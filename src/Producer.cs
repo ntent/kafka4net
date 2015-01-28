@@ -86,6 +86,7 @@ namespace kafka4net
                         return;
 
                     _log.Debug("Connecting producer {1} for topic {0}", Topic, _id);
+                    EtwTrace.Log.ProducerStarting(Topic, _id);
                     _sendMessagesSubject = new Subject<Message>();
 
                     if (_cluster.State != Cluster.ClusterState.Connected)
@@ -143,7 +144,7 @@ namespace kafka4net
                                 {
                                     queue = new PartitionQueueInfo(Configuration.SendBuffersInitialSize) { Partition = batch.Key };
                                     _allPartitionQueues.Add(batch.Key, queue);
-                                    queue.IsOnline = topicPartitions.First(p => p.Id == batch.Key).Success();
+                                    queue.IsOnline = topicPartitions.First(p => p.Id == batch.Key).ErrorCode.Success();
                                     _log.Debug("{0} added new partition queue", this);
                                 }
 
@@ -203,10 +204,12 @@ namespace kafka4net
                                                               });
                     });
                     _log.Debug("Connected");
+                    EtwTrace.Log.ProducerStarted(Topic, _id);
                 }
                 catch (Exception e)
                 {
                     _log.Error(e, "Exception during connect");
+                    EtwTrace.Log.ProducerError(e.Message, _id);
 					throw;
                 }
                 finally
@@ -238,6 +241,7 @@ namespace kafka4net
                     return;
 
                 _log.Debug("Closing...");
+                EtwTrace.Log.ProducerStopping(Topic, _id);
                 // mark the cancellation token to cause the sending to finish up and don't allow any new messages coming in.
                 _drain.Cancel();
             
@@ -275,6 +279,7 @@ namespace kafka4net
 
                 _sendMessagesSubject = null;
                 _log.Debug("Close complete");
+                EtwTrace.Log.ProducerStoped(Topic, _id);
             }
             finally
             {

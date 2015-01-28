@@ -35,7 +35,7 @@ namespace kafka4net.Protocols.Requests
 
         public override string ToString()
         {
-            var topicDataStr = TopicData == null ? "" : string.Join(", ", TopicData);
+            var topicDataStr = TopicData == null ? "" : string.Join("\n ", TopicData);
             return string.Format("Broker: {0} Acks: {1} Timeout: {2} Topics: [{3}]", Broker, RequiredAcks, Timeout, topicDataStr);
         }
     }

@@ -9,6 +9,7 @@ using System.Reactive.Disposables;
 using System.Reactive.Linq;
 using System.Reactive.Subjects;
 using System.Threading.Tasks;
+using kafka4net.Tracing;
 using kafka4net.Utils;
 
 namespace kafka4net
@@ -137,6 +138,7 @@ namespace kafka4net
         /// <returns></returns>
         public Task ConnectAsync()
         {
+            EtwTrace.Log.ConsumerStarted(GetHashCode(), Topic);
             return _cluster.ConnectAsync();
         }
 
@@ -153,6 +155,8 @@ namespace kafka4net
                     _partitionsSubscription.Dispose();
                 return _cluster.CloseAsync(timeout);
             }).ConfigureAwait(false);
+
+            EtwTrace.Log.ConsumerStopped(GetHashCode(), Topic);
         }
 
         /// <summary>

@@ -19,7 +19,7 @@ namespace kafka4net
         /// <param name="autoGrowSendBuffers">Whether or not to automatically expand the send buffers (a buffer per partition of messages waiting to be sent). If set to false, an OnPermError will be triggered with messages that fail to get added to a full buffer.</param>
         /// <param name="sendBuffersInitialSize">The initial size (in number of messages) of each send buffer. There is one send buffer per partition. If AutoGrowSendBuffers is true, the size will be expanded if necessary.</param>
         /// <param name="maxMessageSetSizeInBytes">The maximum size of MessageSet to send to the server. If exceed server's Segment Size, 
-        /// server will fail with MessageSetSizeTooLargeCode error. Default is 1Gb</param>
+        /// server will fail with MessageSetSizeTooLarge error. Default is 1Gb</param>
         public ProducerConfiguration(
             string topic,
             TimeSpan? batchFlushTime = null,

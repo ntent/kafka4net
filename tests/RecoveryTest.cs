@@ -24,6 +24,15 @@ using Logger = kafka4net.Logger;
 
 namespace tests
 {
+    [Target("Kafka4netEtwTarget")]
+    public class Kafka4netEtwTarget : TargetWithLayout
+    {
+        protected override void Write(LogEventInfo logEvent)
+        {
+            kafka4net.Tracing.EtwTrace.Marker(logEvent.FormattedMessage);
+        }
+    }
+
     [TestFixture]
     class RecoveryTest
     {
@@ -41,6 +50,10 @@ namespace tests
             config.AddTarget("console", consoleTarget);
             var fileTarget = new FileTarget();
             config.AddTarget("file", fileTarget);
+            
+            var etwTargt = new Kafka4netEtwTarget();
+            config.AddTarget("etw", etwTargt);
+            config.LoggingRules.Add(new LoggingRule("tests.*", LogLevel.Debug, etwTargt));
 
             consoleTarget.Layout = "${date:format=HH\\:mm\\:ss.fff} ${level} [${threadname}:${threadid}] ${logger} ${message} ${exception:format=tostring}";
             fileTarget.FileName = "${basedir}../../../../log.txt";
@@ -103,6 +116,8 @@ namespace tests
         [Test]
         public async void TopicIsAutocreatedByProducer()
         {
+            kafka4net.Tracing.EtwTrace.Marker("TopicIsAutocreatedByProducer");
+
             var topic ="autocreate.test." + _rnd.Next();
             const int producedCount = 10;
             var lala = Encoding.UTF8.GetBytes("la-la-la");
@@ -146,6 +161,8 @@ namespace tests
 
             consumerSubscription.Dispose();
             await consumer.CloseAsync(TimeSpan.FromSeconds(5));
+
+            kafka4net.Tracing.EtwTrace.Marker("/TopicIsAutocreatedByProducer");
         }
 
         //[Test]
@@ -171,6 +188,7 @@ namespace tests
         [Test]
         public async void LeaderDownProducerAndConsumerRecovery()
         {
+            kafka4net.Tracing.EtwTrace.Marker("LeaderDownProducerAndConsumerRecovery");
             string topic = "part32." + _rnd.Next();
             VagrantBrokerUtil.CreateTopic(topic, 3, 2);
 
@@ -289,11 +307,13 @@ namespace tests
             Assert.AreEqual(postCount + postCount2, received.Count, "Received.Count");
 
             _log.Info("Done");
+            kafka4net.Tracing.EtwTrace.Marker("/LeaderDownProducerAndConsumerRecovery");
         }
 
         [Test]
         public async void ListenerOnNonExistentTopicWaitsForTopicCreation()
         {
+            kafka4net.Tracing.EtwTrace.Marker("ListenerOnNonExistentTopicWaitsForTopicCreation");
             const int numMessages = 400;
             var topic = "topic." + _rnd.Next();
             var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses,topic,ConsumerStartLocation.TopicHead));
@@ -327,7 +347,8 @@ namespace tests
 
             var receivedValues = await receivedValuesTask;
             Assert.AreEqual(numMessages,receivedValues.Count);
-
+            
+            kafka4net.Tracing.EtwTrace.Marker("/ListenerOnNonExistentTopicWaitsForTopicCreation");
         }
 
 
@@ -337,6 +358,7 @@ namespace tests
         [Test]
         public async void ProducerAndListenerRecoveryTest()
         {
+            kafka4net.Tracing.EtwTrace.Marker("ProducerAndListenerRecoveryTest");
             const int count = 200;
             var topic = "part33." + _rnd.Next();
             VagrantBrokerUtil.CreateTopic(topic,6,3);
@@ -399,7 +421,7 @@ namespace tests
             }
 
             Assert.AreEqual(sentList.Count, receivedList.Count);
-
+            kafka4net.Tracing.EtwTrace.Marker("/ProducerAndListenerRecoveryTest");
         }
 
         /// <summary>
@@ -412,6 +434,8 @@ namespace tests
         [Test]
         public async void ProducerRecoveryTest()
         {
+            kafka4net.Tracing.EtwTrace.Marker("ProducerRecoveryTest");
+
             const int count = 200;
             var topic = "part62." + _rnd.Next();
             VagrantBrokerUtil.CreateTopic(topic, 6, 2);
@@ -464,7 +488,8 @@ namespace tests
 
             Assert.AreEqual(sentList.Count, actuallySentList.Count, "Actually sent");
             Assert.AreEqual(sentList.Count, tails.MessagesSince(heads), "Offsets");
-
+            
+            kafka4net.Tracing.EtwTrace.Marker("/ProducerRecoveryTest");
         }
 
         /// <summary>
@@ -473,6 +498,7 @@ namespace tests
         [Test]
         public async void ListenerRecoveryTest()
         {
+            kafka4net.Tracing.EtwTrace.Marker("ListenerRecoveryTest");
             const int count = 10000;
             var topic = "part33." + _rnd.Next();
             VagrantBrokerUtil.CreateTopic(topic, 6, 3);
@@ -544,7 +570,7 @@ namespace tests
             }
 
             Assert.AreEqual(messagesInTopic, receivedList.Count);
-
+            kafka4net.Tracing.EtwTrace.Marker("/ListenerRecoveryTest");
         }
 
         /// <summary>
@@ -554,6 +580,7 @@ namespace tests
         [Test]
         public async void CleanShutdownTest()
         {
+            kafka4net.Tracing.EtwTrace.Marker("CleanShutdownTest");
             const string topic = "shutdown.test";
 
             // set producer long batching period, 20 sec
@@ -609,6 +636,8 @@ namespace tests
             Assert.AreEqual(sent.Count, received.Count, string.Format("Sent and Receved size differs. Sent: {0} Recevied: {1}", sent.Count, received.Count));
             // compare sets and not lists, because of 2 partitions, send order and receive orser are not the same
             Assert.True(received.SetEquals(sent), "Sent and Received set differs");
+
+            kafka4net.Tracing.EtwTrace.Marker("/CleanShutdownTest");
         }
 
         //[Test]
@@ -617,9 +646,18 @@ namespace tests
 
         //}
 
-        [Test]
+        /// <summary>
+        /// Shut down 2 brokers which will forse broker1 to become a leader.
+        /// Publish 25K messages.
+        /// Calculate sent message count as difference between heads and tails
+        /// Start consumer and on 18th message start rebalance.
+        /// Wait for consuming all messages but with 120sec timeout.
+        /// 
+        /// </summary>
+        [Ignore]
         public async void ConsumerFollowsRebalancingPartitions()
         {
+            kafka4net.Tracing.EtwTrace.Marker("ConsumerFollowsRebalancingPartitions");
 
             // create a topic
             var topic = "topic33." + _rnd.Next();
@@ -644,7 +682,7 @@ namespace tests
             var partitionMeta = await cluster.GetOrFetchMetaForTopicAsync(topic);
 
             // make sure they're all on a single leader
-            Assert.True(partitionMeta.GroupBy(p=>p.Leader).Count()==1);
+            Assert.AreEqual(1, partitionMeta.GroupBy(p=>p.Leader).Count());
 
             // now publish messages
             const int count = 25000;
@@ -692,9 +730,17 @@ namespace tests
                 });
 
             _log.Info("Waiting for receiver complete");
-            var receivedList = await received.Select(msg => BitConverter.ToInt32(msg.Value, 0)).Take(messagesInTopic).TakeUntil(DateTime.Now.AddSeconds(120)).ToList().ToTask();
+            var receivedList = await received.Select(msg => BitConverter.ToInt32(msg.Value, 0)).
+                Take(messagesInTopic).
+                TakeUntil(DateTime.Now.AddMinutes(3)).
+                ToList().
+                ToTask();
             if (rebalanceTask != null)
-                await rebalanceTask.TimeoutAfter(TimeSpan.FromSeconds(10));
+            {
+                _log.Info("Waiting for rebalance complete");
+                await rebalanceTask;//.TimeoutAfter(TimeSpan.FromSeconds(10));
+                _log.Info("Rebalance complete");
+            }
 
             _log.Info("Receiver complete. Disposing Subscription");
             consumerSubscription.Dispose();
@@ -719,12 +765,18 @@ namespace tests
             Assert.AreEqual(messagesInTopic, receivedList.Count);
 
 
-
+            kafka4net.Tracing.EtwTrace.Marker("/ConsumerFollowsRebalancingPartitions");
         }
 
+        /// <summary>
+        /// Send and listen for 100sec. Than wait for receiver to catch up for 10sec. 
+        /// Compare sent and received message count.
+        /// Make sure that messages were received in the same order as they were sent.
+        /// </summary>
         [Test]
         public async void KeyedMessagesPreserveOrder()
         {
+            kafka4net.Tracing.EtwTrace.Marker("KeyedMessagesPreserveOrder");
             // create a topic with 3 partitions
             var topicName = "part33." + _rnd.Next();
             VagrantBrokerUtil.CreateTopic(topicName, 3, 3);
@@ -738,7 +790,6 @@ namespace tests
                 lock (receivedMsgs)
                 {
                     receivedMsgs.Add(msg);
-                    //_log.Info("Received '{0}'/{1}/{2}", Encoding.UTF8.GetString(msg.Value), msg.Partition, BitConverter.ToInt32(msg.Key, 0));
                 }
             });
 
@@ -773,7 +824,6 @@ namespace tests
                             producer.Send(msg.Item1);
                             sentMsgs.Add(msg.Item1);
                             Assert.AreEqual(msg.Item2, sentMsgs.Count-1);
-                            //_log.Info("Sent '{0}'/{1}", msg.Item3, BitConverter.ToInt32(msg.Item1.Key, 0));
                         }
                     })
                 ).
@@ -781,15 +831,14 @@ namespace tests
 
             // wait for around 10K messages (10K/(10*10) = 100sec) and close producer
             _log.Info("Waiting for producer to produce enough...");
-            Thread.Sleep(100*1000);
+            await Task.Delay(100*1000);
             _log.Info("Closing senders intervals");
             senders.ForEach(s => s.Dispose());
             _log.Info("Closing producer");
             await producer.CloseAsync(TimeSpan.FromSeconds(5));
 
-            // wait for 3 sec for listener to catch up
-            _log.Info("Waiting for additional 3sec");
-            Thread.Sleep(3*1000);
+            _log.Info("Waiting for additional 10sec");
+            await Task.Delay(10*1000);
 
             _log.Info("Disposing consumer");
             consumerSubscription.Dispose();
@@ -831,6 +880,8 @@ namespace tests
                     string.Join(" \n", DumpOutOfOrder(_.s.Msgs, _.r.Msgs))));
             }
             Assert.IsTrue(!notInOrder.Any(), "Detected out of order messages");
+
+            kafka4net.Tracing.EtwTrace.Marker("/KeyedMessagesPreserveOrder");
         }
 
         // take 100 items starting from the ones which differ
@@ -844,6 +895,7 @@ namespace tests
         [Test]
         public async void ProducerSendBufferGrowsAutomatically()
         {
+            kafka4net.Tracing.EtwTrace.Marker("ProducerSendBufferGrowsAutomatically");
 
             // now publish messages
             const int count2 = 25000;
@@ -888,13 +940,15 @@ namespace tests
             Assert.AreEqual(count,receivedMessages.Length);
 
             await producer.CloseAsync(TimeSpan.FromSeconds(5));
-
+            
+            kafka4net.Tracing.EtwTrace.Marker("/ProducerSendBufferGrowsAutomatically");
         }
 
         // explicit offset works
         [Test]
         public async void ExplicitOffset()
         {
+            kafka4net.Tracing.EtwTrace.Marker("ExplicitOffset");
             // create new topic with 3 partitions
             var topic = "part33." + _rnd.Next();
             VagrantBrokerUtil.CreateTopic(topic,3,3);
@@ -946,12 +1000,16 @@ namespace tests
 
             consumerSubscription.Dispose();
             await consumer.CloseAsync(TimeSpan.FromSeconds(5));
+
+            kafka4net.Tracing.EtwTrace.Marker("/ExplicitOffset");
         }
 
         // can read from the head of queue
         [Test]
         public async void ReadFromHead()
         {
+            kafka4net.Tracing.EtwTrace.Marker("ReadFromHead");
+
             const int count = 100;
             var topic = "part32." + _rnd.Next();
             VagrantBrokerUtil.CreateTopic(topic,3,2);
@@ -975,6 +1033,8 @@ namespace tests
                 //.Do(val=>_log.Info("received value {0}", BitConverter.ToInt32(val.Value,0)))
                 .Count().ToTask();
             Assert.AreEqual(count, await count2);
+
+            kafka4net.Tracing.EtwTrace.Marker("/ReadFromHead");
         }
 
         // if attempt to fetch from offset out of range, excption is thrown
@@ -994,6 +1054,8 @@ namespace tests
         [Test]
         public void TopicPartitionOffsetsSerializeAndDeSerialize()
         {
+            kafka4net.Tracing.EtwTrace.Marker("TopicPartitionOffsetsSerializeAndDeSerialize");
+
             var offsets1 = new TopicPartitionOffsets("test");
 
             for (int i = 0; i < 50; i++)
@@ -1011,11 +1073,14 @@ namespace tests
                 Assert.AreEqual(offsets1.NextOffset(i),offsets2.NextOffset(i));
             }
 
+            kafka4net.Tracing.EtwTrace.Marker("/TopicPartitionOffsetsSerializeAndDeSerialize");
         }
 
         [Test]
         public async void SaveOffsetsAndResumeConsuming()
         {
+            kafka4net.Tracing.EtwTrace.Marker("SaveOffsetsAndResumeConsuming");
+
             var sentEvents = new Subject<Message>();
             var topic = "part12." + _rnd.Next();
             VagrantBrokerUtil.CreateTopic(topic, 5, 2);
@@ -1082,6 +1147,7 @@ namespace tests
             Assert.AreEqual(100, receivedEvents.Distinct().Count());
             Assert.AreEqual(100, receivedEvents.Count);
 
+            kafka4net.Tracing.EtwTrace.Marker("/SaveOffsetsAndResumeConsuming");
         }
 
         // Create a new 1-partition topic and sent 100 messages.
@@ -1089,6 +1155,8 @@ namespace tests
         [Test]
         public async void ReadOffsets()
         {
+            kafka4net.Tracing.EtwTrace.Marker("ReadOffsets");
+
             var sentEvents = new Subject<Message>();
             var topic = "part12." + _rnd.Next();
             VagrantBrokerUtil.CreateTopic(topic,1,2);
@@ -1150,11 +1218,15 @@ namespace tests
             Assert.AreEqual(1, tails.Partitions.Count(), "Expected just one tail partition");
             Assert.AreEqual(0L, heads.NextOffset(heads.Partitions.First()), "Expected start at 0");
             Assert.AreEqual(count*loops, tails.NextOffset(tails.Partitions.First()), "Expected end at " + count);
+
+            kafka4net.Tracing.EtwTrace.Marker("/ReadOffsets");
         }
 
         [Test]
         public async void TwoConsumerSubscribersOneBroker()
         {
+            kafka4net.Tracing.EtwTrace.Marker("TwoConsumerSubscribersOneBroker");
+
             var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, "part33"));
             await consumer.ConnectAsync();
             var msgs = consumer.OnMessageArrived.Publish().RefCount();
@@ -1162,11 +1234,15 @@ namespace tests
             var t2 = msgs.TakeUntil(DateTimeOffset.Now.AddSeconds(6)).LastOrDefaultAsync().ToTask();
             await Task.WhenAll(new[] { t1, t2 });
             await consumer.CloseAsync(TimeSpan.FromSeconds(2));
+
+            kafka4net.Tracing.EtwTrace.Marker("/TwoConsumerSubscribersOneBroker");
         }
 
         [Test]
         public async void MultipleProducersOneCluster()
         {
+            kafka4net.Tracing.EtwTrace.Marker("MultipleProducersOneCluster");
+
             var cluster = new Cluster(_seedAddresses);
             var topic1 = "topic." + _rnd.Next();
             var topic2 = "topic." + _rnd.Next();
@@ -1206,12 +1282,15 @@ namespace tests
 
             Assert.AreEqual(100, topic1Tails.MessagesSince(topic1Heads));
             Assert.AreEqual(100, topic2Tails.MessagesSince(topic2Heads));
-
+            
+            kafka4net.Tracing.EtwTrace.Marker("/MultipleProducersOneCluster");
         }
 
         [Test]
         public async void SchedulerThreadIsIsolatedFromUserCode()
         {
+            kafka4net.Tracing.EtwTrace.Marker("SchedulerThreadIsIsolatedFromUserCode");
+
             const string threadName = "kafka-scheduler";
             _log.Info("Test Runner is using thread {0}", Thread.CurrentThread.Name);
 
@@ -1303,6 +1382,7 @@ namespace tests
             _log.Debug("After Cluster Close using thread {0}", Thread.CurrentThread.Name);
             Assert.AreNotEqual(threadName, Thread.CurrentThread.Name);
 
+            kafka4net.Tracing.EtwTrace.Marker("/SchedulerThreadIsIsolatedFromUserCode");
         }
 
         [NUnit.Framework.Ignore]

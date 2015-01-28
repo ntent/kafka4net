@@ -12,7 +12,7 @@ namespace kafka4net.Protocols.Responses
         {
             return string.Format("Brokers: [{0}], TopicMeta: [{1}]", 
                 Brokers == null ? "null" : string.Join(",", Brokers.AsEnumerable()), 
-                Topics == null ? "null" : string.Join(",", Topics.AsEnumerable())
+                Topics == null ? "null" : string.Join("\n", Topics.AsEnumerable())
             );
         }
     }
