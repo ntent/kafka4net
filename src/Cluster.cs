@@ -98,6 +98,7 @@ namespace kafka4net
             {
                 _log.Debug("Marking topic {2} partition {1} with transport error for broker {0}", broker, p.part, p.TopicName);
                 p.part.ErrorCode = ErrorCode.TransportError;
+                EtwTrace.Log.MetadataTransportError(p.TopicName, _id, p.part.Id, p.part.Leader);
                 _partitionStateChangesSubject.OnNext(new PartitionStateChangeEvent(p.TopicName, p.part.Id, ErrorCode.TransportError));
             });
         }

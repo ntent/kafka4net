@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Diagnostics.Tracing;
 using System.Runtime.InteropServices;
+using kafka4net.Metadata;
 using kafka4net.Protocols.Requests;
 
 namespace kafka4net.Tracing
@@ -86,6 +87,7 @@ namespace kafka4net.Tracing
             public const EventOpcode PartitionIsrChange = (EventOpcode)62;
             public const EventOpcode PartitionLeaderChange = (EventOpcode)63;
             public const EventOpcode PartitionReplicasChange = (EventOpcode)64;
+            public const EventOpcode PartitionTransportError = (EventOpcode)65;
         }
 
         public class Tasks
@@ -624,6 +626,13 @@ namespace kafka4net.Tracing
             if(IsEnabled())
                 Log.WriteEvent(705, clusterId, topic, partId, oldReplicas, newReplicas);
         }
+
+        [Event(706, Task = Tasks.Metadata, Opcode = Opcodes.PartitionTransportError)]
+        public void MetadataTransportError(string topicName, int clusterId, int part, int leader)
+        {
+            Log.WriteEvent(706, topicName, clusterId, part, leader);
+        }
+
         #endregion
 
         #region Consumer
