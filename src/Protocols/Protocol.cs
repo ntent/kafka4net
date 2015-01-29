@@ -50,7 +50,7 @@ namespace kafka4net.Protocols
             return response;
         }
 
-        internal async Task<MetadataResponse> MetadataRequest(TopicRequest request, BrokerMeta broker = null)
+        internal async Task<MetadataResponse> MetadataRequest(TopicRequest request, BrokerMeta broker = null, bool noTransportErrors = false)
         {
             TcpClient tcp;
             Connection conn;
@@ -58,7 +58,7 @@ namespace kafka4net.Protocols
             if (broker != null)
             {
                 conn = broker.Conn;
-                tcp = await conn.GetClientAsync();
+                tcp = await conn.GetClientAsync(noTransportErrors);
             }
             else
             {

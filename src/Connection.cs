@@ -57,7 +57,7 @@ namespace kafka4net
                 }).ToArray();
         }
 
-        internal async Task<TcpClient> GetClientAsync()
+        internal async Task<TcpClient> GetClientAsync(bool noTransportErrors=false)
         {
             if (_closed)
                 throw new ApplicationException("Attempt to reuse connection which is not supposed to be used anymore");
@@ -86,7 +86,8 @@ namespace kafka4net
                     Correlation = new ResponseCorrelation(async e => 
                     {
                         await MarkSocketAsFailed(currentClient);
-                        _onError(e);
+                        if(_onError != null && !noTransportErrors)
+                            _onError(e);
                     }, _host+":"+_port+" conn object hash: " + GetHashCode());
                     
                     // If there was a prior connection and loop task, cancel them before creating a new one.
@@ -129,7 +130,7 @@ namespace kafka4net
             {
                 // some exception getting a connection, clear what we have for next time.
                 _client = null;
-                if (_onError != null)
+                if (_onError != null && !noTransportErrors)
                     _onError(e);
                 throw;
             }

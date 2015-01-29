@@ -128,7 +128,7 @@ namespace kafka4net.Internal
                 try
                 {
                     EtwTrace.Log.RecoveryMonitor_SendingPing(_id, broker.Host, broker.Port);
-                    response = await _protocol.MetadataRequest(new TopicRequest { Topics = _failedList.Keys.Select(t => t.Item1).Distinct().ToArray() }, broker);
+                    response = await _protocol.MetadataRequest(new TopicRequest { Topics = _failedList.Keys.Select(t => t.Item1).Distinct().ToArray() }, broker, noTransportErrors: true);
                     EtwTrace.Log.RecoveryMonitor_PingResponse(_id, broker.Host, broker.Port);
                 }
                 catch (Exception ex)
@@ -220,7 +220,7 @@ namespace kafka4net.Internal
                         try
                         {
                             EtwTrace.Log.RecoveryMonitor_CheckingBrokerAccessibility(_id, newBroker.Host, newBroker.Port, newBroker.NodeId);
-                            MetadataResponse response2 = await _protocol.MetadataRequest(new TopicRequest { Topics = brokerGrp.Select(g=>g.Item1).Distinct().ToArray() }, newBroker);
+                            MetadataResponse response2 = await _protocol.MetadataRequest(new TopicRequest { Topics = brokerGrp.Select(g=>g.Item1).Distinct().ToArray() }, newBroker, noTransportErrors: true);
                             EtwTrace.Log.RecoveryMonitor_BrokerIsAccessible(_id, newBroker.Host, newBroker.Port, newBroker.NodeId);
 
                             // success!
