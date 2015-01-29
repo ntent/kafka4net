@@ -234,7 +234,9 @@ namespace kafka4net
 
         public async Task CloseAsync(TimeSpan timeout)
         {
+            var exceptions = new List<Exception>();
             await _sync.WaitAsync().ConfigureAwait(false);
+            
             try
             {
                 if (!IsConnected)
@@ -260,10 +262,18 @@ namespace kafka4net
                         _log.Debug("Send loop completed");
                     else
                     {
-                        _log.Error("Timed out while waiting for Send buffers to drain. Canceling.");
+                        var error = "Timed out while waiting for Send buffers to drain. Canceling";
+                        _log.Error(error);
+                        exceptions.Add(new TimeoutException(error));
+                        EtwTrace.Log.ProducerError(error, _id);
                         _shutdown.Cancel();
                         if (!await _sendLoopTask.TimeoutAfter(timeout).ConfigureAwait(false))
-                            _log.Fatal("Timed out even after cancelling send loop! This shouldn't happen, there will likely be message loss.");
+                        {
+                            var error2 = "Timed out even after cancelling send loop! This shouldn't happen, there will likely be message loss";
+                            exceptions.Add(new TimeoutException(error2));
+                            EtwTrace.Log.ProducerError(error2, _id);
+                            _log.Fatal(error2);
+                        }
                     }
 
                 // close down the cluster ONLY if we created it
@@ -281,10 +291,18 @@ namespace kafka4net
                 _log.Debug("Close complete");
                 EtwTrace.Log.ProducerStoped(Topic, _id);
             }
+            catch (Exception e)
+            {
+                exceptions.Add(e);
+                EtwTrace.Log.ProducerError(e.Message, _id);
+            }
             finally
             {
                 _sync.Release();
             }
+
+            if(exceptions.Count > 0)
+                throw new AggregateException(exceptions);
         }
 
         private async Task SendLoop()
