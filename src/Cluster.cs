@@ -298,7 +298,7 @@ namespace kafka4net
                                          from part in r.Result.Partitions
                                          select part).ToArray();
 
-                        if (partitions.Any(p=>p.ErrorCode != ErrorCode.NoError))
+                        if (partitions.Any(p=> !p.ErrorCode.Success()))
                             throw new Exception(string.Format("Partition Errors: [{0}]", string.Join(",", partitions.Select(p=>p.Partition + ":" + p.ErrorCode))));
 
                         //if (partitions.Any(p => (p.Offsets.Length == 1 ? -1 : p.Offsets[1])==-1))
@@ -389,7 +389,7 @@ namespace kafka4net
                 .Select(state =>
                 {
                     // if the state is not ready, return NULL for the fetcher.
-                    if (state.ErrorCode != ErrorCode.NoError)
+                    if (!state.ErrorCode.Success())
                         return (Fetcher)null;
 
                     // get or create the correct Fetcher for this topic/partition
@@ -525,18 +525,20 @@ namespace kafka4net
                     var meta = await _protocol.MetadataRequest(new TopicRequest { Topics = new[] { topic } });
                     _log.Debug("FetchMetaWithRetryAsync: got MetadataResponse {0}", meta);
                     var errorCode = meta.Topics.Single().TopicErrorCode;
-                    switch (errorCode)
+                    if (errorCode.Success())
                     {
-                        case ErrorCode.NoError:
-                            _log.Debug("Discovered topic: '{0}'", topic);
-                            return meta;
-                        case ErrorCode.LeaderNotAvailable:
-                            _log.Debug("Topic: '{0}': LeaderNotAvailable", topic);
-                            break;
-                        default:
-                            _log.Error("Topic: '{0}': {1}", topic, errorCode);
-                            throw new BrokerException(string.Format("Can not fetch metadata for topic '{0}'. {1}", topic, errorCode));
+                        _log.Debug("Discovered topic: '{0}'", topic);
+                        return meta;
                     }
+
+                    if (!errorCode.IsPermanentError())
+                    {
+                        _log.Debug("Topic: '{0}': LeaderNotAvailable", topic);
+                        continue;
+                    }
+
+                    _log.Error("Topic: '{0}': {1}", topic, errorCode);
+                    throw new BrokerException(string.Format("Can not fetch metadata for topic '{0}'. {1}", topic, errorCode));
                 }
                 catch (Exception e)
                 {

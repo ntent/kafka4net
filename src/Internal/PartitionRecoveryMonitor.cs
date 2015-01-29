@@ -152,7 +152,7 @@ namespace kafka4net.Internal
                     from responsePart in responseTopic.Partitions
                     let key = new Tuple<string, int>(responseTopic.TopicName, responsePart.Id)
                     where 
-                        responseTopic.TopicErrorCode == ErrorCode.NoError 
+                        responseTopic.TopicErrorCode.Success()
                         && responsePart.ErrorCode.Success()
                         && _failedList.ContainsKey(key)
                     select Tuple.Create(responseTopic.TopicName, responsePart.Id, responsePart.Leader)

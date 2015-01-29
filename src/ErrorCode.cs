@@ -73,5 +73,20 @@
         {
             return errorCode == ErrorCode.NoError || errorCode == ErrorCode.ReplicaNotAvailable;
         }
+
+        public static bool Failure(this ErrorCode errorCode)
+        {
+            return !Success(errorCode);
+        }
+
+        public static bool IsPermanentError(this ErrorCode errorCode)
+        {
+            return errorCode == ErrorCode.MessageSetSizeTooLarge ||
+                errorCode == ErrorCode.MessageSizeTooLarge ||
+                errorCode == ErrorCode.InvalidMessageSize ||
+                errorCode == ErrorCode.UnknownTopicOrPartition ||
+                errorCode == ErrorCode.InvalidMessage ||
+                errorCode == ErrorCode.OffsetOutOfRange;
+        }
     }
 }

@@ -27,16 +27,6 @@ namespace kafka4net.Protocols.Responses
             {
                 return string.Format("Part: {0}, Err: {1} Offset: {2}", Partition, ErrorCode, Offset);
             }
-
-            public bool IsPartitionPermanentError()
-            {
-                return ErrorCode == ErrorCode.MessageSetSizeTooLarge ||
-                    ErrorCode == ErrorCode.MessageSizeTooLarge ||
-                    ErrorCode == ErrorCode.InvalidMessageSize ||
-                    ErrorCode == ErrorCode.UnknownTopicOrPartition ||
-                    ErrorCode == ErrorCode.InvalidMessage ||
-                    ErrorCode == ErrorCode.OffsetOutOfRange;
-            }
         }
 
         public override string ToString()

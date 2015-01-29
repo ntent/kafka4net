@@ -111,10 +111,10 @@ namespace kafka4net
 
                             if (_log.IsDebugEnabled)
                             {
-                                _log.Debug("Changing '{0}'/{1} IsOnline {2}->{3}", Configuration.Topic, p.PartitionId, queue.IsOnline, p.ErrorCode == ErrorCode.NoError);
+                                _log.Debug("Changing '{0}'/{1} IsOnline {2}->{3}", Configuration.Topic, p.PartitionId, queue.IsOnline, p.ErrorCode.Success());
                             }
 
-                            queue.IsOnline = p.ErrorCode == ErrorCode.NoError;
+                            queue.IsOnline = p.ErrorCode.Success();
                             _queueEventWaitHandler.Set();
 
                             if (_log.IsDebugEnabled)
@@ -442,7 +442,7 @@ namespace kafka4net
                                 var failedResponsePartitions = response.Topics.
                                     Where(t => t.TopicName == Configuration.Topic). // should contain response only for our topic, but just in case...
                                     SelectMany(t => t.Partitions).
-                                    Where(p => p.ErrorCode != ErrorCode.NoError).ToArray();
+                                    Where(p => !p.ErrorCode.Success()).ToArray();
 
                                 // some errors, figure out which batches to dismiss from queues
                                 var failedPartitionIds = new HashSet<int>(failedResponsePartitions.Select(p => p.Partition));
@@ -452,7 +452,7 @@ namespace kafka4net
                                     ToArray();
 
                                 var permanentErrorPartitions = failedResponsePartitions.
-                                    Where(p => p.IsPartitionPermanentError()).ToArray();
+                                    Where(p => p.ErrorCode.IsPermanentError()).ToArray();
 
                                 var recoverableErrorPartitions = failedResponsePartitions.
                                     Except(permanentErrorPartitions).ToArray();

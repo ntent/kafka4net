@@ -265,7 +265,7 @@ namespace tests
             _log.Info("Waiting for #2 sender to complete");
             await sender2.ToTask();
             _log.Info("Waiting for producer.Close");
-            await producer.CloseAsync(TimeSpan.FromSeconds(5));
+            await producer.CloseAsync(TimeSpan.FromSeconds(60));
 
             _log.Info("Waiting 4sec for remaining messages");
             await Task.Delay(TimeSpan.FromSeconds(4)); // if unexpected messages arrive, let them in to detect failure
