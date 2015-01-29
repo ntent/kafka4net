@@ -1,19 +1,13 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Diagnostics;
-using System.Globalization;
-using System.IO;
 using System.Linq;
-using System.Reactive.Concurrency;
 using System.Reactive.Linq;
 using System.Reactive.Subjects;
 using System.Reactive.Threading.Tasks;
-using System.Security.Policy;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using kafka4net;
-using kafka4net.Protocols.Requests;
 using kafka4net.ConsumerImpl;
 using kafka4net.Utils;
 using NLog;
@@ -204,9 +198,6 @@ namespace tests
                 }
             };
             await producer.ConnectAsync();
-
-            if (!(await producer.Cluster.GetAllTopicsAsync()).Contains(topic))
-                VagrantBrokerUtil.CreateTopic(topic, 3, 3);
 
             var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic));
             await consumer.ConnectAsync();

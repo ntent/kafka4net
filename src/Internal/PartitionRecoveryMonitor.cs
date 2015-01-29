@@ -147,7 +147,7 @@ namespace kafka4net.Internal
                 //
                 // Join failed partitions with successful responses to find out recovered ones
                 //
-                Tuple<string, int, int>[] healedPartitions = (
+                Tuple<string, int, int>[] maybeHealedPartitions = (
                     from responseTopic in response.Topics
                     from responsePart in responseTopic.Partitions
                     let key = new Tuple<string, int>(responseTopic.TopicName, responsePart.Id)
@@ -160,7 +160,7 @@ namespace kafka4net.Internal
 
                 if (_log.IsDebugEnabled)
                 {
-                    if (healedPartitions.Length == 0)
+                    if (maybeHealedPartitions.Length == 0)
                     {
                         _log.Debug("Out of {0} partitions returned from broker {2}, none of the {3} errored partitions are healed. Current partition states for errored partitions: [{1}]",
                             response.Topics.SelectMany(t => t.Partitions).Count(),
@@ -175,7 +175,7 @@ namespace kafka4net.Internal
                     else
                     {
                         var str = new StringBuilder();
-                        foreach (var leader in healedPartitions.GroupBy(p => p.Item3, (i, tuples) => new { Leader = i, Topics = tuples.GroupBy(t => t.Item1) }))
+                        foreach (var leader in maybeHealedPartitions.GroupBy(p => p.Item3, (i, tuples) => new { Leader = i, Topics = tuples.GroupBy(t => t.Item1) }))
                         {
                             str.AppendFormat(" Leader: {0}\n", leader.Leader);
                             foreach (var topic1 in leader.Topics)
@@ -190,9 +190,9 @@ namespace kafka4net.Internal
 
                 if(EtwTrace.Log.IsEnabled()) 
                 {
-                    if (healedPartitions.Length != 0)
+                    if (maybeHealedPartitions.Length != 0)
                     {
-                        EtwTrace.Log.RecoveryMonitor_PossiblyHealedPartitions(_id, healedPartitions.Length);
+                        EtwTrace.Log.RecoveryMonitor_PossiblyHealedPartitions(_id, maybeHealedPartitions.Length);
                     }
                     else
                     {
@@ -205,7 +205,7 @@ namespace kafka4net.Internal
                 // broker B1 said that partition belongs to B2 and B2 can not be reach.
                 // It is checked only that said broker responds to metadata request without exceptions.
                 //
-                healedPartitions.
+                maybeHealedPartitions.
                     GroupBy(p => p.Item3).
                     ForEach(async brokerGrp =>
                     {
