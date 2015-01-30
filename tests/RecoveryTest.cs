@@ -537,7 +537,8 @@ namespace tests
                 });
 
             _log.Info("Waiting for receiver complete");
-            var receivedList = await received.Select(msg => BitConverter.ToInt32(msg.Value, 0)).Take(messagesInTopic).TakeUntil(DateTime.Now.AddSeconds(60)).ToList().ToTask();
+            var receivedList = await received.Select(msg => BitConverter.ToInt32(msg.Value, 0)).Take(messagesInTopic).
+                TakeUntil(DateTime.Now.AddSeconds(60)).ToList().ToTask();
 
             if (stopBrokerTask != null)
                 await stopBrokerTask.TimeoutAfter(TimeSpan.FromSeconds(10));

@@ -88,6 +88,7 @@ namespace kafka4net.Tracing
             public const EventOpcode PartitionLeaderChange = (EventOpcode)63;
             public const EventOpcode PartitionReplicasChange = (EventOpcode)64;
             public const EventOpcode PartitionTransportError = (EventOpcode)65;
+            public const EventOpcode NewBroker = (EventOpcode)66;
         }
 
         public class Tasks
@@ -633,6 +634,11 @@ namespace kafka4net.Tracing
             Log.WriteEvent(706, topicName, clusterId, part, leader);
         }
 
+        [Event(707, Task = Tasks.Metadata, Opcode = Opcodes.NewBroker)]
+        public void MetadataNewBroker(int clusterId, string host, int port, int nodeId)
+        {
+            Log.WriteEvent(707, clusterId, host, port, nodeId);
+        }
         #endregion
 
         #region Consumer

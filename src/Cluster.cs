@@ -655,6 +655,7 @@ namespace kafka4net
             RebuildBrokerIndexes(_metadata);
 
             // broadcast any new brokers
+            newBrokers.ForEach(b => EtwTrace.Log.MetadataNewBroker(_id, b.Host, b.Port, b.NodeId));
             newBrokers.Where(b => b.NodeId != -99).ForEach(b => _newBrokerSubject.OnNext(b));
 
             // broadcast the current partition state for all partitions.
