@@ -152,7 +152,7 @@ namespace kafka4net.Internal
                     from responsePart in responseTopic.Partitions
                     let key = new Tuple<string, int>(responseTopic.TopicName, responsePart.Id)
                     where 
-                        responseTopic.TopicErrorCode.Success()
+                        responseTopic.ErrorCode.Success()
                         && responsePart.ErrorCode.Success()
                         && _failedList.ContainsKey(key)
                     select Tuple.Create(responseTopic.TopicName, responsePart.Id, responsePart.Leader)
@@ -165,7 +165,7 @@ namespace kafka4net.Internal
                         _log.Debug("Out of {0} partitions returned from broker {2}, none of the {3} errored partitions are healed. Current partition states for errored partitions: [{1}]",
                             response.Topics.SelectMany(t => t.Partitions).Count(),
                             string.Join(",", response.Topics
-                                .SelectMany(t => t.Partitions.Select(p => new { t.TopicName, t.TopicErrorCode, PartitionId = p.Id, PartitionErrorCode = p.ErrorCode }))
+                                .SelectMany(t => t.Partitions.Select(p => new { t.TopicName, TopicErrorCode = t.ErrorCode, PartitionId = p.Id, PartitionErrorCode = p.ErrorCode }))
                                 .Where(p => _failedList.ContainsKey(new Tuple<string, int>(p.TopicName, p.PartitionId)))
                                 .Select(p => string.Format("{0}:{1}:{2}:{3}", p.TopicName, p.TopicErrorCode, p.PartitionId, p.PartitionErrorCode))),
                             broker,
@@ -232,7 +232,7 @@ namespace kafka4net.Internal
                             {
                                 Brokers = response2.Brokers, // we may broadcast more than 1 broker, but it should be ok because discovery of new broker metadata does not cause any actions
                                 Topics = response2.Topics.Select(t => new TopicMeta { 
-                                    TopicErrorCode = t.TopicErrorCode,
+                                    ErrorCode = t.ErrorCode,
                                     TopicName = t.TopicName,
                                     // assign only healed partitions who's "new" leader is the broker we just checked.
                                     Partitions = t.Partitions.Where(p => brokerGrp.Any(hp => hp.Item1 == t.TopicName && hp.Item2 == p.Id && hp.Item3 == newBroker.NodeId)).ToArray()

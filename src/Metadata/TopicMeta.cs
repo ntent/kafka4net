@@ -5,13 +5,13 @@ namespace kafka4net.Metadata
 {
     public class TopicMeta
     {
-        public ErrorCode TopicErrorCode;
+        public ErrorCode ErrorCode;
         public string TopicName;
         public PartitionMeta[] Partitions;
 
         public override string ToString()
         {
-            return string.Format("Topic '{0}' Partitions [{1}]", TopicName, string.Join(",", Partitions.AsEnumerable()));
+            return string.Format("Topic '{0}' {1} Partitions [{2}]", TopicName, ErrorCode, string.Join(",", Partitions.AsEnumerable()));
         }
 
         #region name comparer

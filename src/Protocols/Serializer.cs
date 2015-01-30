@@ -66,7 +66,7 @@ namespace kafka4net.Protocols
         private static TopicMeta DeserializeTopicMeta(MemoryStream stream)
         {
             var ret = new TopicMeta();
-            ret.TopicErrorCode = (ErrorCode)BigEndianConverter.ReadInt16(stream);
+            ret.ErrorCode = (ErrorCode)BigEndianConverter.ReadInt16(stream);
             ret.TopicName = ReadString(stream);
 
             var count = BigEndianConverter.ReadInt32(stream);
