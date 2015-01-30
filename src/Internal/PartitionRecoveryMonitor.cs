@@ -226,19 +226,33 @@ namespace kafka4net.Internal
                             // success!
                             // raise new metadata event 
                             _log.Info("Alive brokers detected: {0} which responded with: {1}", newBroker, response2);
+
+                            // Join maybe healed partitions with partitions which belong to alive broker
+                            var confirmedHealedTopics =
+                                (from maybeHealedPartition in brokerGrp
+                                 from healedTopic in response2.Topics
+                                 where healedTopic.TopicName == maybeHealedPartition.Item1
+                                 from healedPart in healedTopic.Partitions
+                                 where healedPart.Id == maybeHealedPartition.Item2 && healedPart.Leader == brokerGrp.Key
+                                 group healedPart by new { healedTopic.TopicName, healedTopic.ErrorCode } into healedTopicGrp
+                                 select healedTopicGrp
+                                 );
+
                             
-                            // broadcast only healed partitions which belong to newBroker
+                            // broadcast only trully healed partitions which belong to alive broker
                             var filteredResponse = new MetadataResponse
                             {
                                 Brokers = response2.Brokers, // we may broadcast more than 1 broker, but it should be ok because discovery of new broker metadata does not cause any actions
-                                Topics = response2.Topics.Select(t => new TopicMeta { 
-                                    ErrorCode = t.ErrorCode,
-                                    TopicName = t.TopicName,
-                                    // assign only healed partitions who's "new" leader is the broker we just checked.
-                                    Partitions = t.Partitions.Where(p => brokerGrp.Any(hp => hp.Item1 == t.TopicName && hp.Item2 == p.Id && hp.Item3 == newBroker.NodeId)).ToArray()
-                                }).ToArray()
+                                Topics = confirmedHealedTopics.
+                                    Where(t => t.Any()). // broadcast only topics which have healed partitions
+                                    Select(t => new TopicMeta
+                                    {
+                                        ErrorCode = t.Key.ErrorCode,
+                                        TopicName = t.Key.TopicName,
+                                        Partitions = t.ToArray()
+                                    }).ToArray()
                             };
-                            
+
                             _log.Debug("Broadcasting filtered response {0}", filteredResponse);
                             if(EtwTrace.Log.IsEnabled())
                                 foreach(var topic in filteredResponse.Topics)
