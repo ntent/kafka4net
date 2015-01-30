@@ -8,6 +8,7 @@ using System.Net.Sockets;
 using System.Reactive.Concurrency;
 using System.Reactive.Linq;
 using System.Reactive.Subjects;
+using System.Reactive.Threading.Tasks;
 using System.Runtime.Remoting.Messaging;
 using System.Threading;
 using System.Threading.Tasks;
@@ -475,16 +476,19 @@ namespace kafka4net
             // Two awaits, one for scheduler and one for Conn.GetClientAsync
             return await await Scheduler.Ask(() =>
             {
-                // TODO: would it be a good idea to query all brokers and return the 1st successful response?
-                // This way we do not fail the whole driver if first broker is down
+                // Query all brokers and return the 1st successful response
                 var tcp = _metadata.Brokers.
                     Select(async b =>
                     {
                         var conn = b.Conn;
-                        var client = await conn.GetClientAsync();
+                        var client = await conn.GetClientAsync(noTransportErrors: true);
                         return Tuple.Create(conn, client);
                     }).
-                    First();
+                    // replace exception with empty sequence
+                    Select(t => t.ToObservable().Catch(Observable.Empty<Tuple<Connection, TcpClient>>())).
+                    ToObservable().
+                    Merge().
+                    FirstAsync();
                 return tcp;
             });
         }
@@ -524,7 +528,7 @@ namespace kafka4net
                     _log.Debug("FetchMetaWithRetryAsync: sending MetadataRequest...");
                     var meta = await _protocol.MetadataRequest(new TopicRequest { Topics = new[] { topic } });
                     _log.Debug("FetchMetaWithRetryAsync: got MetadataResponse {0}", meta);
-                    var errorCode = meta.Topics.Single().TopicErrorCode;
+                    var errorCode = meta.Topics.Single().ErrorCode;
                     if (errorCode.Success())
                     {
                         _log.Debug("Discovered topic: '{0}'", topic);
