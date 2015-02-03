@@ -484,7 +484,7 @@ namespace kafka4net
                                     Where(q => permanentErrorPartitionIds.Contains(q.Partition)).
                                     SelectMany(q => q.Queue.GetEnum(q.CountInProgress)).ToArray();
                                 // fire permanent error
-                                if (OnPermError != null)
+                                if (OnPermError != null && permanentFailedMessages.Length > 0)
                                 {
                                     var msg = string.Join(",", permanentErrorPartitions.Select(p => p.ErrorCode).Distinct());
                                     msg = string.Format("Produce request failed with errors: [{0}]", msg);
