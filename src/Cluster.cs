@@ -546,10 +546,22 @@ namespace kafka4net
                 }
                 catch (Exception e)
                 {
-                    if (_cancel.IsCancellationRequested)
+                    if (_cancel.IsCancellationRequested) // cluster is shutting down, no big deal.
                         _log.Info(e, "Exception during shutdown while trying to fetch topic '{0}' metadata", topic);
                     else
-                        _log.Error(e, "Error while trying to fetch topic '{0}' metadata", topic);
+                    {
+                        // if we got a CorrelationLoopException or ObjectDisposedException, it means the connection is no longer OK. 
+                        // Check if it was asked to shut down (happens a lot when "seed" connections are replaced with actual ones)
+                        var cle = e as CorrelationLoopException;
+                        var ode = e as ObjectDisposedException;
+                        if (cle != null && cle.IsRequestedClose)
+                            _log.Info(e, "Connection requested close while trying to fetch topic '{0}' metadata, will retry.", topic);
+                        else if (ode != null)
+                            _log.Warn(e, "Connection Disposed while trying to fetch topic '{0}' metadata, will retry.", topic);
+                        else
+                            _log.Error(e, "Error while trying to fetch topic '{0}' metadata, will retry.", topic);                        
+
+                    }
                 }
 
                 await Task.Delay(500, _cancel.Token);

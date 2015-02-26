@@ -153,7 +153,7 @@ namespace kafka4net.Protocols
             finally
             {
                 _log.Debug("Finishing CorrelationLoop. Calling back error to clear waiters.");
-                _corelationTable.Values.ForEach(c => c(null, new CorrelationLoopException("Correlation loop closed. Request will never get a response.")));
+                _corelationTable.Values.ForEach(c => c(null, new CorrelationLoopException("Correlation loop closed. Request will never get a response.") { IsRequestedClose = cancel.IsCancellationRequested }));
                 _log.Debug("Finished CorrelationLoop.");
             }
         }
