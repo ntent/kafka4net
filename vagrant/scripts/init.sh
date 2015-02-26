@@ -4,6 +4,8 @@
 
 . /vagrant/scripts/env.sh
 
+apt-get install -y openjdk-7-jre-headless
+
 if [ ! -d "/opt/$kafka" ]; then
   mkdir -p /vagrant/files
   cd /vagrant/files
