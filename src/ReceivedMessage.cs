@@ -7,5 +7,6 @@
         public byte[] Key;
         public byte[] Value;
         public long Offset;
+        public long HighWaterMarkOffset;
     }
 }
