@@ -130,7 +130,8 @@ namespace kafka4net.ConsumerImpl
                         Partition = part.Partition,
                         Key = msg.Key,
                         Value = msg.Value,
-                        Offset = msg.Offset
+                        Offset = msg.Offset,
+                        HighWaterMarkOffset = part.HighWatermarkOffset
                     });
             }).
             Do(msg => EtwTrace.Log.FetcherMessage(_id, msg.Key != null ? msg.Key.Length : -1, msg.Value != null ? msg.Value.Length : -1, msg.Offset, msg.Partition))

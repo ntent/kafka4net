@@ -125,9 +125,9 @@ namespace kafka4net.ConsumerImpl
                 if (_partitionFetchState.Offset <= value.Offset)
                 {
                     // if we are sending back an offset greater than we asked for then we likely skipped an offset. 
-                    // Is this OK??
+                    // This happens when using Log Compaction (see https://kafka.apache.org/documentation.html#compaction )
                     if (_partitionFetchState.Offset < value.Offset)
-                        _log.Warn("{0} was expecting offset {1} but received larger offset {2}",this,_partitionFetchState.Offset,value.Offset);
+                        _log.Info("{0} was expecting offset {1} but received larger offset {2}",this,_partitionFetchState.Offset,value.Offset);
 
                     _subscribedConsumer.OnMessageArrivedInput.OnNext(value);
                     // track that we handled this offset so the next time around, we fetch the next message
