@@ -1326,12 +1326,13 @@ namespace tests
             var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses,topic,ConsumerStartLocation.TopicHead));
             Assert.AreNotEqual(threadName, Thread.CurrentThread.Name);
 
-
             var msgsRcv = new List<long>();
             var messageSubscription = consumer.OnMessageArrived
-                .Do(msg => Assert.AreNotEqual(threadName, Thread.CurrentThread.Name), exception => Assert.AreNotEqual(threadName, Thread.CurrentThread.Name), () => Assert.AreNotEqual(threadName, Thread.CurrentThread.Name))
+                .Do(msg => Assert.AreEqual(threadName, Thread.CurrentThread.Name), exception => Assert.AreEqual(threadName, Thread.CurrentThread.Name), () => Assert.AreEqual(threadName, Thread.CurrentThread.Name))
                 .Take(50)
                 .TakeUntil(DateTime.Now.AddSeconds(500))
+                .ObserveOn(System.Reactive.Concurrency.DefaultScheduler.Instance)
+                .Do(msg => Assert.AreNotEqual(threadName, Thread.CurrentThread.Name), exception => Assert.AreNotEqual(threadName, Thread.CurrentThread.Name), () => Assert.AreNotEqual(threadName, Thread.CurrentThread.Name))
                 .Subscribe(
                     msg=>
                     {
@@ -1340,7 +1341,7 @@ namespace tests
                         _log.Debug("In Consumer Subscribe OnNext using thread {0}", Thread.CurrentThread.Name);
                     }, exception =>
                     {
-                        _log.Debug("In Consumer Subscribe OnError using thread {0}", Thread.CurrentThread.Name);
+                        _log.Debug("In Consumer Subscribe OnError using thread {0} Error: {1}", Thread.CurrentThread.Name, exception.Message);
                         throw exception;
                     }, () =>
                     {
@@ -1350,8 +1351,10 @@ namespace tests
             
             await consumer.IsConnected;
 
+            _log.Info("Waitng for consumer to read");
             await Task.Delay(TimeSpan.FromSeconds(6));
             _log.Debug("After Consumer Subscribe using thread {0}", Thread.CurrentThread.Name);
+            consumer.Dispose();
             Assert.AreNotEqual(threadName, Thread.CurrentThread.Name);
 
             Assert.AreEqual(msgs.Length, msgsRcv.Count);
@@ -1368,7 +1371,6 @@ namespace tests
             _log.Debug("After Producer Subscribe using thread {0}", Thread.CurrentThread.Name);
             Assert.AreNotEqual(threadName, Thread.CurrentThread.Name);
 
-            consumer.Dispose();
             Assert.AreNotEqual(threadName, Thread.CurrentThread.Name);
 
             await cluster.CloseAsync(TimeSpan.FromSeconds(5));

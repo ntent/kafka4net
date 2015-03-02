@@ -16,7 +16,15 @@ namespace kafka4net
 {
     public class Consumer : IDisposable
     {
+        /// <summary>
+        /// IMPORTANT!
+        /// When subscribing to message flow, remember that messages are handled in kafks4net execution thread, which is designed to be async. This thread handles all internal driver callbacks.
+        /// This way, if you handle messages with some delays or God forbids Wait/Result, than you will pause driver's ability to handle internal events.
+        /// Please, when subscribe, use ObserveOn(your scheduler or sync context) to switch handle thread to something else. Or make sure that your handle routine is instant. How instant?
+        /// For reference, driver thread is used to handle async socket data received event. This should give you an idea: for how log are you willing to delay network handling inside the deiver.
+        /// </summary>
         public readonly IObservable<ReceivedMessage> OnMessageArrived;
+
         internal readonly ISubject<ReceivedMessage> OnMessageArrivedInput = new Subject<ReceivedMessage>();
 
         private static readonly ILogger _log = Logger.GetLogger();
@@ -78,7 +86,7 @@ namespace kafka4net
                 // It is not possible to wait for completion of partition resolution process, so start it asynchronously.
                 // This means that OnMessageArrived.Subscribe() will complete when consumer is not actually connected yet.
                 //
-                Task.Run(() => _cluster.Scheduler.Ask(async () =>
+                Task.Run(async () =>
                 {
                     try 
                     {
@@ -92,7 +100,7 @@ namespace kafka4net
                         _connectionComplete.TrySetException(e);
                         observer.OnError(e);
                     }
-                }));
+                });
 
                 // upon unsubscribe
                 return Disposable.Create(() =>
@@ -111,13 +119,7 @@ namespace kafka4net
                 });
             }
 
-            // Propagate exceptions in subscribe directly to caller by using Scheduler.Immediate
-            onMessage = onMessage.SubscribeOn(Scheduler.Immediate);
-
-            // Isolate driver's scheduler thread from the caller because driver's scheduler is sensitive for delays
-            var scheduledMessages = SynchronizationContext.Current != null ? onMessage.ObserveOn(SynchronizationContext.Current) : onMessage.ObserveOn(Scheduler.Default);
-
-            OnMessageArrived = scheduledMessages;
+            OnMessageArrived = onMessage;
         }
 
         /// <summary>
