@@ -137,7 +137,6 @@ namespace tests
             // Validate by reading published messages
             //
             var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, maxWaitTimeMs: 1000, minBytesPerFetch: 1, startLocation: ConsumerStartLocation.TopicHead));
-            await consumer.ConnectAsync();
             var msgs = consumer.OnMessageArrived.Publish().RefCount();
             var receivedTxt = new List<string>();
             var consumerSubscription = msgs.
@@ -146,6 +145,7 @@ namespace tests
                 Do(m => _log.Info("Received {0}", m)). 
                 Do(receivedTxt.Add).
                 Subscribe();
+            await consumer.IsConnected;
 
             _log.Debug("Waiting for consumer");
             await msgs.Take(producedCount).TakeUntil(DateTimeOffset.Now.AddSeconds(5)).LastOrDefaultAsync().ToTask();
@@ -154,7 +154,7 @@ namespace tests
             Assert.IsTrue(receivedTxt.All(m => m == "la-la-la"), "Unexpected message content");
 
             consumerSubscription.Dispose();
-            await consumer.CloseAsync(TimeSpan.FromSeconds(5));
+            consumer.Dispose();
 
             kafka4net.Tracing.EtwTrace.Marker("/TopicIsAutocreatedByProducer");
         }
@@ -200,7 +200,6 @@ namespace tests
             await producer.ConnectAsync();
 
             var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic));
-            await consumer.ConnectAsync();
 
             const int postCount = 100;
             const int postCount2 = 50;
@@ -218,6 +217,7 @@ namespace tests
                     receivedEvents.OnNext(msg);
                     _log.Debug("Received {0}/{1}", Encoding.UTF8.GetString(msg.Value), received.Count);
                 });
+            await consumer.IsConnected;
 
             //
             // Send #1
@@ -271,7 +271,7 @@ namespace tests
             await Task.Delay(TimeSpan.FromSeconds(4)); // if unexpected messages arrive, let them in to detect failure
 
             _log.Info("Waiting for consumer.CloseAsync");
-            await consumer.CloseAsync(TimeSpan.FromSeconds(5));
+            consumer.Dispose();
             consumerSubscription.Dispose();
 
             if (postCount + postCount2 != received.Count)
@@ -308,7 +308,6 @@ namespace tests
             const int numMessages = 400;
             var topic = "topic." + _rnd.Next();
             var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses,topic,ConsumerStartLocation.TopicHead));
-            await consumer.ConnectAsync();
             var cancelSubject = new Subject<bool>();
             var receivedValuesTask = consumer.OnMessageArrived
                 .Select(msg=>BitConverter.ToInt32(msg.Value, 0))
@@ -317,6 +316,7 @@ namespace tests
                 .TakeUntil(cancelSubject)
                 .ToList().ToTask();
             //receivedValuesTask.Start();
+            await consumer.IsConnected;
 
             // wait a couple seconds for things to "stabilize"
             await Task.Delay(TimeSpan.FromSeconds(4));
@@ -368,7 +368,6 @@ namespace tests
                 .Subscribe(msg=> { producer.Send(msg); sentList.Add(BitConverter.ToInt32(msg.Value, 0)); });
 
             var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, ConsumerStartLocation.TopicHead, maxBytesPerFetch: 4*8));
-            await consumer.ConnectAsync();
             var current =0;
             var received = new ReplaySubject<ReceivedMessage>();
             Task brokerStopped = null;
@@ -383,6 +382,7 @@ namespace tests
                     received.OnNext(msg);
                     _log.Info("Got: {0}", BitConverter.ToInt32(msg.Value, 0));
                 });
+            await consumer.IsConnected;
 
             _log.Info("Waiting for receiver complete");
             var receivedList = await received.Select(msg => BitConverter.ToInt32(msg.Value, 0)).Take(count).TakeUntil(DateTime.Now.AddSeconds(60)).ToList().ToTask();
@@ -398,7 +398,7 @@ namespace tests
             _log.Info("Producer closed, disposing consumer subscription.");
             consumerSubscription.Dispose();
             _log.Info("Consumer subscription disposed. Closing consumer.");
-            await consumer.CloseAsync(TimeSpan.FromSeconds(5));
+            consumer.Dispose();
             _log.Info("Consumer closed.");
 
             if (sentList.Count != receivedList.Count)
@@ -520,7 +520,6 @@ namespace tests
 
 
             var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, ConsumerStartLocation.TopicHead, maxBytesPerFetch: 4 * 8));
-            await consumer.ConnectAsync();
             var current = 0;
             var received = new ReplaySubject<ReceivedMessage>();
             Task stopBrokerTask = null;
@@ -535,6 +534,7 @@ namespace tests
                     received.OnNext(msg);
                     //_log.Info("Got: {0}", BitConverter.ToInt32(msg.Value, 0));
                 });
+            await consumer.IsConnected;
 
             _log.Info("Waiting for receiver complete");
             var receivedList = await received.Select(msg => BitConverter.ToInt32(msg.Value, 0)).Take(messagesInTopic).
@@ -548,7 +548,7 @@ namespace tests
             _log.Info("Receiver complete. Disposing Subscription");
             consumerSubscription.Dispose();
             _log.Info("Consumer subscription disposed. Closing consumer.");
-            await consumer.CloseAsync(TimeSpan.FromSeconds(5));
+            consumer.Dispose();
             _log.Info("Consumer closed.");
 
             _log.Info("Sum of offsets: {0}", tails.MessagesSince(heads));
@@ -584,12 +584,12 @@ namespace tests
             // start listener at the end of queue and accumulate received messages
             var received = new HashSet<string>();
             var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, maxWaitTimeMs: 30 * 1000));
-            _log.Info("Connecting consumer");
-            await consumer.ConnectAsync();
             _log.Info("Subscribing to consumer");
             var consumerSubscription = consumer.OnMessageArrived
                                         .Select(msg => Encoding.UTF8.GetString(msg.Value))
                                         .Subscribe(m => received.Add(m));
+            _log.Info("Connecting consumer");
+            await consumer.IsConnected;
             _log.Info("Subscribed to consumer");
 
             _log.Info("Starting sender");
@@ -620,7 +620,7 @@ namespace tests
             _log.Info("Disposing consumer subscription");
             consumerSubscription.Dispose();
             _log.Info("Closing consumer");
-            await consumer.CloseAsync(TimeSpan.FromSeconds(4));
+            consumer.Dispose();
             _log.Info("Closed consumer");
 
             // assert we received all the messages
@@ -705,7 +705,6 @@ namespace tests
 
 
             var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, ConsumerStartLocation.TopicHead, maxBytesPerFetch: 4 * 8));
-            await consumer.ConnectAsync();
             var current = 0;
             var received = new ReplaySubject<ReceivedMessage>();
             Task rebalanceTask = null;
@@ -720,6 +719,7 @@ namespace tests
                     received.OnNext(msg);
                     //_log.Info("Got: {0}", BitConverter.ToInt32(msg.Value, 0));
                 });
+            await consumer.IsConnected;
 
             _log.Info("Waiting for receiver complete");
             var receivedList = await received.Select(msg => BitConverter.ToInt32(msg.Value, 0)).
@@ -737,7 +737,7 @@ namespace tests
             _log.Info("Receiver complete. Disposing Subscription");
             consumerSubscription.Dispose();
             _log.Info("Consumer subscription disposed. Closing consumer.");
-            await consumer.CloseAsync(TimeSpan.FromSeconds(5));
+            consumer.Dispose();
             _log.Info("Consumer closed.");
 
             tails = await cluster.FetchPartitionOffsetsAsync(topic, ConsumerStartLocation.TopicTail);
@@ -776,7 +776,6 @@ namespace tests
             // create listener in a separate connection/broker
             var receivedMsgs = new List<ReceivedMessage>();
             var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topicName));
-            await consumer.ConnectAsync();
             var consumerSubscription = consumer.OnMessageArrived.Synchronize().Subscribe(msg =>
             {
                 lock (receivedMsgs)
@@ -784,6 +783,7 @@ namespace tests
                     receivedMsgs.Add(msg);
                 }
             });
+            await consumer.IsConnected;
 
             // sender is configured with 50ms batch period
             var producer = new Producer(_seedAddresses, new ProducerConfiguration(topicName, TimeSpan.FromMilliseconds(50)));
@@ -835,7 +835,7 @@ namespace tests
             _log.Info("Disposing consumer");
             consumerSubscription.Dispose();
             _log.Info("Closing consumer");
-            await consumer.CloseAsync(TimeSpan.FromSeconds(4));
+            consumer.Dispose();
             _log.Info("Done with networking");
 
             // compare sent and received messages
@@ -976,10 +976,10 @@ namespace tests
             _log.Info("Sum of offsets {0}. Raw: {1}",offsets.Partitions.Sum(p=>offsets.NextOffset(p)), offsets);
             
             var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, ConsumerStartLocation.SpecifiedLocations, partitionOffsetProvider: (p)=>offsets.NextOffset(p)-300));
-            await consumer.ConnectAsync();
             var messages = consumer.OnMessageArrived.
                 GroupBy(m => m.Partition).Replay();
             messages.Connect();
+            await consumer.IsConnected;
 
             var consumerSubscription = messages.Subscribe(p => p.Take(10).Subscribe(
                 m => _log.Debug("Got message {0}/{1}", m.Partition, BitConverter.ToInt32(m.Value, 0)),
@@ -991,7 +991,7 @@ namespace tests
             await messages.Select(g => g.Take(100)).Take(3).ToTask();
 
             consumerSubscription.Dispose();
-            await consumer.CloseAsync(TimeSpan.FromSeconds(5));
+            consumer.Dispose();
 
             kafka4net.Tracing.EtwTrace.Marker("/ExplicitOffset");
         }
@@ -1020,10 +1020,10 @@ namespace tests
 
             // read starting from the head
             var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, ConsumerStartLocation.TopicHead));
-            await consumer.ConnectAsync();
             var count2 = consumer.OnMessageArrived.TakeUntil(DateTimeOffset.Now.AddSeconds(5))
                 //.Do(val=>_log.Info("received value {0}", BitConverter.ToInt32(val.Value,0)))
                 .Count().ToTask();
+            //await consumer.IsConnected;
             Assert.AreEqual(count, await count2);
 
             kafka4net.Tracing.EtwTrace.Marker("/ReadFromHead");
@@ -1097,7 +1097,6 @@ namespace tests
             // now consume the "first" 50. Stop, save offsets, and restart.
             var consumer1 = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, ConsumerStartLocation.SpecifiedLocations, 500, 1, 262144, offsets1.NextOffset));
             var receivedEvents = new List<int>(100);
-            await consumer1.ConnectAsync();
 
             _log.Info("Consuming first half of messages.");
 
@@ -1110,9 +1109,10 @@ namespace tests
                     offsets1.UpdateOffset(msg.Partition, msg.Offset);
                 })
                 .Take(50);
+            //await consumer1.IsConnected;
 
             _log.Info("Closing first consumer");
-            await consumer1.CloseAsync(TimeSpan.FromSeconds(5));
+            consumer1.Dispose();
 
             // now serialize the offsets.
             var offsetBytes = offsets1.WriteOffsets();
@@ -1121,7 +1121,6 @@ namespace tests
             var offsets2 = new TopicPartitionOffsets(offsetBytes);
 
             var consumer2 = new Consumer(new ConsumerConfiguration(_seedAddresses,offsets2.Topic, ConsumerStartLocation.SpecifiedLocations, 500, 1, 262144, offsets2.NextOffset));
-            await consumer2.ConnectAsync();
 
             await consumer2.OnMessageArrived
                 .Do(msg =>
@@ -1132,9 +1131,10 @@ namespace tests
                     offsets2.UpdateOffset(msg.Partition, msg.Offset);
                 })
                 .Take(50);
+            //await consumer2.IsConnected;
 
             _log.Info("Closing second consumer");
-            await consumer2.CloseAsync(TimeSpan.FromSeconds(5));
+            consumer2.Dispose();
 
             Assert.AreEqual(100, receivedEvents.Distinct().Count());
             Assert.AreEqual(100, receivedEvents.Count);
@@ -1220,12 +1220,12 @@ namespace tests
             kafka4net.Tracing.EtwTrace.Marker("TwoConsumerSubscribersOneBroker");
 
             var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, "part33"));
-            await consumer.ConnectAsync();
             var msgs = consumer.OnMessageArrived.Publish().RefCount();
             var t1 = msgs.TakeUntil(DateTimeOffset.Now.AddSeconds(5)).LastOrDefaultAsync().ToTask();
             var t2 = msgs.TakeUntil(DateTimeOffset.Now.AddSeconds(6)).LastOrDefaultAsync().ToTask();
+            //await consumer.IsConnected;
             await Task.WhenAll(new[] { t1, t2 });
-            await consumer.CloseAsync(TimeSpan.FromSeconds(2));
+            consumer.Dispose();
 
             kafka4net.Tracing.EtwTrace.Marker("/TwoConsumerSubscribersOneBroker");
         }
@@ -1324,7 +1324,6 @@ namespace tests
 
             // now consumer(s)
             var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses,topic,ConsumerStartLocation.TopicHead));
-            await consumer.ConnectAsync();
             Assert.AreNotEqual(threadName, Thread.CurrentThread.Name);
 
 
@@ -1348,6 +1347,8 @@ namespace tests
                         Assert.AreNotEqual(threadName, Thread.CurrentThread.Name);
                         _log.Debug("In Consumer Subscribe OnComplete using thread {0}", Thread.CurrentThread.Name);
                     });
+            
+            await consumer.IsConnected;
 
             await Task.Delay(TimeSpan.FromSeconds(6));
             _log.Debug("After Consumer Subscribe using thread {0}", Thread.CurrentThread.Name);
@@ -1367,7 +1368,7 @@ namespace tests
             _log.Debug("After Producer Subscribe using thread {0}", Thread.CurrentThread.Name);
             Assert.AreNotEqual(threadName, Thread.CurrentThread.Name);
 
-            await consumer.CloseAsync(TimeSpan.FromSeconds(5));
+            consumer.Dispose();
             Assert.AreNotEqual(threadName, Thread.CurrentThread.Name);
 
             await cluster.CloseAsync(TimeSpan.FromSeconds(5));
@@ -1393,7 +1394,6 @@ namespace tests
                 ConsumerStartLocation.TopicHead,
                 maxBytesPerFetch: 1024, 
                 lowWatermark:20, highWatermark: 200, useFlowControl: true));
-            await consumer.ConnectAsync();
 
             var readWaiter = new SemaphoreSlim(0, 1);
             var share = consumer.OnMessageArrived.Publish().RefCount();
@@ -1404,6 +1404,8 @@ namespace tests
                 Thread.Sleep(100);
                 consumer.Ack();
             }, e => _log.Error("Consumer error", e), () => readWaiter.Release());
+            
+            await consumer.IsConnected;
 
             // 2nd subscriber to test that Consumer does not count 2x of message delivery rate
             var sub2 = share.Subscribe(_ => { }, e => { throw e; });

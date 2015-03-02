@@ -26,9 +26,9 @@ namespace kafka4net
 
         private readonly Cluster _cluster;
         private readonly Dictionary<int, TopicPartition> _topicPartitions = new Dictionary<int, TopicPartition>(); 
-
         // we should only ever subscribe once, and we want to keep that around to check if it was disposed when we are disposed
         private readonly CompositeDisposable _partitionsSubscription = new CompositeDisposable();
+        readonly TaskCompletionSource<bool> _connectionComplete = new TaskCompletionSource<bool>();
 
         int _outstandingMessageProcessingCount;
         int _haveSubscriber;
@@ -69,11 +69,37 @@ namespace kafka4net
                 if (Interlocked.CompareExchange(ref _haveSubscriber, 1, 0) == 1)
                     throw new InvalidOperationException("Only one subscriber is allowed. Use OnMessageArrived.Publish().RefCount()");
 
-                // Subscription to OnMessageArrived is tricky because users would expect offsets to be resolved at the time
-                // of OnMessageArrived.Subscribe(), which is synchronous. But fetchers offset resolution is async.
-                // Using blocking Wait combined with ConfigureAwaiter(false) inside in SubscribeClient seems the only way to do it.
-                var task = SubscribeClient(observer);
-                return task.Result;
+                // Relay messages from partition to consumer's output
+                // Ensure that only single subscriber is allowed because it is important to count
+                // outstanding messaged consumed by user
+                OnMessageArrivedInput.Subscribe(observer);
+
+                //
+                // It is not possible to wait for completion of partition resolution process, so start it asynchronously.
+                // This means that OnMessageArrived.Subscribe() will complete when consumer is not actually connected yet.
+                //
+                Task.Run(() => _cluster.Scheduler.Ask(async () =>
+                {
+                    try 
+                    {
+                        await _cluster.ConnectAsync();
+                        await SubscribeClient();
+                        EtwTrace.Log.ConsumerStarted(GetHashCode(), Topic);
+                        _connectionComplete.TrySetResult(true);
+                    }
+                    catch (Exception e)
+                    {
+                        _connectionComplete.TrySetException(e);
+                        observer.OnError(e);
+                    }
+                }));
+
+                // upon unsubscribe
+                return Disposable.Create(() =>
+                {
+                    _partitionsSubscription.Dispose();
+                    _topicPartitions.Clear();
+                });
             });
 
             if (Configuration.UseFlowControl) { 
@@ -94,17 +120,14 @@ namespace kafka4net
             OnMessageArrived = scheduledMessages;
         }
 
-        async Task<IDisposable> SubscribeClient(IObserver<ReceivedMessage> observer)
+        /// <summary>
+        /// Start listening to partitions.
+        /// </summary>
+        /// <returns>Cleanup disposable which unsubscribes from partitions and clears the _topicPartitions</returns>
+        async Task SubscribeClient()
         {
-            return await await _cluster.Scheduler.Ask(async () =>
+            var val = await await _cluster.Scheduler.Ask(async () =>
             {
-                // Relay messages from partition to consumer's output
-                // Ensure that only single subscriber is allowed because it is important to count
-                // outstanding messaged consumed by user
-                OnMessageArrivedInput
-                    //.Do(msg=>_log.Debug("Received Message on ArrivedInput"))
-                    .Subscribe(observer);
-
                 // subscribe to all partitions
                 var parts = await BuildTopicPartitionsAsync();
                 parts.ForEach(part =>
@@ -113,14 +136,8 @@ namespace kafka4net
                     _partitionsSubscription.Add(partSubscription);
                 });
                 _log.Debug("Subscribed to partitions");
-
-                // upon unsubscribe
-                return Disposable.Create(() =>
-                {
-                    _partitionsSubscription.Dispose();
-                    _topicPartitions.Clear();
-                });
-            }).ConfigureAwait(false);
+                return true;
+            });
         }
 
         public void Ack(int messageCount = 1)
@@ -136,27 +153,14 @@ namespace kafka4net
         /// Pass connection method through from Cluster
         /// </summary>
         /// <returns></returns>
-        public Task ConnectAsync()
+        public Task IsConnected 
         {
-            EtwTrace.Log.ConsumerStarted(GetHashCode(), Topic);
-            return _cluster.ConnectAsync();
-        }
-
-        /// <summary>
-        /// Ensures the subscription is disposed and closes the consumer's Cluster.
-        /// </summary>
-        /// <param name="timeout"></param>
-        /// <returns></returns>
-        public async Task CloseAsync(TimeSpan timeout)
-        {
-            await await _cluster.Scheduler.Ask(() =>
+            get 
             {
-                if (_partitionsSubscription != null && ! _partitionsSubscription.IsDisposed)
-                    _partitionsSubscription.Dispose();
-                return _cluster.CloseAsync(timeout);
-            }).ConfigureAwait(false);
-
-            EtwTrace.Log.ConsumerStopped(GetHashCode(), Topic);
+                if(_haveSubscriber == 0)
+                    throw new BrokerException("Can not connect because no subscription yet");
+                return _connectionComplete.Task;
+            }
         }
 
         /// <summary>
