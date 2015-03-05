@@ -21,10 +21,10 @@ namespace kafka4net
         public Cluster Cluster { get { return _cluster; } }
 
         // TODO: execute handlers safe. Possibly in the caller sync context
-        public Action<Message[]> OnTempError;
-        public Action<Exception, Message[]> OnPermError;
-        public Action<Message[]> OnShutdownDirty;
-        public Action<Message[]> OnSuccess;
+        public event Action<Message[]> OnTempError;
+        public event Action<Exception, Message[]> OnPermError;
+        public event Action<Message[]> OnShutdownDirty;
+        public event Action<Message[]> OnSuccess;
 
         //public MessageCodec Codec = MessageCodec.CodecNone;
         private Task _sendLoopTask;

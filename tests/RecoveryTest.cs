@@ -189,13 +189,11 @@ namespace tests
             var sent = new List<string>();
             var confirmedSent1 = new List<string>();
 
-            var producer = new Producer(_seedAddresses, new ProducerConfiguration(topic))
+            var producer = new Producer(_seedAddresses, new ProducerConfiguration(topic));
+            producer.OnSuccess += msgs =>
             {
-                OnSuccess = msgs =>
-                {
-                    msgs.ForEach(msg => confirmedSent1.Add(Encoding.UTF8.GetString(msg.Value)));
-                    _log.Debug("Sent {0} messages", msgs.Length);
-                }
+                msgs.ForEach(msg => confirmedSent1.Add(Encoding.UTF8.GetString(msg.Value)));
+                _log.Debug("Sent {0} messages", msgs.Length);
             };
             await producer.ConnectAsync();
 
@@ -918,7 +916,9 @@ namespace tests
 
             // sender is configured with 50ms batch period
             var receivedSubject = new ReplaySubject<Message>();
-            producer = new Producer(_seedAddresses, new ProducerConfiguration(topicName, TimeSpan.FromMilliseconds(50), sendBuffersInitialSize:1)) { OnSuccess = ms => ms.ForEach(receivedSubject.OnNext)};
+            producer = new Producer(_seedAddresses,
+                new ProducerConfiguration(topicName, TimeSpan.FromMilliseconds(50), sendBuffersInitialSize: 1));
+            producer.OnSuccess += ms => ms.ForEach(receivedSubject.OnNext);
             await producer.ConnectAsync();
 
             // send 1000 messages
@@ -1077,7 +1077,8 @@ namespace tests
             var topic = "part12." + _rnd.Next();
             VagrantBrokerUtil.CreateTopic(topic, 5, 2);
 
-            var producer = new Producer(_seedAddresses, new ProducerConfiguration(topic)) { OnSuccess = e => e.ForEach(sentEvents.OnNext) };
+            var producer = new Producer(_seedAddresses, new ProducerConfiguration(topic));
+            producer.OnSuccess += e => e.ForEach(sentEvents.OnNext);
             await producer.ConnectAsync();
 
             // send 100 messages
@@ -1155,10 +1156,9 @@ namespace tests
 
             var cluster = new Cluster(_seedAddresses);
             await cluster.ConnectAsync();
-            var producer = new Producer(cluster, new ProducerConfiguration(topic, maxMessageSetSizeInBytes: 1024*1024))
-            {
-                OnSuccess = e => e.ForEach(sentEvents.OnNext)
-            };
+            var producer = new Producer(cluster, new ProducerConfiguration(topic, maxMessageSetSizeInBytes: 1024*1024));
+            producer.OnSuccess += e => e.ForEach(sentEvents.OnNext);
+
             await producer.ConnectAsync();
 
             // read offsets of empty queue
