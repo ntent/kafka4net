@@ -189,8 +189,14 @@ namespace kafka4net.Protocols
                 BigEndianConverter.Write(stream, message.Key.Length);
                 stream.Write(message.Key, 0, message.Key.Length);
             }
-            BigEndianConverter.Write(stream, message.Value.Length);
-            stream.Write(message.Value, 0, message.Value.Length);
+
+            if (message.Value == null)
+                stream.Write(_minusOne32, 0, 4);
+            else
+            {
+                BigEndianConverter.Write(stream, message.Value.Length);
+                stream.Write(message.Value, 0, message.Value.Length);
+            }
 
             // update crc
             var crc = Crc32.Compute(stream, bodyPos, stream.Position - bodyPos);

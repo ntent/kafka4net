@@ -426,7 +426,8 @@ namespace kafka4net
 
                                     var msg = queue.Queue.PeekSingle(queue.CountInProgress);
                                     var keyLen = msg.Key != null ? msg.Key.Length : 0;
-                                    var msgSize = messageFixedSize + keyLen + msg.Value.Length;
+                                    var msgLen = msg.Value != null ? msg.Value.Length : 0;
+                                    var msgSize = messageFixedSize + keyLen + msgLen;
                                     if (runningSize + msgSize > maxSize)
                                         break;
                                     
