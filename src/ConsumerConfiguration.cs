@@ -39,6 +39,7 @@ namespace kafka4net
         ///     wait for subscriber to drain until lowWatermark and subscriber would wait for more data until continue processing 
         ///     (could happen when buffering is used).
         /// </param>
+        /// <param name="partitionStopConditionCheckFunc">A dynamic callback that will determine whether to stop reading from a partition. Used to control the end time for consuming.</param>
         public ConsumerConfiguration(
             string seedBrokers,
             string topic, 
@@ -49,7 +50,8 @@ namespace kafka4net
             Func<int,long> partitionOffsetProvider = null,
             int lowWatermark = 500,
             int highWatermark = 2000,
-            bool useFlowControl = false)
+            bool useFlowControl = false,
+            Func<ReceivedMessage, bool> partitionStopConditionCheckFunc = null)
         {
             LowWatermark = lowWatermark;
             HighWatermark = highWatermark;
@@ -77,6 +79,7 @@ namespace kafka4net
             MaxWaitTimeMs = maxWaitTimeMs;
             MinBytesPerFetch = minBytesPerFetch;
             MaxBytesPerFetch = maxBytesPerFetch;
+            PartitionStopConditionCheckFunc = partitionStopConditionCheckFunc;
         }
 
         public string SeedBrokers { get; private set; }
@@ -89,5 +92,7 @@ namespace kafka4net
         public readonly int LowWatermark;
         public readonly int HighWatermark;
         public readonly bool UseFlowControl;
+        public Func<ReceivedMessage, bool> PartitionStopConditionCheckFunc { get; private set; } 
+
     }
 }

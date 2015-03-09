@@ -19,14 +19,13 @@ namespace kafka4net.ConsumerImpl
         /// </summary>
         /// <param name="topic"></param>
         /// <param name="initialOffsets"></param>
-        internal TopicPartitionOffsets(string topic, Dictionary<int,long> initialOffsets)
+        public TopicPartitionOffsets(string topic, Dictionary<int,long> initialOffsets)
         {
             Topic = topic;
             _offsets = new Dictionary<int, long>(initialOffsets);
         }
 
-
-        internal TopicPartitionOffsets(string topic)
+        public TopicPartitionOffsets(string topic)
         {
             Topic = topic;
             _offsets = new Dictionary<int, long>();

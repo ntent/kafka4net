@@ -1,16 +1,15 @@
-﻿using System.Linq;
-using System.Reactive;
-using System.Reactive.Concurrency;
-using System.Threading;
+﻿using System.Reactive.Concurrency;
 using kafka4net.ConsumerImpl;
+using kafka4net.Tracing;
+using kafka4net.Utils;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Reactive.Disposables;
 using System.Reactive.Linq;
 using System.Reactive.Subjects;
+using System.Threading;
 using System.Threading.Tasks;
-using kafka4net.Tracing;
-using kafka4net.Utils;
 
 namespace kafka4net
 {
@@ -33,9 +32,12 @@ namespace kafka4net
         internal string Topic { get { return Configuration.Topic; } }
 
         private readonly Cluster _cluster;
+
+        // Track map of partition ID to TopicPartition as well as partition ID to the IDisposable subscription for that TopicPartition.
         private readonly Dictionary<int, TopicPartition> _topicPartitions = new Dictionary<int, TopicPartition>(); 
-        // we should only ever subscribe once, and we want to keep that around to check if it was disposed when we are disposed
-        private readonly CompositeDisposable _partitionsSubscription = new CompositeDisposable();
+        private readonly Dictionary<int, IDisposable> _partitionsSubscription = new Dictionary<int, IDisposable>();
+
+        // called back when the connection is made for the consumer.
         readonly TaskCompletionSource<bool> _connectionComplete = new TaskCompletionSource<bool>();
 
         int _outstandingMessageProcessingCount;
@@ -103,11 +105,7 @@ namespace kafka4net
                 });
 
                 // upon unsubscribe
-                return Disposable.Create(() =>
-                {
-                    _partitionsSubscription.Dispose();
-                    _topicPartitions.Clear();
-                });
+                return Disposable.Create(() => _partitionsSubscription.Values.ForEach(s=>s.Dispose()));
             });
 
             if (Configuration.UseFlowControl) { 
@@ -119,6 +117,21 @@ namespace kafka4net
                 });
             }
 
+            // handle stop condition
+            onMessage = onMessage.Do(message =>
+            {
+                // check if this partition is done per the condition passed in configuration. If so, unsubscribe it.
+                bool partitionDone = (Configuration.PartitionStopConditionCheckFunc != null &&
+                                      Configuration.PartitionStopConditionCheckFunc(message));
+                IDisposable partitionSubscription;
+                if (partitionDone && _partitionsSubscription.TryGetValue(message.Partition, out partitionSubscription))
+                {
+                    _partitionsSubscription.Remove(message.Partition);
+                    // calling Dispose here will cause the OnTopicPartitionComplete method to be called when it is completed.
+                    partitionSubscription.Dispose();
+                }
+            });
+
             OnMessageArrived = onMessage;
         }
 
@@ -128,14 +141,14 @@ namespace kafka4net
         /// <returns>Cleanup disposable which unsubscribes from partitions and clears the _topicPartitions</returns>
         async Task SubscribeClient()
         {
-            var val = await await _cluster.Scheduler.Ask(async () =>
+            await await _cluster.Scheduler.Ask(async () =>
             {
                 // subscribe to all partitions
                 var parts = await BuildTopicPartitionsAsync();
                 parts.ForEach(part =>
                 {
                     var partSubscription = part.Subscribe(this);
-                    _partitionsSubscription.Add(partSubscription);
+                    _partitionsSubscription.Add(part.PartitionId,partSubscription);
                 });
                 _log.Debug("Subscribed to partitions");
                 return true;
@@ -205,6 +218,18 @@ namespace kafka4net
                 });
         }
 
+        internal void OnTopicPartitionComplete(TopicPartition topicPartition)
+        {
+            // called back from TopicPartition when its subscription is completed. 
+            // Remove from our dictionary, and if all TopicPartitions are removed, call our own OnComplete.
+            _topicPartitions.Remove(topicPartition.PartitionId);
+            if (_topicPartitions.Count == 0)
+            {
+                // If we call OnCompleted right now, any last message that may be being sent will not process. Just tell the scheduler to do it in a moment.
+                _cluster.Scheduler.Schedule(() => OnMessageArrivedInput.OnCompleted());
+            }
+        }
+
 
         public override string ToString()
         {
@@ -220,8 +245,8 @@ namespace kafka4net
 
             try
             {
-                if (_partitionsSubscription != null && !_partitionsSubscription.IsDisposed)
-                    _partitionsSubscription.Dispose();
+                if (_partitionsSubscription != null)
+                    _partitionsSubscription.Values.ForEach(s=>s.Dispose());
             }
             // ReSharper disable once EmptyGeneralCatchClause
             catch {}

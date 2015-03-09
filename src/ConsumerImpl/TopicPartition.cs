@@ -164,7 +164,7 @@ namespace kafka4net.ConsumerImpl
             // just end the subscription to the current fetcher and to the consumer.
             if (_subscribedConsumer != null)
             {
-                _subscribedConsumer.OnMessageArrivedInput.OnCompleted();
+                _subscribedConsumer.OnTopicPartitionComplete(this);
                 _subscribedConsumer = null;
             }
 

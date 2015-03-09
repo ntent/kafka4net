@@ -996,6 +996,59 @@ namespace tests
             kafka4net.Tracing.EtwTrace.Marker("/ExplicitOffset");
         }
 
+        [Test]
+        public async void StopAtExplicitOffset()
+        {
+            kafka4net.Tracing.EtwTrace.Marker("StopAtExplicitOffset");
+            // create new topic with 3 partitions
+            var topic = "part33." + _rnd.Next();
+            VagrantBrokerUtil.CreateTopic(topic, 3, 3);
+
+            // fill it out with 10K messages
+            const int count = 10 * 1000;
+            var producer = new Producer(_seedAddresses, new ProducerConfiguration(topic));
+            await producer.ConnectAsync();
+
+            var sentMessagesObservable = Observable.FromEvent<Message[]>(evtHandler => producer.OnSuccess += evtHandler, evtHandler => { })
+                .SelectMany(msgs => msgs)
+                .Take(count)
+                .TakeUntil(DateTime.Now.AddSeconds(10))
+                .ToList();
+
+            _log.Info("Sending data");
+            Enumerable.Range(1, count).
+                Select(i => new Message { Value = BitConverter.GetBytes(i) }).
+                ForEach(producer.Send);
+
+            var sentMsgs = await sentMessagesObservable;
+            _log.Info("Producer sent {0} messages.", sentMsgs.Count);
+
+            _log.Debug("Closing producer");
+            await producer.CloseAsync(TimeSpan.FromSeconds(5));
+
+            var offsetFetchCluster = new Cluster(_seedAddresses);
+            await offsetFetchCluster.ConnectAsync();
+
+            await Task.Delay(TimeSpan.FromSeconds(1));
+            var offsets = (await offsetFetchCluster.FetchPartitionOffsetsAsync(topic, ConsumerStartLocation.TopicTail));
+            _log.Info("Sum of offsets {0}. Raw: {1}", offsets.Partitions.Sum(p => offsets.NextOffset(p)), offsets);
+
+            // consume first 300 for each partition
+            var offsetStops = new TopicPartitionOffsets(topic, offsets.GetPartitionsOffset.ToDictionary(pair => pair.Key, pair => pair.Value > 300 ? 300 : pair.Value));
+            var numMessages = offsetStops.Partitions.Sum(p => offsetStops.NextOffset(p));
+            _log.Info("Attempting to consume {0} messages and stop at {1}", numMessages, offsetStops);
+
+            var consumerStop = new ConsumerStopAtExplicitOffsets(offsetStops);
+            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, ConsumerStartLocation.TopicHead, partitionStopConditionCheckFunc : consumerStop.IsPartitionComplete));
+            var messages = await consumer.OnMessageArrived.ToList();
+            
+            consumer.Dispose();
+
+            Assert.AreEqual(numMessages, messages.Count);
+
+            kafka4net.Tracing.EtwTrace.Marker("/StopAtExplicitOffset");
+        }
+
         // can read from the head of queue
         [Test]
         public async void ReadFromHead()
