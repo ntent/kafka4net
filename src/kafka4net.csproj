@@ -53,7 +53,7 @@
     </Reference>
   </ItemGroup>
   <ItemGroup>
-    <Compile Include="ConsumerImpl\ConsumerStopAtExplicitOffsets.cs" />
+    <Compile Include="ConsumerImpl\PositionProviders.cs" />
     <Compile Include="FletcherHashedMessagePartitioner.cs" />
     <Compile Include="IMessagePartitioner.cs" />
     <Compile Include="Internal\PartitionStateChangeEvent.cs" />

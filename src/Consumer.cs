@@ -96,11 +96,15 @@ namespace kafka4net
                         await SubscribeClient();
                         EtwTrace.Log.ConsumerStarted(GetHashCode(), Topic);
                         _connectionComplete.TrySetResult(true);
+
+                        // check that we actually got any partitions subscribed
+                        if (_topicPartitions.Count == 0)
+                            OnMessageArrivedInput.OnCompleted();
                     }
                     catch (Exception e)
                     {
                         _connectionComplete.TrySetException(e);
-                        observer.OnError(e);
+                        OnMessageArrivedInput.OnError(e);
                     }
                 });
 
@@ -121,8 +125,7 @@ namespace kafka4net
             onMessage = onMessage.Do(message =>
             {
                 // check if this partition is done per the condition passed in configuration. If so, unsubscribe it.
-                bool partitionDone = (Configuration.PartitionStopConditionCheckFunc != null &&
-                                      Configuration.PartitionStopConditionCheckFunc(message));
+                bool partitionDone = (Configuration.StopPosition.IsPartitionConsumingComplete(message));
                 IDisposable partitionSubscription;
                 if (partitionDone && _partitionsSubscription.TryGetValue(message.Partition, out partitionSubscription))
                 {
@@ -186,33 +189,33 @@ namespace kafka4net
         /// <summary>For every patition, resolve offsets and build TopicPartition object</summary>
         private async Task<IEnumerable<TopicPartition>> BuildTopicPartitionsAsync()
         {
-            // two code paths here. If we have specified locations to start from, just get the partition metadata, and build the TopicPartitions
-            if (Configuration.StartLocation == ConsumerStartLocation.SpecifiedLocations)
+            // if they didn't specify explicit locations, initialize them here.
+            var startPositionProvider = Configuration.StartPosition;
+            if (startPositionProvider.StartLocation != ConsumerLocation.SpecifiedLocations)
             {
-                var partitionMeta = await _cluster.GetOrFetchMetaForTopicAsync(Topic);
-                return partitionMeta
-                    .Where(pm => !_topicPartitions.ContainsKey(pm.Id))
-                    .Select(part =>
-                    {
-                        var tp = new TopicPartition(_cluster, Topic, part.Id, Configuration.PartitionOffsetProvider(part.Id));
-                        _topicPartitions.Add(tp.PartitionId, tp);
-                        return tp;
-                    });
+                // no offsets provided. Need to issue an offset request to get start/end locations and use them for consuming
+                var partitions = await _cluster.FetchPartitionOffsetsAsync(Topic, startPositionProvider.StartLocation);
+
+                if (_log.IsDebugEnabled)
+                    _log.Debug("Consumer for topic {0} got time->offset resolved for location {1}. parts: [{2}]",
+                        Topic, startPositionProvider,
+                        string.Join(",", partitions.Partitions.OrderBy(p => p).Select(p => string.Format("{0}:{1}", p, partitions.NextOffset(p)))));
+
+                IStartPositionProvider origProvider = startPositionProvider;
+                // the new explicit offsets provider should use only the partitions included in the original one.
+                startPositionProvider = new TopicPartitionOffsets(partitions.Topic, partitions.GetPartitionsOffset.Where(kv=> origProvider.ShouldConsumePartition(kv.Key)));
             }
 
-            // no offsets provided. Need to issue an offset request to get start/end locations and use them for consuming
-            var partitions = await _cluster.FetchPartitionOffsetsAsync(Topic, Configuration.StartLocation);
-
-            if (_log.IsDebugEnabled)
-                _log.Debug("Consumer for topic {0} got time->offset resolved for location {1}. parts: [{2}]", 
-                    Topic, Configuration.StartLocation, 
-                    string.Join(",", partitions.Partitions.OrderBy(p=>p).Select(p => string.Format("{0}:{1}", p, partitions.NextOffset(p)))));
-
-            return partitions.Partitions
-                .Where(p => !_topicPartitions.ContainsKey(p))
-                .Select(part => 
+            // we now have specified locations to start from, just get the partition metadata, and build the TopicPartitions
+            var partitionMeta = await _cluster.GetOrFetchMetaForTopicAsync(Topic);
+            return partitionMeta
+                // only new partitions we don't already have in our dictionary
+                .Where(pm => !_topicPartitions.ContainsKey(pm.Id))
+                // only partitions we are "told" to.
+                .Where(pm => startPositionProvider.ShouldConsumePartition(pm.Id))
+                .Select(part =>
                 {
-                    var tp = new TopicPartition(_cluster, Topic, part, partitions.NextOffset(part));
+                    var tp = new TopicPartition(_cluster, Topic, part.Id, startPositionProvider.GetStartOffset(part.Id));
                     _topicPartitions.Add(tp.PartitionId, tp);
                     return tp;
                 });

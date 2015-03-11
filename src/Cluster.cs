@@ -230,9 +230,9 @@ namespace kafka4net
         /// <param name="topic">topic name for which to retrieve offsets for</param>
         /// <param name="startLocation">The location you're interested in. Pass either TopicHead OR TopicTail, but NOT 'SpecifiedLocations'. </param>
         /// <returns></returns>
-        public Task<TopicPartitionOffsets> FetchPartitionOffsetsAsync(string topic, ConsumerStartLocation startLocation)
+        public Task<TopicPartitionOffsets> FetchPartitionOffsetsAsync(string topic, ConsumerLocation startLocation)
         {
-            if (startLocation == ConsumerStartLocation.SpecifiedLocations)
+            if (startLocation == ConsumerLocation.SpecifiedLocations)
                 throw new ArgumentException("startLocation must be either TopicHead or TopicTail");
 
             return FetchPartitionOffsetsImplAsync(topic, (long) startLocation);

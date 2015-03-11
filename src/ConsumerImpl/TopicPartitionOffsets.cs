@@ -9,7 +9,7 @@ namespace kafka4net.ConsumerImpl
     /// Container Class to aid in storing offsets for all partitions in a topic. The class stores internally the NEXT offset to process for a partition. When the topic is empty, the offsets stored would be 0 (the next offset to fetch)
     /// When initialized to the TopicTail, it will contain the offset of the NEXT message to be written to the partition.
     /// </summary>
-    public class TopicPartitionOffsets
+    public class TopicPartitionOffsets : IStartPositionProvider, IStopPositionProvider
     {
         public readonly string Topic;
         private readonly Dictionary<int, long> _offsets;
@@ -24,7 +24,16 @@ namespace kafka4net.ConsumerImpl
             Topic = topic;
             _offsets = new Dictionary<int, long>(initialOffsets);
         }
-
+        public TopicPartitionOffsets(string topic, IEnumerable<KeyValuePair<int, long>> startingOffsets)
+        {
+            Topic = topic;
+            _offsets = startingOffsets.ToDictionary(kv => kv.Key, kv => kv.Value);
+        }
+        public TopicPartitionOffsets(string topic, IEnumerable<Tuple<int, long>> startingOffsets)
+        {
+            Topic = topic;
+            _offsets = startingOffsets.ToDictionary(kv => kv.Item1, kv => kv.Item2);
+        }
         public TopicPartitionOffsets(string topic)
         {
             Topic = topic;
@@ -139,5 +148,31 @@ namespace kafka4net.ConsumerImpl
         {
             return string.Format("{0} Offsets:[{1}]",Topic,string.Join(",", _offsets.Select(o=>o.Key + "|" + o.Value)));
         }
+
+        #region IStopPositionProvider
+        public bool IsPartitionConsumingComplete(ReceivedMessage currentMessage)
+        {
+            // "NextOffset" is the "Next" offset, so subtract one to get the current offset.
+            var stopOffset = NextOffset(currentMessage.Partition) - 1;
+            return currentMessage.Offset == stopOffset;
+        }
+        #endregion IStopPositionProvider
+
+        #region IStartPositionProvider
+        public bool ShouldConsumePartition(int partitionId)
+        {
+            return _offsets.ContainsKey(partitionId);
+        }
+
+        public long GetStartOffset(int partitionId)
+        {
+            return NextOffset(partitionId);
+        }
+
+        public ConsumerLocation StartLocation
+        {
+            get { return ConsumerLocation.SpecifiedLocations; }
+        }
+        #endregion IStartPositionProvider
     }
 }

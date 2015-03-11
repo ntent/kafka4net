@@ -136,7 +136,7 @@ namespace tests
             //
             // Validate by reading published messages
             //
-            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, maxWaitTimeMs: 1000, minBytesPerFetch: 1, startLocation: ConsumerStartLocation.TopicHead));
+            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, new StartPositionTopicStart(), maxWaitTimeMs: 1000, minBytesPerFetch: 1));
             var msgs = consumer.OnMessageArrived.Publish().RefCount();
             var receivedTxt = new List<string>();
             var consumerSubscription = msgs.
@@ -197,7 +197,7 @@ namespace tests
             };
             await producer.ConnectAsync();
 
-            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic));
+            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, new StartPositionTopicEnd()));
 
             const int postCount = 100;
             const int postCount2 = 50;
@@ -305,7 +305,7 @@ namespace tests
             kafka4net.Tracing.EtwTrace.Marker("ListenerOnNonExistentTopicWaitsForTopicCreation");
             const int numMessages = 400;
             var topic = "topic." + _rnd.Next();
-            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses,topic,ConsumerStartLocation.TopicHead));
+            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, new StartPositionTopicStart()));
             var cancelSubject = new Subject<bool>();
             var receivedValuesTask = consumer.OnMessageArrived
                 .Select(msg=>BitConverter.ToInt32(msg.Value, 0))
@@ -365,7 +365,7 @@ namespace tests
                 .Take(count)
                 .Subscribe(msg=> { producer.Send(msg); sentList.Add(BitConverter.ToInt32(msg.Value, 0)); });
 
-            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, ConsumerStartLocation.TopicHead, maxBytesPerFetch: 4*8));
+            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, new StartPositionTopicStart(), maxBytesPerFetch: 4 * 8));
             var current =0;
             var received = new ReplaySubject<ReceivedMessage>();
             Task brokerStopped = null;
@@ -388,8 +388,8 @@ namespace tests
             await brokerStopped.TimeoutAfter(TimeSpan.FromSeconds(10));
 
             // get the offsets for comparison later
-            var heads = await consumer.Cluster.FetchPartitionOffsetsAsync(topic, ConsumerStartLocation.TopicHead);
-            var tails = await consumer.Cluster.FetchPartitionOffsetsAsync(topic, ConsumerStartLocation.TopicTail);
+            var heads = await consumer.Cluster.FetchPartitionOffsetsAsync(topic, ConsumerLocation.TopicStart);
+            var tails = await consumer.Cluster.FetchPartitionOffsetsAsync(topic, ConsumerLocation.TopicEnd);
 
             _log.Info("Done waiting for receiver. Closing producer.");
             await producer.CloseAsync(TimeSpan.FromSeconds(5));
@@ -462,8 +462,8 @@ namespace tests
             //
             var c2 = new Cluster(_seedAddresses);
             await c2.ConnectAsync();
-            var heads = await c2.FetchPartitionOffsetsAsync(topic, ConsumerStartLocation.TopicHead);
-            var tails = await c2.FetchPartitionOffsetsAsync(topic, ConsumerStartLocation.TopicTail);
+            var heads = await c2.FetchPartitionOffsetsAsync(topic, ConsumerLocation.TopicStart);
+            var tails = await c2.FetchPartitionOffsetsAsync(topic, ConsumerLocation.TopicEnd);
 
             _log.Info("Sum of offsets: {0}", tails.MessagesSince(heads));
             _log.Info("Offsets: [{0}]", string.Join(",", tails.Partitions.Select(p => string.Format("{0}:{1}", p, tails.NextOffset(p)))));
@@ -506,8 +506,8 @@ namespace tests
 
             await Task.Delay(TimeSpan.FromSeconds(1));
 
-            var heads = await producer.Cluster.FetchPartitionOffsetsAsync(topic, ConsumerStartLocation.TopicHead);
-            var tails = await producer.Cluster.FetchPartitionOffsetsAsync(topic, ConsumerStartLocation.TopicTail);
+            var heads = await producer.Cluster.FetchPartitionOffsetsAsync(topic, ConsumerLocation.TopicStart);
+            var tails = await producer.Cluster.FetchPartitionOffsetsAsync(topic, ConsumerLocation.TopicEnd);
 
             _log.Info("Done sending messages. Closing producer.");
             await producer.CloseAsync(TimeSpan.FromSeconds(5));
@@ -517,7 +517,7 @@ namespace tests
             _log.Info("Topic offsets indicate producer sent {0} messages.", messagesInTopic);
 
 
-            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, ConsumerStartLocation.TopicHead, maxBytesPerFetch: 4 * 8));
+            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, new StartPositionTopicStart(), maxBytesPerFetch: 4 * 8));
             var current = 0;
             var received = new ReplaySubject<ReceivedMessage>();
             Task stopBrokerTask = null;
@@ -541,7 +541,7 @@ namespace tests
             if (stopBrokerTask != null)
                 await stopBrokerTask.TimeoutAfter(TimeSpan.FromSeconds(10));
 
-            tails = await consumer.Cluster.FetchPartitionOffsetsAsync(topic, ConsumerStartLocation.TopicTail);
+            tails = await consumer.Cluster.FetchPartitionOffsetsAsync(topic, ConsumerLocation.TopicEnd);
 
             _log.Info("Receiver complete. Disposing Subscription");
             consumerSubscription.Dispose();
@@ -581,7 +581,7 @@ namespace tests
 
             // start listener at the end of queue and accumulate received messages
             var received = new HashSet<string>();
-            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, maxWaitTimeMs: 30 * 1000));
+            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, new StartPositionTopicEnd(), maxWaitTimeMs: 30 * 1000));
             _log.Info("Subscribing to consumer");
             var consumerSubscription = consumer.OnMessageArrived
                                         .Select(msg => Encoding.UTF8.GetString(msg.Value))
@@ -695,14 +695,14 @@ namespace tests
             _log.Info("Producer closed, starting consumer subscription.");
 
             await Task.Delay(TimeSpan.FromSeconds(1));
-            var heads = await cluster.FetchPartitionOffsetsAsync(topic, ConsumerStartLocation.TopicHead);
-            var tails = await cluster.FetchPartitionOffsetsAsync(topic, ConsumerStartLocation.TopicTail);
+            var heads = await cluster.FetchPartitionOffsetsAsync(topic, ConsumerLocation.TopicStart);
+            var tails = await cluster.FetchPartitionOffsetsAsync(topic, ConsumerLocation.TopicEnd);
 
             var messagesInTopic = (int)tails.MessagesSince(heads);
             _log.Info("Topic offsets indicate producer sent {0} messages.", messagesInTopic);
 
 
-            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, ConsumerStartLocation.TopicHead, maxBytesPerFetch: 4 * 8));
+            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, new StartPositionTopicStart(), maxBytesPerFetch: 4 * 8));
             var current = 0;
             var received = new ReplaySubject<ReceivedMessage>();
             Task rebalanceTask = null;
@@ -738,7 +738,7 @@ namespace tests
             consumer.Dispose();
             _log.Info("Consumer closed.");
 
-            tails = await cluster.FetchPartitionOffsetsAsync(topic, ConsumerStartLocation.TopicTail);
+            tails = await cluster.FetchPartitionOffsetsAsync(topic, ConsumerLocation.TopicEnd);
 
             await cluster.CloseAsync(TimeSpan.FromSeconds(5));
 
@@ -773,7 +773,7 @@ namespace tests
             
             // create listener in a separate connection/broker
             var receivedMsgs = new List<ReceivedMessage>();
-            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topicName));
+            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topicName, new StartPositionTopicEnd()));
             var consumerSubscription = consumer.OnMessageArrived.Synchronize().Subscribe(msg =>
             {
                 lock (receivedMsgs)
@@ -972,10 +972,12 @@ namespace tests
 
             // consume tail-300 for each partition
             await Task.Delay(TimeSpan.FromSeconds(1));
-            var offsets = (await offsetFetchCluster.FetchPartitionOffsetsAsync(topic, ConsumerStartLocation.TopicTail));
+            var offsets = new TopicPartitionOffsets(
+                                topic, (await offsetFetchCluster.FetchPartitionOffsetsAsync(topic, ConsumerLocation.TopicEnd))
+                                        .GetPartitionsOffset.Select(kv=>new KeyValuePair<int,long>(kv.Key,kv.Value-300)));
             _log.Info("Sum of offsets {0}. Raw: {1}",offsets.Partitions.Sum(p=>offsets.NextOffset(p)), offsets);
             
-            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, ConsumerStartLocation.SpecifiedLocations, partitionOffsetProvider: (p)=>offsets.NextOffset(p)-300));
+            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, offsets));
             var messages = consumer.OnMessageArrived.
                 GroupBy(m => m.Partition).Replay();
             messages.Connect();
@@ -1030,7 +1032,7 @@ namespace tests
             await offsetFetchCluster.ConnectAsync();
 
             await Task.Delay(TimeSpan.FromSeconds(1));
-            var offsets = (await offsetFetchCluster.FetchPartitionOffsetsAsync(topic, ConsumerStartLocation.TopicTail));
+            var offsets = (await offsetFetchCluster.FetchPartitionOffsetsAsync(topic, ConsumerLocation.TopicEnd));
             _log.Info("Sum of offsets {0}. Raw: {1}", offsets.Partitions.Sum(p => offsets.NextOffset(p)), offsets);
 
             // consume first 300 for each partition
@@ -1038,8 +1040,7 @@ namespace tests
             var numMessages = offsetStops.Partitions.Sum(p => offsetStops.NextOffset(p));
             _log.Info("Attempting to consume {0} messages and stop at {1}", numMessages, offsetStops);
 
-            var consumerStop = new ConsumerStopAtExplicitOffsets(offsetStops);
-            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, ConsumerStartLocation.TopicHead, partitionStopConditionCheckFunc : consumerStop.IsPartitionComplete));
+            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, new StartPositionTopicStart(), stopPosition : offsetStops));
             var messages = await consumer.OnMessageArrived.ToList();
             
             consumer.Dispose();
@@ -1047,6 +1048,91 @@ namespace tests
             Assert.AreEqual(numMessages, messages.Count);
 
             kafka4net.Tracing.EtwTrace.Marker("/StopAtExplicitOffset");
+        }
+
+        [Test]
+        public async void StartAndStopAtExplicitOffset()
+        {
+            kafka4net.Tracing.EtwTrace.Marker("StartAndStopAtExplicitOffset");
+            // create new topic with 3 partitions
+            var topic = "part33." + _rnd.Next();
+            VagrantBrokerUtil.CreateTopic(topic, 3, 3);
+
+            // fill it out with 10K messages
+            const int count = 10 * 1000;
+            var producer = new Producer(_seedAddresses, new ProducerConfiguration(topic));
+            await producer.ConnectAsync();
+
+            var sentMessagesObservable = Observable.FromEvent<Message[]>(evtHandler => producer.OnSuccess += evtHandler, evtHandler => { })
+                .SelectMany(msgs => msgs)
+                .Take(count)
+                .TakeUntil(DateTime.Now.AddSeconds(10))
+                .ToList();
+
+            _log.Info("Sending data");
+            Enumerable.Range(1, count).
+                Select(i => new Message { Value = BitConverter.GetBytes(i) }).
+                ForEach(producer.Send);
+
+            var sentMsgs = await sentMessagesObservable;
+            _log.Info("Producer sent {0} messages.", sentMsgs.Count);
+
+            _log.Debug("Closing producer");
+            await producer.CloseAsync(TimeSpan.FromSeconds(5));
+
+            var offsetFetchCluster = new Cluster(_seedAddresses);
+            await offsetFetchCluster.ConnectAsync();
+
+            await Task.Delay(TimeSpan.FromSeconds(1));
+            var offsets = (await offsetFetchCluster.FetchPartitionOffsetsAsync(topic, ConsumerLocation.TopicEnd));
+            _log.Info("Sum of offsets {0}. Raw: {1}", offsets.Partitions.Sum(p => offsets.NextOffset(p)), offsets);
+
+            // consume first 300 for each partition
+            var offsetStarts = new TopicPartitionOffsets(topic, offsets.GetPartitionsOffset.ToDictionary(pair => pair.Key, pair => pair.Value > 300 ? 300 : pair.Value));
+            var offsetStops = new TopicPartitionOffsets(topic, offsets.GetPartitionsOffset.ToDictionary(pair => pair.Key, pair => pair.Value > 600 ? 600 : pair.Value));
+            var numMessages = offsetStops.MessagesSince(offsetStarts);
+            var startStopProvider = new StartAndStopAtExplicitOffsets(offsetStarts, offsetStops);
+            _log.Info("Attempting to consume {0} messages and stop at {1}", numMessages, offsetStops);
+
+            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, startStopProvider, stopPosition: startStopProvider));
+            var messages = await consumer.OnMessageArrived.ToList();
+
+            consumer.Dispose();
+
+            Assert.AreEqual(numMessages, messages.Count);
+
+            kafka4net.Tracing.EtwTrace.Marker("/StartAndStopAtExplicitOffset");
+        }
+
+        [Test]
+        public async void StopAtExplicitOffsetOnEmptyTopic()
+        {
+            kafka4net.Tracing.EtwTrace.Marker("StopAtExplicitOffsetOnEmptyTopic");
+            // create new topic with 3 partitions
+            var topic = "part33." + _rnd.Next();
+            VagrantBrokerUtil.CreateTopic(topic, 3, 3);
+
+            var offsetFetchCluster = new Cluster(_seedAddresses);
+            await offsetFetchCluster.ConnectAsync();
+
+            await Task.Delay(TimeSpan.FromSeconds(1));
+            var offsets = (await offsetFetchCluster.FetchPartitionOffsetsAsync(topic, ConsumerLocation.TopicEnd));
+            _log.Info("Sum of offsets {0}. Raw: {1}", offsets.Partitions.Sum(p => offsets.NextOffset(p)), offsets);
+
+            var startStopProvider = new StartAndStopAtExplicitOffsets(offsets, offsets);
+
+            _log.Info("Attempting to consume {0} messages and stop at {1}", 0, offsets);
+
+            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, startStopProvider, stopPosition: startStopProvider));
+            var startTime = DateTime.Now;
+            var timeout = startTime.AddSeconds(30);
+            var messages = await consumer.OnMessageArrived.TakeUntil(timeout).ToList();
+            _log.Info("Finished");
+            Assert.IsTrue(DateTime.Now < timeout);
+            Assert.AreEqual(0, messages.Count);
+            consumer.Dispose();
+
+            kafka4net.Tracing.EtwTrace.Marker("/StopAtExplicitOffsetOnEmptyTopic");
         }
 
         // can read from the head of queue
@@ -1072,7 +1158,7 @@ namespace tests
             await producer.CloseAsync(TimeSpan.FromSeconds(5));
 
             // read starting from the head
-            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, ConsumerStartLocation.TopicHead));
+            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, new StartPositionTopicStart()));
             var count2 = consumer.OnMessageArrived.TakeUntil(DateTimeOffset.Now.AddSeconds(5))
                 //.Do(val=>_log.Info("received value {0}", BitConverter.ToInt32(val.Value,0)))
                 .Count().ToTask();
@@ -1143,13 +1229,13 @@ namespace tests
             await sentEvents.Take(100).ToTask();
 
 
-            var offsets1 = await producer.Cluster.FetchPartitionOffsetsAsync(topic, ConsumerStartLocation.TopicHead);
+            var offsets1 = await producer.Cluster.FetchPartitionOffsetsAsync(topic, ConsumerLocation.TopicStart);
 
             _log.Info("Closing producer");
             await producer.CloseAsync(TimeSpan.FromSeconds(5));
 
             // now consume the "first" 50. Stop, save offsets, and restart.
-            var consumer1 = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, ConsumerStartLocation.SpecifiedLocations, 500, 1, 262144, offsets1.NextOffset));
+            var consumer1 = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, offsets1));
             var receivedEvents = new List<int>(100);
 
             _log.Info("Consuming first half of messages.");
@@ -1174,7 +1260,7 @@ namespace tests
             // load a new set of offsets, and a new consumer
             var offsets2 = new TopicPartitionOffsets(offsetBytes);
 
-            var consumer2 = new Consumer(new ConsumerConfiguration(_seedAddresses,offsets2.Topic, ConsumerStartLocation.SpecifiedLocations, 500, 1, 262144, offsets2.NextOffset));
+            var consumer2 = new Consumer(new ConsumerConfiguration(_seedAddresses, offsets2.Topic, offsets2));
 
             await consumer2.OnMessageArrived
                 .Do(msg =>
@@ -1215,8 +1301,8 @@ namespace tests
             await producer.ConnectAsync();
 
             // read offsets of empty queue
-            var heads = await cluster.FetchPartitionOffsetsAsync(topic, ConsumerStartLocation.TopicHead);
-            var tails = await cluster.FetchPartitionOffsetsAsync(topic, ConsumerStartLocation.TopicTail);
+            var heads = await cluster.FetchPartitionOffsetsAsync(topic, ConsumerLocation.TopicStart);
+            var tails = await cluster.FetchPartitionOffsetsAsync(topic, ConsumerLocation.TopicEnd);
             Assert.AreEqual(1, heads.Partitions.Count(), "Expected just one head partition");
             Assert.AreEqual(1, tails.Partitions.Count(), "Expected just one tail partition");
             Assert.AreEqual(0L, heads.NextOffset(heads.Partitions.First()), "Expected start at 0");
@@ -1244,7 +1330,7 @@ namespace tests
 
                 // re-read offsets after messages published
                 await Task.Delay(TimeSpan.FromMilliseconds(1000)); // NOTE: There seems to be a race condition on the Kafka broker that the offsets are not immediately available after getting a successful produce response 
-                tails = await cluster.FetchPartitionOffsetsAsync(topic, ConsumerStartLocation.TopicTail);
+                tails = await cluster.FetchPartitionOffsetsAsync(topic, ConsumerLocation.TopicEnd);
                 _log.Info("2:After loop {0} of {1} messages, Next Offset is {2}", i + 1, count, tails.NextOffset(tails.Partitions.First()));
                 Assert.AreEqual(count * (i + 1), tails.NextOffset(tails.Partitions.First()), "Expected end at " + count * (i + 1));
 
@@ -1256,8 +1342,8 @@ namespace tests
             await Task.Delay(TimeSpan.FromSeconds(1));
 
             // re-read offsets after messages published
-            heads = await cluster.FetchPartitionOffsetsAsync(topic, ConsumerStartLocation.TopicHead);
-            tails = await cluster.FetchPartitionOffsetsAsync(topic, ConsumerStartLocation.TopicTail);
+            heads = await cluster.FetchPartitionOffsetsAsync(topic, ConsumerLocation.TopicStart);
+            tails = await cluster.FetchPartitionOffsetsAsync(topic, ConsumerLocation.TopicEnd);
 
             Assert.AreEqual(1, heads.Partitions.Count(), "Expected just one head partition");
             Assert.AreEqual(1, tails.Partitions.Count(), "Expected just one tail partition");
@@ -1272,7 +1358,7 @@ namespace tests
         {
             kafka4net.Tracing.EtwTrace.Marker("TwoConsumerSubscribersOneBroker");
 
-            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, "part33"));
+            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, "part33", new StartPositionTopicEnd()));
             var msgs = consumer.OnMessageArrived.Publish().RefCount();
             var t1 = msgs.TakeUntil(DateTimeOffset.Now.AddSeconds(5)).LastOrDefaultAsync().ToTask();
             var t2 = msgs.TakeUntil(DateTimeOffset.Now.AddSeconds(6)).LastOrDefaultAsync().ToTask();
@@ -1320,10 +1406,10 @@ namespace tests
 
             // check we got all 100 on each topic.
             _log.Info("Closed Producers. Checking Offsets");
-            var topic1Heads = await cluster.FetchPartitionOffsetsAsync(topic1, ConsumerStartLocation.TopicHead);
-            var topic2Heads = await cluster.FetchPartitionOffsetsAsync(topic2, ConsumerStartLocation.TopicHead);
-            var topic1Tails = await cluster.FetchPartitionOffsetsAsync(topic1, ConsumerStartLocation.TopicTail);
-            var topic2Tails = await cluster.FetchPartitionOffsetsAsync(topic2, ConsumerStartLocation.TopicTail);
+            var topic1Heads = await cluster.FetchPartitionOffsetsAsync(topic1, ConsumerLocation.TopicStart);
+            var topic2Heads = await cluster.FetchPartitionOffsetsAsync(topic2, ConsumerLocation.TopicStart);
+            var topic1Tails = await cluster.FetchPartitionOffsetsAsync(topic1, ConsumerLocation.TopicEnd);
+            var topic2Tails = await cluster.FetchPartitionOffsetsAsync(topic2, ConsumerLocation.TopicEnd);
 
             Assert.AreEqual(100, topic1Tails.MessagesSince(topic1Heads));
             Assert.AreEqual(100, topic2Tails.MessagesSince(topic2Heads));
@@ -1346,7 +1432,7 @@ namespace tests
             await cluster.ConnectAsync();
             Assert.AreNotEqual(threadName, Thread.CurrentThread.Name);
 
-            await cluster.FetchPartitionOffsetsAsync(topic, ConsumerStartLocation.TopicHead);
+            await cluster.FetchPartitionOffsetsAsync(topic, ConsumerLocation.TopicStart);
             Assert.AreNotEqual(threadName, Thread.CurrentThread.Name);
 
             var topics = await cluster.GetAllTopicsAsync();
@@ -1376,7 +1462,7 @@ namespace tests
             Assert.AreNotEqual(threadName, Thread.CurrentThread.Name);
 
             // now consumer(s)
-            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses,topic,ConsumerStartLocation.TopicHead));
+            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, new StartPositionTopicStart()));
             Assert.AreNotEqual(threadName, Thread.CurrentThread.Name);
 
             var msgsRcv = new List<long>();
@@ -1446,7 +1532,7 @@ namespace tests
             await FillOutQueue(topic, (int)100e3);
 
             var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic,
-                ConsumerStartLocation.TopicHead,
+                new StartPositionTopicStart(),
                 maxBytesPerFetch: 1024, 
                 lowWatermark:20, highWatermark: 200, useFlowControl: true));
 

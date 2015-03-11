@@ -26,7 +26,7 @@ namespace kafka4net.ConsumerImpl
             _partitionId = partitionId;
             _partitionFetchState = new PartitionFetchState(
                             PartitionId,
-                            ConsumerStartLocation.SpecifiedLocations,
+                            ConsumerLocation.SpecifiedLocations,
                             initialOffset);
         }
 

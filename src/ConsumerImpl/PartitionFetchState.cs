@@ -3,10 +3,10 @@
     class PartitionFetchState
     {
         public readonly int PartId;
-        public readonly ConsumerStartLocation StartLocation;
+        public readonly ConsumerLocation StartLocation;
         public long Offset;
 
-        public PartitionFetchState(int partId, ConsumerStartLocation startLocation, long offset)
+        public PartitionFetchState(int partId, ConsumerLocation startLocation, long offset)
         {
             PartId = partId;
             StartLocation = startLocation;
