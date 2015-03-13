@@ -1562,7 +1562,7 @@ namespace tests
         {
             var count = 100;
             var topic = "test11."+_rnd.Next();
-            FillOutQueue(topic, count);
+            await FillOutQueue(topic, count);
 
             var badPartitionMap = new Dictionary<int, long>{{0, -1}};
             var offsets = new TopicPartitionOffsets(topic, badPartitionMap);
