@@ -75,7 +75,7 @@ namespace kafka4net.Internal
                 {
                     var key = new Tuple<string, int>(state.Topic, state.PartitionId);
                     // check if it is failed or recovered, and remove or add to our failed list.
-                    if (state.ErrorCode.Success())
+                    if (state.ErrorCode.IsSuccess())
                     {
                         if (_failedList.ContainsKey(key))
                         {
@@ -152,8 +152,8 @@ namespace kafka4net.Internal
                     from responsePart in responseTopic.Partitions
                     let key = new Tuple<string, int>(responseTopic.TopicName, responsePart.Id)
                     where 
-                        responseTopic.ErrorCode.Success()
-                        && responsePart.ErrorCode.Success()
+                        responseTopic.ErrorCode.IsSuccess()
+                        && responsePart.ErrorCode.IsSuccess()
                         && _failedList.ContainsKey(key)
                     select Tuple.Create(responseTopic.TopicName, responsePart.Id, responsePart.Leader)
                     ).ToArray();

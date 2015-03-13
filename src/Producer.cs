@@ -111,10 +111,10 @@ namespace kafka4net
 
                             if (_log.IsDebugEnabled)
                             {
-                                _log.Debug("Changing '{0}'/{1} IsOnline {2}->{3}", Configuration.Topic, p.PartitionId, queue.IsOnline, p.ErrorCode.Success());
+                                _log.Debug("Changing '{0}'/{1} IsOnline {2}->{3}", Configuration.Topic, p.PartitionId, queue.IsOnline, p.ErrorCode.IsSuccess());
                             }
 
-                            queue.IsOnline = p.ErrorCode.Success();
+                            queue.IsOnline = p.ErrorCode.IsSuccess();
                             _queueEventWaitHandler.Set();
 
                             if (_log.IsDebugEnabled)
@@ -144,7 +144,7 @@ namespace kafka4net
                                 {
                                     queue = new PartitionQueueInfo(Configuration.SendBuffersInitialSize) { Partition = batch.Key };
                                     _allPartitionQueues.Add(batch.Key, queue);
-                                    queue.IsOnline = topicPartitions.First(p => p.Id == batch.Key).ErrorCode.Success();
+                                    queue.IsOnline = topicPartitions.First(p => p.Id == batch.Key).ErrorCode.IsSuccess();
                                     _log.Debug("{0} added new partition queue", this);
                                 }
 
@@ -443,7 +443,7 @@ namespace kafka4net
                                 var failedResponsePartitions = response.Topics.
                                     Where(t => t.TopicName == Configuration.Topic). // should contain response only for our topic, but just in case...
                                     SelectMany(t => t.Partitions).
-                                    Where(p => !p.ErrorCode.Success()).ToArray();
+                                    Where(p => !p.ErrorCode.IsSuccess()).ToArray();
 
                                 // some errors, figure out which batches to dismiss from queues
                                 var failedPartitionIds = new HashSet<int>(failedResponsePartitions.Select(p => p.Partition));
@@ -453,7 +453,7 @@ namespace kafka4net
                                     ToArray();
 
                                 var permanentErrorPartitions = failedResponsePartitions.
-                                    Where(p => p.ErrorCode.IsPermanentError()).ToArray();
+                                    Where(p => p.ErrorCode.IsPermanentFailure()).ToArray();
 
                                 var recoverableErrorPartitions = failedResponsePartitions.
                                     Except(permanentErrorPartitions).ToArray();

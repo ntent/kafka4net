@@ -5,7 +5,7 @@ namespace kafka4net.Metadata
     public class PartitionMeta
     {
         /// <summary>
-        /// ReplicaNotAvailable is not really an error. Use Success() function instead of checking this value
+        /// ReplicaNotAvailable is not really an error. Use IsSuccess() function instead of checking this value
         /// </summary>
         public ErrorCode ErrorCode;
         public int Id;

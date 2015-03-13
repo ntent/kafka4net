@@ -69,17 +69,17 @@
             return c1 != c2;
         }
 
-        public static bool Success(this ErrorCode errorCode)
+        public static bool IsSuccess(this ErrorCode errorCode)
         {
             return errorCode == ErrorCode.NoError || errorCode == ErrorCode.ReplicaNotAvailable;
         }
 
-        public static bool Failure(this ErrorCode errorCode)
+        public static bool IsFailure(this ErrorCode errorCode)
         {
-            return !Success(errorCode);
+            return !IsSuccess(errorCode);
         }
 
-        public static bool IsPermanentError(this ErrorCode errorCode)
+        public static bool IsPermanentFailure(this ErrorCode errorCode)
         {
             return errorCode == ErrorCode.MessageSetSizeTooLarge ||
                 errorCode == ErrorCode.MessageSizeTooLarge ||

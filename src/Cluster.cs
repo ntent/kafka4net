@@ -299,7 +299,7 @@ namespace kafka4net
                                          from part in r.Result.Partitions
                                          select part).ToArray();
 
-                        if (partitions.Any(p=> !p.ErrorCode.Success()))
+                        if (partitions.Any(p=> !p.ErrorCode.IsSuccess()))
                             throw new Exception(string.Format("Partition Errors: [{0}]", string.Join(",", partitions.Select(p=>p.Partition + ":" + p.ErrorCode))));
 
                         //if (partitions.Any(p => (p.Offsets.Length == 1 ? -1 : p.Offsets[1])==-1))
@@ -390,7 +390,7 @@ namespace kafka4net
                 .Select(state =>
                 {
                     // if the state is not ready, return NULL for the fetcher.
-                    if (!state.ErrorCode.Success())
+                    if (!state.ErrorCode.IsSuccess())
                         return (Fetcher)null;
 
                     // get or create the correct Fetcher for this topic/partition
@@ -529,13 +529,13 @@ namespace kafka4net
                     var meta = await _protocol.MetadataRequest(new TopicRequest { Topics = new[] { topic } });
                     _log.Debug("FetchMetaWithRetryAsync: got MetadataResponse {0}", meta);
                     var errorCode = meta.Topics.Single().ErrorCode;
-                    if (errorCode.Success())
+                    if (errorCode.IsSuccess())
                     {
                         _log.Debug("Discovered topic: '{0}'", topic);
                         return meta;
                     }
 
-                    if (!errorCode.IsPermanentError())
+                    if (!errorCode.IsPermanentFailure())
                     {
                         _log.Debug("Topic: '{0}': LeaderNotAvailable", topic);
                         continue;

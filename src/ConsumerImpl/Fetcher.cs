@@ -122,7 +122,7 @@ namespace kafka4net.ConsumerImpl
             ReceivedMessages = _fetchResponses.SelectMany(response => {
                 return (
                     from topic in response.Topics
-                    from part in topic.Partitions where part.ErrorCode.Success()
+                    from part in topic.Partitions where part.ErrorCode.IsSuccess()
                     from msg in part.Messages
                     select new ReceivedMessage
                     {
@@ -205,7 +205,7 @@ namespace kafka4net.ConsumerImpl
 
                         // if any TopicPartitions have an error, fail them with the Cluster.
                         fetch.Topics.SelectMany(t => t.Partitions.Select(p => new PartitionStateChangeEvent(t.Topic, p.Partition, p.ErrorCode)))
-                            .Where(ps => !ps.ErrorCode.Success())
+                            .Where(ps => !ps.ErrorCode.IsSuccess())
                             .ForEach(ps => _cluster.NotifyPartitionStateChange(ps));
                         
                         if (_log.IsDebugEnabled && fetch.Topics.Any(t=>t.Partitions.Any(p=>p.Messages.Length > 0)))
