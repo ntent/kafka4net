@@ -1556,6 +1556,22 @@ namespace tests
             _log.Debug("Reader complete");
         }
 
+        [Test]
+        [ExpectedException(typeof(PartitionFailedException))]
+        public async void InvalidOffsetShouldLogErrorAndStopFetching()
+        {
+            var count = 100;
+            var topic = "test11."+_rnd.Next();
+            FillOutQueue(topic, count);
+
+            var badPartitionMap = new Dictionary<int, long>{{0, -1}};
+            var offsets = new TopicPartitionOffsets(topic, badPartitionMap);
+            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, offsets));
+            await consumer.OnMessageArrived.Take(count);
+            await consumer.IsConnected;
+            _log.Info("Done");
+        }
+
         private async Task FillOutQueue(string topic, int count)
         {
             var producer = new Producer(_seedAddresses, new ProducerConfiguration(topic, TimeSpan.FromSeconds(20)));
@@ -1580,6 +1596,8 @@ namespace tests
             await producer.CloseAsync(TimeSpan.FromSeconds(4));
             _log.Debug("Producer complete");
         }
+
+
 
         // if last leader is down, all in-buffer messages are errored and the new ones
         // are too.

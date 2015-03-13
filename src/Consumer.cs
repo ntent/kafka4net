@@ -20,7 +20,7 @@ namespace kafka4net
         /// When subscribing to message flow, remember that messages are handled in kafks4net execution thread, which is designed to be async. This thread handles all internal driver callbacks.
         /// This way, if you handle messages with some delays or God forbids Wait/Result, than you will pause driver's ability to handle internal events.
         /// Please, when subscribe, use ObserveOn(your scheduler or sync context) to switch handle thread to something else. Or make sure that your handle routine is instant. How instant?
-        /// For reference, driver thread is used to handle async socket data received event. This should give you an idea: for how log are you willing to delay network handling inside the deiver.
+        /// For reference, driver thread is used to handle async socket data received event. This should give you an idea: for how log are you willing to delay network handling inside the driver.
         /// </summary>
         public readonly IObservable<ReceivedMessage> OnMessageArrived;
 
@@ -136,6 +136,12 @@ namespace kafka4net
             });
 
             OnMessageArrived = onMessage;
+
+            // If permanent error within any single partition, fail the whole consumer (intentionally). 
+            // Do not try to keep going (failfast principle).
+            _cluster.PartitionStateChanges.
+                Where(s => s.ErrorCode.IsPermanentFailure()).
+                Subscribe(state => OnMessageArrivedInput.OnError(new PartitionFailedException(state.Topic, state.PartitionId, state.ErrorCode)));
         }
 
         /// <summary>
