@@ -89,6 +89,9 @@ namespace kafka4net.Tracing
             public const EventOpcode PartitionReplicasChange = (EventOpcode)64;
             public const EventOpcode PartitionTransportError = (EventOpcode)65;
             public const EventOpcode NewBroker = (EventOpcode)66;
+
+            // Consumer
+            public const EventOpcode FlowControl = (EventOpcode)67;
         }
 
         public class Tasks
@@ -655,6 +658,14 @@ namespace kafka4net.Tracing
             if (IsEnabled())
                 Log.WriteEvent(801, consumerId, topic);
         }
+
+        [Event(802, Task = Tasks.Consumer, Opcode = Opcodes.FlowControl)]
+        public void ConsumerFlowControl(int isOpen)
+        {
+            if (IsEnabled())
+                Log.WriteEvent(802, isOpen);
+        }
+
         #endregion
 
         #region Custom Marker

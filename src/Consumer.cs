@@ -72,7 +72,7 @@ namespace kafka4net
                     DistinctUntilChanged().
                     Select(i => i > 0).
                     Do(f =>FlowControlEnabled = f).
-                    Do(f => _log.Debug("Flow control '{0}' on {1}", f ? "Open" : "Closed", this));
+                    Do(f => EtwTrace.Log.ConsumerFlowControl(f ? 1 : 0));
 
             var onMessage = Observable.Create<ReceivedMessage>(observer =>
             {
