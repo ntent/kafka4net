@@ -63,6 +63,7 @@
     <Compile Include="ConsumerConfiguration.cs" />
     <Compile Include="ConsumerImpl\TopicPartitionOffsets.cs" />
     <Compile Include="ConsumerImpl\TopicPartition.cs" />
+    <Compile Include="Properties\AssemblyInfoGenerated.cs" />
     <Compile Include="Protocols\CorrelationLoopException.cs" />
     <Compile Include="Protocols\Requests\FetchRequest.cs" />
     <Compile Include="Protocols\Requests\MessageData.cs" />
@@ -108,6 +109,25 @@
     <Compile Include="Utils\CountObservable.cs" />
     <Compile Include="Utils\TaskEx.cs" />
   </ItemGroup>
+  <!-- 
+    Git commit hash injection
+  -->
+  <PropertyGroup>
+    <Major>1</Major>
+    <Minor>0</Minor>
+  </PropertyGroup>
+  <PropertyGroup>
+    <MSBuildCommunityTasksPath>$(SolutionDir)\.build</MSBuildCommunityTasksPath>
+  </PropertyGroup>
+  <Import Project="$(MSBuildCommunityTasksPath)\MSBuild.Community.Tasks.Targets" />
+  <Target Name="Version" BeforeTargets="Build">
+    <GitVersion LocalPath="$(MSBuildProjectDirectory)" Short="false">
+      <Output TaskParameter="CommitHash" PropertyName="Revision" />
+    </GitVersion>
+    <AssemblyInfo CodeLanguage="CS" OutputFile="Properties\AssemblyInfoGenerated.cs" 
+                  AssemblyInformationalVersion="$(Revision)" />
+  </Target>
+  <!-- -->
   <ItemGroup>
     <None Include="packages.config">
       <SubType>Designer</SubType>
