@@ -371,8 +371,9 @@ namespace kafka4net
 
             conn.Connect();
             // merge per-partition unique streams back into single stream
-            _partitionStateChanges = conn.Merge()
-                .Do(psc => _log.Info("Cluster saw new partition state: {0}-{1}-{2}", psc.Topic, psc.PartitionId, psc.ErrorCode),
+            _partitionStateChanges = conn.Merge();
+
+             _partitionStateChanges.Subscribe(psc => _log.Info("Cluster saw new partition state: {0}-{1}-{2}", psc.Topic, psc.PartitionId, psc.ErrorCode),
                     ex => _log.Fatal(ex, "GetFetcherChages saw ERROR from PartitionStateChanges"));
         }
 
