@@ -109,18 +109,15 @@ namespace kafka4net
                                 _allPartitionQueues.Add(p.PartitionId, queue);
                             }
 
-                            if (_log.IsDebugEnabled)
-                            {
-                                _log.Debug("Changing '{0}'/{1} IsOnline {2}->{3}", Configuration.Topic, p.PartitionId, queue.IsOnline, p.ErrorCode.IsSuccess());
-                            }
+                            _log.Info("Detected change in topic/partition '{0}'/{1}/{2} IsOnline {3}->{4}", 
+                                Configuration.Topic, 
+                                p.PartitionId, 
+                                p.ErrorCode,
+                                queue.IsOnline, 
+                                p.ErrorCode.IsSuccess());
 
                             queue.IsOnline = p.ErrorCode.IsSuccess();
                             _queueEventWaitHandler.Set();
-
-                            if (_log.IsDebugEnabled)
-                            {
-                                _log.Debug("Detected change in topic/partition '{0}'/{1}/{2}. Triggered queue event", Configuration.Topic, p.PartitionId, p.ErrorCode);
-                            }
                         });
 
                     // get all of the partitions for this topic. Allows the MessagePartitioner to select a partition.
@@ -158,21 +155,22 @@ namespace kafka4net
                                     if (Configuration.AutoGrowSendBuffers)
                                     {
                                         var growBy = Math.Max(queue.Queue.Capacity/2 + 1, 2 * batchAr.Length);
-                                        if (_log.IsDebugEnabled)
-                                            _log.Debug("Capacity of send buffer with size {3} not large enough to accept {2} new messages. Increasing capacity from {0} to {1}", queue.Queue.Capacity, queue.Queue.Capacity+growBy, batchAr.Length, queue.Queue.Size);
+                                        _log.Warn("Capacity of send buffer with size {3} not large enough to accept {2} new messages. Increasing capacity from {0} to {1}", queue.Queue.Capacity, queue.Queue.Capacity+growBy, batchAr.Length, queue.Queue.Size);
 
                                         queue.Queue.Capacity += growBy;
                                     }
                                     else
                                     {
                                         // we're full and not allowed to grow. Throw the batch back to the caller, and continue on.
-                                        if (OnPermError != null)
-                                            OnPermError(
-                                                new Exception(string.Format("Send Buffer Full for partition {0}. ",
+                                        var msg = string.Format("Send Buffer Full for partition {0}. ",
                                                     Cluster.PartitionStateChanges.Where(
                                                         ps => ps.Topic == Configuration.Topic && ps.PartitionId == queue.Partition)
                                                         .Take(1)
-                                                        .Wait()))
+                                                        .Wait());
+                                        _log.Error(msg);
+                                        if (OnPermError != null)
+                                            OnPermError(
+                                                new Exception(msg)
                                                 , batchAr);
                                         continue;
                                     }
@@ -242,7 +240,7 @@ namespace kafka4net
                 if (!IsConnected)
                     return;
 
-                _log.Debug("Closing...");
+                _log.Info("Closing...");
                 EtwTrace.Log.ProducerStopping(Topic, _id);
                 // mark the cancellation token to cause the sending to finish up and don't allow any new messages coming in.
                 _drain.Cancel();
@@ -256,7 +254,7 @@ namespace kafka4net
                 _queueEventWaitHandler.Set();
             
                 // wait for sending to complete 
-                _log.Debug("Waiting for Send buffers to drain...");
+                _log.Info("Waiting for Send buffers to drain...");
                 if(_sendLoopTask != null)
                     if (await _sendLoopTask.TimeoutAfter(timeout).ConfigureAwait(false))
                         _log.Debug("Send loop completed");
@@ -288,7 +286,7 @@ namespace kafka4net
                 }
 
                 _sendMessagesSubject = null;
-                _log.Debug("Close complete");
+                _log.Info("Close complete");
                 EtwTrace.Log.ProducerStoped(Topic, _id);
             }
             catch (Exception e)
@@ -318,7 +316,7 @@ namespace kafka4net
                     // TODO: bug: if messages are accumulating in buffer, this will quit. Wait for buffer drainage
                     if (_drain.IsCancellationRequested && _allPartitionQueues.Values.All(q => q.Queue.Size == 0))
                     {
-                        _log.Debug("Cancel detected and send buffers are empty. Quitting SendLoop");
+                        _log.Info("Cancel detected and send buffers are empty. Quitting SendLoop");
                         break;
                     }
                     
@@ -347,8 +345,8 @@ namespace kafka4net
                         var msg = string.Format("Not all messages could be sent before shutdown. {0} messages remain.", messages.Length);
                         if (OnPermError != null)
                         {
-                            OnPermError(new Exception(msg), messages);
                             _log.Error(msg);
+                            OnPermError(new Exception(msg), messages);
                         }
                         else
                         {
@@ -462,10 +460,12 @@ namespace kafka4net
 
                                 // notify of errors from send response and trigger recovery monitor tracking them
                                 recoverableErrorPartitions.
-                                    ForEach(failedPart => 
-                                        _cluster.NotifyPartitionStateChange(new PartitionStateChangeEvent(Topic, failedPart.Partition, failedPart.ErrorCode))
-                                    );
-
+                                    ForEach(failedPart =>
+                                    {
+                                        _log.Warn("Produce Request Failed for topic {0} partition {1} with error {2}", Topic, failedPart.Partition, failedPart.ErrorCode);
+                                        _cluster.NotifyPartitionStateChange(new PartitionStateChangeEvent(Topic,
+                                            failedPart.Partition, failedPart.ErrorCode));
+                                    });
 
                                 if (permanentErrorPartitions.Length > 0 && EtwTrace.Log.IsEnabled())
                                 {
