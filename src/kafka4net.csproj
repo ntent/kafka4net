@@ -11,7 +11,7 @@
     <AssemblyName>kafka4net</AssemblyName>
     <TargetFrameworkVersion>v4.5</TargetFrameworkVersion>
     <FileAlignment>512</FileAlignment>
-    <NuGetPackageImportStamp>30df9ef4</NuGetPackageImportStamp>
+    <NuGetPackageImportStamp>9d607e1e</NuGetPackageImportStamp>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
     <DebugSymbols>true</DebugSymbols>
@@ -109,25 +109,6 @@
     <Compile Include="Utils\CountObservable.cs" />
     <Compile Include="Utils\TaskEx.cs" />
   </ItemGroup>
-  <!-- 
-    Git commit hash injection
-  -->
-  <PropertyGroup>
-    <Major>1</Major>
-    <Minor>0</Minor>
-  </PropertyGroup>
-  <PropertyGroup>
-    <MSBuildCommunityTasksPath>$(SolutionDir)\.build</MSBuildCommunityTasksPath>
-  </PropertyGroup>
-  <Import Project="$(MSBuildCommunityTasksPath)\MSBuild.Community.Tasks.Targets" />
-  <Target Name="Version" BeforeTargets="Build">
-    <GitVersion LocalPath="$(MSBuildProjectDirectory)" Short="false">
-      <Output TaskParameter="CommitHash" PropertyName="Revision" />
-    </GitVersion>
-    <AssemblyInfo CodeLanguage="CS" OutputFile="Properties\AssemblyInfoGenerated.cs" 
-                  AssemblyInformationalVersion="$(Revision)" />
-  </Target>
-  <!-- -->
   <ItemGroup>
     <None Include="packages.config">
       <SubType>Designer</SubType>
@@ -151,4 +132,33 @@
   <Target Name="AfterBuild">
   </Target>
   -->
+  <!-- 
+    Git commit hash injection
+  -->
+  <PropertyGroup>
+    <Major>1</Major>
+    <Minor>0</Minor>
+  </PropertyGroup>
+  <PropertyGroup>
+    <MSBuildCommunityTasksPath>$(SolutionDir)\.build</MSBuildCommunityTasksPath>
+  </PropertyGroup>
+  <PropertyGroup>
+    <BuildDependsOn>
+      Version;
+      $(BuildDependsOn)
+    </BuildDependsOn>
+  </PropertyGroup>
+  <Import Project="$(MSBuildCommunityTasksPath)\MSBuild.Community.Tasks.Targets" />
+  <Target Name="Version">
+    <Message Text="ttt" />
+    <GitVersion LocalPath="$(MSBuildProjectDirectory)" Short="false">
+      <Output TaskParameter="CommitHash" PropertyName="Revision" />
+    </GitVersion>
+    <AssemblyInfo CodeLanguage="CS" OutputFile="Properties\AssemblyInfoGenerated.cs" AssemblyInformationalVersion="$(Revision)" />
+  </Target>
+  <PropertyGroup>
+    <PreBuildEvent>
+    </PreBuildEvent>
+  </PropertyGroup>
+  <!-- -->
 </Project>

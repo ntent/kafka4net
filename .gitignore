@@ -30,6 +30,5 @@ _ReSharper*/
 log.txt
 packages
 vagrant/files
-.build
 /Build.proj
 /src/Properties/AssemblyInfoGenerated.cs
