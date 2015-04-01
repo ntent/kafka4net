@@ -32,8 +32,8 @@ namespace tests
     class RecoveryTest
     {
         Random _rnd = new Random();
-        //string _seedAddresses = "192.168.56.10,192.168.56.20";
-        private const string _seedAddresses = "192.168.56.10";
+        string _seedAddresses = "192.168.56.10,192.168.56.20";
+        //private const string _seedAddresses = "192.168.56.10";
         static readonly NLog.Logger _log = LogManager.GetCurrentClassLogger();
 
         [SetUp]
@@ -102,7 +102,13 @@ namespace tests
         [TearDown]
         public void RestartBrokers()
         {
-            //VagrantBrokerUtil.RestartBrokers();
+            VagrantBrokerUtil.RestartBrokers();
+        }
+
+        [TestFixtureSetUp]
+        public void BeforeEveryTest()
+        {
+            VagrantBrokerUtil.RestartBrokers();
         }
 
         // If failed to connect, messages are errored
@@ -452,7 +458,7 @@ namespace tests
 
 
             _log.Info("Done waiting for sending. Closing producer.");
-            await producer.CloseAsync(TimeSpan.FromSeconds(5));
+            await producer.CloseAsync(TimeSpan.FromSeconds(30));
             _log.Info("Producer closed.");
 
             if (stopBrokerTask != null)
@@ -1160,11 +1166,11 @@ namespace tests
 
             // read starting from the head
             var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, new StartPositionTopicStart()));
-            var count2 = consumer.OnMessageArrived.TakeUntil(DateTimeOffset.Now.AddSeconds(5))
+            var count2 = await consumer.OnMessageArrived.TakeUntil(DateTimeOffset.Now.AddSeconds(5))
                 //.Do(val=>_log.Info("received value {0}", BitConverter.ToInt32(val.Value,0)))
                 .Count().ToTask();
             //await consumer.IsConnected;
-            Assert.AreEqual(count, await count2);
+            Assert.AreEqual(count, count2);
 
             kafka4net.Tracing.EtwTrace.Marker("/ReadFromHead");
         }

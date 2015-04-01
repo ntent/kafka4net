@@ -156,12 +156,13 @@ namespace kafka4net
                     _log.Debug("Producer found {0} partitions for '{1}'", topicPartitions.Length, Configuration.Topic);
 
                     _sendMessagesSubject.
-                        ObserveOn(_cluster.Scheduler).
                         Do(msg => msg.PartitionId = Configuration.Partitioner.GetMessagePartition(msg, topicPartitions).Id).
                         Buffer(Configuration.BatchFlushTime, Configuration.BatchFlushSize).
                         Where(b => b.Count > 0).
                         Select(msgs => msgs.GroupBy(msg => msg.PartitionId)).
+                        Do(_ => _log.Debug("Got batch before scheduler {0}", _.Count())).
                         ObserveOn(_cluster.Scheduler).
+                        Do(_ => _log.Debug("Got batch after scheduler {0}", _.Count())).
                         Subscribe(partitionGroups =>
                         {
                             foreach (var batch in partitionGroups)
@@ -273,17 +274,21 @@ namespace kafka4net
 
                 _log.Info("Closing...");
                 EtwTrace.Log.ProducerStopping(Topic, _id);
-                // mark the cancellation token to cause the sending to finish up and don't allow any new messages coming in.
-                _drain.Cancel();
             
                 // flush messages to partition queues
                 _log.Debug("Completing _sendMessagesSubject...");
                 _sendMessagesSubject.OnCompleted();
+                // Drain Scheduler because ObserveOn can cause some data to be in not in the queue yet
+                await _cluster.Scheduler.Ask(() => true);
                 _log.Debug("Completed _sendMessagesSubject");
 
-                // trigger send loop into action, if it is waiting on empty queue
+                _log.Debug("Trigger send loop into action, if it is waiting on empty queue");
                 _queueEventWaitHandler.Set();
-            
+
+                // mark the cancellation token to cause the sending to finish up and don't allow any new messages coming in.
+                _log.Debug("Raising _drain");
+                _drain.Cancel();
+
                 // wait for sending to complete 
                 _log.Info("Waiting for Send buffers to drain...");
                 if(_sendLoopTask != null)
