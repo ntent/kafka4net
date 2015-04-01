@@ -195,7 +195,7 @@ namespace kafka4net
         {
             _cancel.Cancel();
 
-            _log.Debug("#{0} Awaiting PartitionRecoveryMonitor exit.", this);
+            _log.Debug("#{0} Awaiting PartitionRecoveryMonitor exit.", _id);
             try
             {
                 await _partitionRecoveryMonitor.Completion;//.ConfigureAwait(false);
@@ -440,6 +440,7 @@ namespace kafka4net
         /// </summary>        
         internal IObservable<BrokerMeta> NewBrokers { get { return _newBrokerSubject.AsObservable(); } }
         private readonly ISubject<BrokerMeta, BrokerMeta> _newBrokerSubject;
+
         /// <summary>
         /// Compose a Subject that tracks each broker in the cluster. Always replay all known brokers.
         /// </summary>

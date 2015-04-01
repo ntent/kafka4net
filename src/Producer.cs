@@ -223,14 +223,14 @@ namespace kafka4net
 
                     // start the send loop task
                     _cluster.Scheduler.Schedule(() => {
-                                                          _sendLoopTask = SendLoop().
-                                                              ContinueWith(t =>
-                                                              {
-                                                                  if (t.IsFaulted)
-                                                                      _log.Fatal(t.Exception, "SendLoop failed");
-                                                                  else
-                                                                      _log.Debug("SendLoop complete with status: {0}", t.Status);
-                                                              });
+                        _sendLoopTask = SendLoop().
+                            ContinueWith(t =>
+                            {
+                                if (t.IsFaulted)
+                                    _log.Fatal(t.Exception, "SendLoop failed");
+                                else
+                                    _log.Debug("SendLoop complete with status: {0}", t.Status);
+                            });
                     });
                     _log.Debug("Connected");
                     EtwTrace.Log.ProducerStarted(Topic, _id);

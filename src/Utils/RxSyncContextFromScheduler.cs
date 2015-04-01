@@ -1,5 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using System.Linq;
 using System.Reactive.Concurrency;
 using System.Text;
@@ -9,7 +8,7 @@ using System.Threading.Tasks;
 namespace kafka4net.Utils
 {
     /// <summary>
-    /// Implements SynchronizationContext which routes callbacks to Rx Scheduler
+    /// Implements SynchronizationContext which routes "async" keyword callbacks to Rx Scheduler
     /// </summary>
     class RxSyncContextFromScheduler : SynchronizationContext
     {
