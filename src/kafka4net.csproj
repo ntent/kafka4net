@@ -108,6 +108,7 @@
     <Compile Include="Utils\EnumerableEx.cs" />
     <Compile Include="Utils\CountObservable.cs" />
     <Compile Include="Utils\TaskEx.cs" />
+    <Compile Include="Utils\WatchdogScheduler.cs" />
   </ItemGroup>
   <ItemGroup>
     <None Include="packages.config">

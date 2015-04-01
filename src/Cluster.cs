@@ -53,7 +53,8 @@ namespace kafka4net
         private readonly ConcurrentDictionary<BrokerMeta, Fetcher> _activeFetchers = new ConcurrentDictionary<BrokerMeta, Fetcher>();
 
         // Single Threaded Scheduler to handle all async methods in the library
-        internal readonly EventLoopScheduler Scheduler = new EventLoopScheduler(ts => new Thread(ts) { Name = "kafka-scheduler", IsBackground = true });
+        internal readonly WatchdogScheduler Scheduler;
+        private Timer _watchdogTimer;
 
         // Cluster ID (unique number for each Cluster instance. used in debugging messages.)
         private static int _idCount;
@@ -66,6 +67,9 @@ namespace kafka4net
 
         private Cluster() 
         {
+            Scheduler = new WatchdogScheduler(
+                new EventLoopScheduler(ts => new Thread(ts) { Name = "kafka-scheduler "+_id, IsBackground = true }));
+
             // Init synchronization context of scheduler thread
             Scheduler.Schedule(() => SynchronizationContext.SetSynchronizationContext(new RxSyncContextFromScheduler(Scheduler)));
 

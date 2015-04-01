@@ -1,9 +1,12 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
+using System.Linq.Expressions;
 using System.Reactive.Concurrency;
 using System.Reactive.Linq;
 using System.Reactive.Subjects;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using kafka4net.Internal;
@@ -52,7 +55,35 @@ namespace kafka4net
         {
             Configuration = producerConfiguration;
             _cluster = cluster;
+
+            _cluster.Scheduler.DelaySampler.
+                Where(_ => _ > TimeSpan.FromSeconds(10)).
+                FirstOrDefaultAsync().
+                Subscribe(_ => {
+                    var stack = _cluster.Scheduler.LastStack;
+                    if(stack == null)
+                        return;
+                    var msg = string.Format("Driver handler thread is stuck for {0} (>10sec) in:\n{1}", _, ToString(stack));
+                    var ex = new BrokerException(msg);
+                    _log.Fatal(msg);
+                    if (OnPermError != null)
+                        OnPermError(ex, _allPartitionQueues.SelectMany(p => p.Value.Queue.ToArray()).ToArray());
+                });
         }
+
+        static string ToString(StackTrace stack)
+        {
+            return stack.ToString();
+            //return string.Format("{0} {1}.{2}", );
+        }
+
+#if DEBUG
+        ManualResetEvent _debugScheduler;
+        public void DebugHangScheduler()
+        {
+            _cluster.Scheduler.Schedule(() => (_debugScheduler = new ManualResetEvent(false)).WaitOne());
+        }
+#endif
 
         /// <summary>
         /// 
@@ -324,6 +355,7 @@ namespace kafka4net
                     await Task.Run(() => 
                     { 
                         _log.Debug("Start waiting in a thread");
+                        // TODO: make this wait with timeout
                         _queueEventWaitHandler.Wait();
                         _queueEventWaitHandler.Reset();
                     });

@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Reactive.Linq;
 using System.Reactive.Subjects;
@@ -1642,7 +1643,41 @@ namespace tests
             Console.WriteLine("Complete {0}", count);
         }
 
+        [Test]
+        [Timeout(10*1000)]
+        [ExpectedException(typeof(BrokerException))]
+        public async void InvalidDnsShouldThrowException()
+        {
+            var consumer = new Consumer(new ConsumerConfiguration("no.such.name.123.org", "some.topic", new StartPositionTopicEnd()));
+            consumer.OnMessageArrived.Subscribe(_ => { });
+            await consumer.IsConnected;
+        }
 
+        [Test]
+        [Conditional("DEBUG")]
+        public async void SimulateSchedulerHanging()
+        {
+            var topic = "topic11."+_rnd.Next();
+            VagrantBrokerUtil.CreateTopic(topic, 1, 1);
+
+            var producer = new Producer(_seedAddresses, new ProducerConfiguration(topic, batchFlushSize: 2));
+            await producer.ConnectAsync();
+            producer.OnSuccess += messages => { 
+                foreach(var msg in messages)
+                    _log.Debug("Sent confirmed: {0}", BitConverter.ToInt32(msg.Value, 0));
+            };
+            var ctx = SynchronizationContext.Current;
+            producer.OnPermError += (exception, messages) => ctx.Post(d => { throw exception; }, null);
+
+            var source = Observable.Interval(TimeSpan.FromSeconds(1)).Take(1000).Publish();
+            source.Connect();
+            
+            source.Do(i => {if(i == 2) producer.DebugHangScheduler();}).
+            Select(i => new Message{Value = BitConverter.GetBytes(i)}).
+            Subscribe(producer.Send);
+
+            await source;
+        }
 
         // if last leader is down, all in-buffer messages are errored and the new ones
         // are too.
