@@ -1659,8 +1659,8 @@ namespace tests
             await consumer.IsConnected;
         }
 
+#if DEBUG
         [Test]
-        [Conditional("DEBUG")]
         public async void SimulateSchedulerHanging()
         {
             var topic = "topic11."+_rnd.Next();
@@ -1684,6 +1684,7 @@ namespace tests
 
             await source;
         }
+#endif
 
         // if last leader is down, all in-buffer messages are errored and the new ones
         // are too.
