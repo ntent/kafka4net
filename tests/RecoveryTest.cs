@@ -1661,6 +1661,7 @@ namespace tests
 
 #if DEBUG
         [Test]
+        [ExpectedException(typeof(WorkingThreadHungException))]
         public async void SimulateSchedulerHanging()
         {
             var topic = "topic11."+_rnd.Next();
@@ -1668,17 +1669,21 @@ namespace tests
 
             var producer = new Producer(_seedAddresses, new ProducerConfiguration(topic, batchFlushSize: 2));
             await producer.ConnectAsync();
-            producer.OnSuccess += messages => { 
-                foreach(var msg in messages)
-                    _log.Debug("Sent confirmed: {0}", BitConverter.ToInt32(msg.Value, 0));
+            // hung upon 1st confirmation
+            int c = 0;
+            producer.OnSuccess += messages =>
+            {
+                if(c++ == 1)
+                    new ManualResetEvent(false).WaitOne();
             };
+
             var ctx = SynchronizationContext.Current;
             producer.OnPermError += (exception, messages) => ctx.Post(d => { throw exception; }, null);
 
             var source = Observable.Interval(TimeSpan.FromSeconds(1)).Take(1000).Publish();
             source.Connect();
             
-            source.Do(i => {if(i == 2) producer.DebugHangScheduler();}).
+            source.//Do(i => {if(i == 2) producer.DebugHangScheduler();}).
             Select(i => new Message{Value = BitConverter.GetBytes(i)}).
             Subscribe(producer.Send);
 

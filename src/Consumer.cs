@@ -58,6 +58,8 @@ namespace kafka4net
         {
             Configuration = consumerConfig;
             _cluster = new Cluster(consumerConfig.SeedBrokers);
+            _cluster.OnThreadHang += e => OnMessageArrivedInput.OnError(e);
+
 
             // Low/high watermark implementation
             FlowControl = _flowControlInput.

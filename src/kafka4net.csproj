@@ -109,6 +109,7 @@
     <Compile Include="Utils\CountObservable.cs" />
     <Compile Include="Utils\TaskEx.cs" />
     <Compile Include="Utils\WatchdogScheduler.cs" />
+    <Compile Include="WorkingThreadHungException.cs" />
   </ItemGroup>
   <ItemGroup>
     <None Include="packages.config">

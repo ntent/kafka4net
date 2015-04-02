@@ -55,6 +55,8 @@ namespace kafka4net
         // Single Threaded Scheduler to handle all async methods in the library
         internal readonly WatchdogScheduler Scheduler;
         private Timer _watchdogTimer;
+        internal volatile Thread CurrentWorkerThread;
+        internal event Action<WorkingThreadHungException> OnThreadHang;
 
         // Cluster ID (unique number for each Cluster instance. used in debugging messages.)
         private static int _idCount;
@@ -68,10 +70,27 @@ namespace kafka4net
         private Cluster() 
         {
             Scheduler = new WatchdogScheduler(
-                new EventLoopScheduler(ts => new Thread(ts) { Name = "kafka-scheduler "+_id, IsBackground = true }));
+                new EventLoopScheduler(ts => CurrentWorkerThread = new Thread(ts) { Name = "kafka-scheduler "+_id, IsBackground = true }));
 
             // Init synchronization context of scheduler thread
             Scheduler.Schedule(() => SynchronizationContext.SetSynchronizationContext(new RxSyncContextFromScheduler(Scheduler)));
+
+            var hangTimeout = TimeSpan.FromMinutes(1);
+            Scheduler.DelaySampler.Where(_ => _ > hangTimeout).
+                FirstOrDefaultAsync().
+                Subscribe(_ =>
+                {
+                    var thread = CurrentWorkerThread;
+                    if (thread != null)
+                    {
+                        var msg = string.Format("Driver handler thread is stuck for {0} (>{1}ms). Aborting!", _, hangTimeout);
+                        _log.Fatal(msg);
+                        thread.Abort();
+                        if (OnThreadHang != null)
+                            OnThreadHang(new WorkingThreadHungException(msg));
+                    }
+                });
+
 
             // build a subject that relays any changes to a partition's error state to anyone observing.
             BuildPartitionStateChangeSubject();
