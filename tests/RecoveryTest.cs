@@ -1659,7 +1659,6 @@ namespace tests
             await consumer.IsConnected;
         }
 
-#if DEBUG
         [Test]
         [ExpectedException(typeof(WorkingThreadHungException))]
         public async void SimulateSchedulerHanging()
@@ -1689,7 +1688,6 @@ namespace tests
 
             await source;
         }
-#endif
 
         // if last leader is down, all in-buffer messages are errored and the new ones
         // are too.
