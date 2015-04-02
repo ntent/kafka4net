@@ -1660,6 +1660,17 @@ namespace tests
         }
 
         [Test]
+        [Timeout(10 * 1000)]
+        public async void OneInvalidDnsShouldNotThrow()
+        {
+            var seed = "no.such.name.123.org,"+_seedAddresses;
+            var consumer = new Consumer(new ConsumerConfiguration(seed, "some.topic", new StartPositionTopicEnd()));
+            consumer.OnMessageArrived.Subscribe(_ => { });
+            await consumer.IsConnected;
+        }
+
+
+        [Test]
         [ExpectedException(typeof(WorkingThreadHungException))]
         public async void SimulateSchedulerHanging()
         {
