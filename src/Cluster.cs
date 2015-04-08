@@ -56,7 +56,7 @@ namespace kafka4net
         internal readonly WatchdogScheduler Scheduler;
         private Timer _watchdogTimer;
         internal volatile Thread CurrentWorkerThread;
-        internal event Action<WorkingThreadHungException> OnThreadHang;
+        public Action<WorkingThreadHungException> OnThreadHang;
 
         // Cluster ID (unique number for each Cluster instance. used in debugging messages.)
         private static int _idCount;
@@ -70,7 +70,13 @@ namespace kafka4net
         private Cluster() 
         {
             Scheduler = new WatchdogScheduler(
-                new EventLoopScheduler(ts => CurrentWorkerThread = new Thread(ts) { Name = "kafka-scheduler "+_id, IsBackground = true }));
+                new EventLoopScheduler(ts =>
+                {
+                    var thread = new Thread(ts) { Name = "kafka-scheduler " + _id, IsBackground = true };
+                    CurrentWorkerThread = thread;
+                    _log.Debug("Created new thread '{0}'", thread.Name);
+                    return thread;
+                }));
 
             // Init synchronization context of scheduler thread
             Scheduler.Schedule(() => SynchronizationContext.SetSynchronizationContext(new RxSyncContextFromScheduler(Scheduler)));

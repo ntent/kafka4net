@@ -25,9 +25,10 @@ namespace kafka4net
 
         // TODO: execute handlers safe. Possibly in the caller sync context
         public event Action<Message[]> OnTempError;
-        public event Action<Exception, Message[]> OnPermError;
+
+        public Action<Exception, Message[]> OnPermError;
         public event Action<Message[]> OnShutdownDirty;
-        public event Action<Message[]> OnSuccess;
+        public Action<Message[]> OnSuccess; 
 
         //public MessageCodec Codec = MessageCodec.CodecNone;
         private Task _sendLoopTask;
@@ -298,6 +299,11 @@ namespace kafka4net
                 }
 
                 _sendMessagesSubject = null;
+                OnPermError = null;
+                OnShutdownDirty = null;
+                OnSuccess = null;
+                OnTempError = null;
+
                 _log.Info("Close complete");
                 EtwTrace.Log.ProducerStoped(Topic, _id);
             }
@@ -511,6 +517,11 @@ namespace kafka4net
 
                                 if (OnSuccess != null && successMessages.Length != 0)
                                     OnSuccess(successMessages);
+                            }
+                            catch (ThreadAbortException e)
+                            {
+                                // It happen when Watchdog kills stuck thread. We want stack trace to be logged with high priority
+                                _log.Fatal(e, "Send has been aborted. Probably hung thread detected");
                             }
                             catch (Exception e)
                             {
