@@ -350,8 +350,9 @@ namespace kafka4net
                     }
                     else
                     {
-                        _log.Fatal(exception, "Could not fetch offsets for topic {0} after 4 attempts! Failing call.", topic);
-                        throw exception;
+                        var error = "Could not fetch offsets for topic {0} after 4 attempts! Failing call";
+                        _log.Fatal(exception, error, topic);
+                        throw new BrokerException(error, exception);
                     }
                 }
                 throw new TaskCanceledException();
