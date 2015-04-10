@@ -49,7 +49,6 @@ namespace kafka4net
         // Is used by Fetchers to wake up from sleep when flow turns ON
         internal IObservable<bool> FlowControl;
 
-
         /// <summary>
         /// Create a new consumer using the specified configuration. See @ConsumerConfiguration
         /// </summary>
@@ -137,7 +136,9 @@ namespace kafka4net
                 }
             });
 
-            OnMessageArrived = onMessage;
+            OnMessageArrived = onMessage.
+                // isolate driver from user code misbehave
+                ObserveOn(Configuration.OutgoingScheduler);
 
             // If permanent error within any single partition, fail the whole consumer (intentionally). 
             // Do not try to keep going (failfast principle).

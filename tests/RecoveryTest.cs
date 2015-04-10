@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
+using System.Reactive.Concurrency;
 using System.Reactive.Linq;
 using System.Reactive.Subjects;
 using System.Reactive.Threading.Tasks;
@@ -1698,6 +1699,52 @@ namespace tests
             Subscribe(producer.Send);
 
             await source;
+        }
+
+        [Test]
+        public async void SimulateLongBufferedMessageHandling()
+        {
+            var count = 2000;
+            var topic = "topic11." + _rnd.Next();
+            VagrantBrokerUtil.CreateTopic(topic, 1, 1);
+
+            var producer = new Producer(_seedAddresses, new ProducerConfiguration(topic, batchFlushSize: 2));
+            await producer.ConnectAsync();
+
+            var src = Observable.Interval(TimeSpan.FromMilliseconds(10)).Take(count).
+                Select(i => new Message { Value = BitConverter.GetBytes((int)i) }).Publish().RefCount();
+            src.Subscribe(producer.Send);
+            await src;
+
+            await Task.Delay(200);
+            await producer.CloseAsync(TimeSpan.FromSeconds(5));
+
+            _log.Debug("Start consumer");
+            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, new StartPositionTopicStart()));
+            var stream = consumer.OnMessageArrived.
+                Buffer(TimeSpan.FromSeconds(1), count / 4).
+                Where(_ => _.Count > 0).
+                Select(i =>
+                {
+                    _log.Debug("Handling batch {0} ...", i.Count);
+                    Thread.Sleep(65*1000);
+                    _log.Debug("Complete batch");
+                    return i.Count;
+                }).
+                Scan(0, (i, i1) =>
+                {
+                    _log.Debug("Scnning {0} {1}", i, i1);
+                    return i + i1;
+                }).
+                Do(i => _log.Debug("Do {0}", i)).
+                Where(i => i == count).FirstAsync().ToTask();
+            await consumer.IsConnected;
+
+            _log.Debug("Awaiting for consumer");
+            var count2 = await stream;
+            consumer.Dispose();
+            Assert.AreEqual(count, count2);
+            _log.Info("Complete");
         }
 
         // if last leader is down, all in-buffer messages are errored and the new ones

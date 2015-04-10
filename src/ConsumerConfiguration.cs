@@ -1,4 +1,6 @@
 ﻿using System;
+using System.Reactive.Concurrency;
+using System.Threading;
 using kafka4net.ConsumerImpl;
 
 namespace kafka4net
@@ -78,6 +80,9 @@ namespace kafka4net
         /// </param>
         /// <param name="lowWatermark"></param>
         /// <param name="stopPosition"></param>
+        /// <param name="scheduler">Driver will schedule outgoing messages events using this scheduler. By default it is
+        /// EventLoopScheduler. Be careful if you want to redefine it. Concurrent scheduler can rearrange order of messages
+        /// within the same partition!</param>
         public ConsumerConfiguration(
             string seedBrokers,
             string topic, 
@@ -88,7 +93,8 @@ namespace kafka4net
             int lowWatermark = 500,
             int highWatermark = 2000,
             bool useFlowControl = false,
-            IStopPositionProvider stopPosition = null)
+            IStopPositionProvider stopPosition = null,
+            IScheduler scheduler = null)
         {
             LowWatermark = lowWatermark;
             HighWatermark = highWatermark;
@@ -110,6 +116,7 @@ namespace kafka4net
             MinBytesPerFetch = minBytesPerFetch;
             MaxBytesPerFetch = maxBytesPerFetch;
             StopPosition = stopPosition ?? new StopPositionNever();
+            OutgoingScheduler = scheduler ?? new EventLoopScheduler(ts => new Thread(ts));
         }
 
         public string SeedBrokers { get; private set; }
@@ -122,6 +129,6 @@ namespace kafka4net
         public readonly int LowWatermark;
         public readonly int HighWatermark;
         public readonly bool UseFlowControl;
-
+        public readonly IScheduler OutgoingScheduler;
     }
 }
