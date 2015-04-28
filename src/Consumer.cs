@@ -276,6 +276,10 @@ namespace kafka4net
                 _log.Error(e, "Error in Dispose");
             }
 
+            var dispose = Configuration.OutgoingScheduler as IDisposable;
+            if(dispose != null)
+                dispose.Dispose();
+
             _isDisposed = true;
         }
     }

@@ -116,7 +116,7 @@ namespace kafka4net
             MinBytesPerFetch = minBytesPerFetch;
             MaxBytesPerFetch = maxBytesPerFetch;
             StopPosition = stopPosition ?? new StopPositionNever();
-            OutgoingScheduler = scheduler ?? new EventLoopScheduler(ts => new Thread(ts));
+            OutgoingScheduler = scheduler ?? new EventLoopScheduler(ts => new Thread(ts) { IsBackground = true});
         }
 
         public string SeedBrokers { get; private set; }

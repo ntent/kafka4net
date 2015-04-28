@@ -213,6 +213,8 @@ namespace kafka4net
                 EtwTrace.Log.ClusterStopped(_id);
             }
 
+            Scheduler.Dispose();
+
             _state = ClusterState.Disconnected;
         }
 
