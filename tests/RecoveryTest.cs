@@ -9,6 +9,7 @@ using System.Reactive.Threading.Tasks;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Threading.Tasks.Dataflow;
 using kafka4net;
 using kafka4net.ConsumerImpl;
 using kafka4net.Utils;
@@ -1745,6 +1746,18 @@ namespace tests
             consumer.Dispose();
             Assert.AreEqual(count, count2);
             _log.Info("Complete");
+        }
+
+        [Test]
+        public async void TplConsumer()
+        {
+            var topic = "test11"+_rnd.Next();
+            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, new StartPositionTopicEnd()));
+            consumer.MessageHandler(5, 1, async msg => { 
+                Thread.Sleep(1000);
+            });
+
+
         }
 
         // if last leader is down, all in-buffer messages are errored and the new ones

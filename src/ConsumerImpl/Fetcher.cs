@@ -1,4 +1,6 @@
 ﻿using System.Reactive.Subjects;
+using System.Threading.Tasks;
+using System.Threading.Tasks.Dataflow;
 using kafka4net.Internal;
 using kafka4net.Metadata;
 using kafka4net.Protocols;
@@ -8,7 +10,6 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net.Sockets;
-using System.Reactive.Disposables;
 using System.Reactive.Linq;
 using System.Threading;
 using kafka4net.Tracing;
@@ -20,7 +21,7 @@ namespace kafka4net.ConsumerImpl
     /// Manages group of partitions to be fetched from single physical broker (connection).
     /// One fetcher can contain multiple TopicPartitions subscribed.
     /// </summary>
-    internal class Fetcher : IDisposable
+    internal class Fetcher
     {
         private static readonly ILogger _log = Logger.GetLogger();
 
@@ -32,13 +33,9 @@ namespace kafka4net.ConsumerImpl
         private readonly Protocol _protocol;
         private readonly CancellationToken _cancel;
         private readonly ConsumerConfiguration _consumerConfig;
-        private readonly IObservable<bool> _flowControl;
 
         // keep list of TopicPartitions that are subscribed
         private readonly HashSet<TopicPartition> _topicPartitions = new HashSet<TopicPartition>();
-
-        // this is the observable sequence of fetch responses returned from the FetchLoop
-        private IObservable<FetchResponse> _fetchResponses;
 
         public int BrokerId { get { return _broker.NodeId; } }
         public BrokerMeta Broker { get { return _broker; } }
@@ -47,7 +44,7 @@ namespace kafka4net.ConsumerImpl
         readonly Subject<bool> _wakeupSignal = new Subject<bool>();
 
 
-        public Fetcher(Cluster cluster, BrokerMeta broker, Protocol protocol, ConsumerConfiguration consumerConfig, CancellationToken cancel)
+        public Fetcher(Cluster cluster, BrokerMeta broker, Protocol protocol, ConsumerConfiguration consumerConfig, ITargetBlock<ReceivedMessage[]> target , CancellationToken cancel)
         {
             _cluster = cluster;
             _broker = broker;
@@ -56,8 +53,8 @@ namespace kafka4net.ConsumerImpl
 
             _consumerConfig = consumerConfig;
             
-            _fetchResponses = FetchLoop().Publish().RefCount();
-            BuildReceivedMessages();
+            FetchLoop(target);
+            //DeserializeMessagesFromFetchResponse();
 
             _cancel.Register(() => _wakeupSignal.OnNext(true));
 
@@ -71,76 +68,67 @@ namespace kafka4net.ConsumerImpl
             return string.Format("{0}:{1}/{2}", _broker.Host, _broker.Port, _broker.NodeId);
         }
 
-        public void Dispose()
-        {
-            // TODO: On Dispose, clean up and exit the fetch loop, cancel any subscriptions.
-            throw new NotImplementedException();
-        }
-
         /// <summary>
         /// Handles the subscription of a new TopicPartition to this fetcher.
-        /// Keeps track of the subscribed partitions in order to not fetch messages if the FlowControlState is Closed.
         /// </summary>
         /// <param name="topicPartition"></param>
         /// <returns></returns>
-        public IDisposable Subscribe(TopicPartition topicPartition)
+        //public IDisposable Subscribe(TopicPartition topicPartition)
+        //{
+        //    _topicPartitions.Add(topicPartition);
+        //    EtwTrace.Log.FetcherPartitionSubscribed(_id, topicPartition.PartitionId);
+
+        //    // cleanup
+        //    var topicPartitionCleanup = Disposable.Create(() => _topicPartitions.Remove(topicPartition));
+        //    var receivedMessagesSubscriptionCleanup = ReceivedMessages.Where(rm => rm.Topic == topicPartition.Topic && rm.Partition == topicPartition.PartitionId)
+        //            .Subscribe(topicPartition);
+
+        //    var cleanup = new CompositeDisposable
+        //    {
+        //        topicPartitionCleanup,
+        //        receivedMessagesSubscriptionCleanup
+        //    };
+
+        //    if (_log.IsDebugEnabled)
+        //    {
+        //        cleanup.Add(Disposable.Create(() => _log.Debug("Fetcher #{0} {1} topicPartition is unsubscribing", _id, topicPartition)));
+        //    }
+
+        //    _log.Debug("Fetcher #{0} added {1}", _id, topicPartition);
+
+        //    return cleanup;
+        //}
+
+        public void Subscribe(ITargetBlock<ReceivedMessage[]> target)
         {
-            _topicPartitions.Add(topicPartition);
-            EtwTrace.Log.FetcherPartitionSubscribed(_id, topicPartition.PartitionId);
 
-            // cleanup
-            var topicPartitionCleanup = Disposable.Create(() => _topicPartitions.Remove(topicPartition));
-            var receivedMessagesSubscriptionCleanup = ReceivedMessages.Where(rm => rm.Topic == topicPartition.Topic && rm.Partition == topicPartition.PartitionId)
-                    .Subscribe(topicPartition);
-            var flowControlCleanup = topicPartition.FlowControl.
-                // we need to wake up from waiting loop any time flow control hits low watermark and becomes enabled
-                Where(enabled => enabled).
-                Subscribe(_ => _wakeupSignal.OnNext(true));
-            
-            var cleanup = new CompositeDisposable
-            {
-                topicPartitionCleanup,
-                receivedMessagesSubscriptionCleanup,
-                flowControlCleanup
-            };
-
-            if (_log.IsDebugEnabled)
-            {
-                cleanup.Add(Disposable.Create(() => _log.Debug("Fetcher #{0} {1} topicPartition is unsubscribing", _id, topicPartition)));
-            }
-
-            _log.Debug("Fetcher #{0} added {1}", _id, topicPartition);
-
-            return cleanup;
         }
 
         /// <summary>
         /// Compose the FetchResponses into ReceivedMessages
         /// </summary>
-        internal IObservable<ReceivedMessage> ReceivedMessages { get; private set; }
-        private void BuildReceivedMessages() {
-            ReceivedMessages = _fetchResponses.SelectMany(response => {
-                return (
-                    from topic in response.Topics
-                    from part in topic.Partitions where part.ErrorCode.IsSuccess()
-                    from msg in part.Messages
-                    select new ReceivedMessage
-                    {
-                        Topic = topic.Topic,
-                        Partition = part.Partition,
-                        Key = msg.Key,
-                        Value = msg.Value,
-                        Offset = msg.Offset,
-                        HighWaterMarkOffset = part.HighWatermarkOffset
-                    });
-            }).
-            Do(msg => EtwTrace.Log.FetcherMessage(_id, msg.Key != null ? msg.Key.Length : -1, msg.Value != null ? msg.Value.Length : -1, msg.Offset, msg.Partition))
-            .Do(
-                _ => { }, 
-                err => _log.Warn("Error in ReceivedMessages stream from broker {0}. Message: {1}", _broker, err.Message), 
-                () => _log.Debug("ReceivedMessages stream for broker {0} is complete.", _broker)
-            )
-            .Publish().RefCount();
+        static IEnumerable<ReceivedMessage> DeserializeMessagesFromFetchResponse(FetchResponse response) {
+            return (
+                from topic in response.Topics
+                from part in topic.Partitions where part.ErrorCode.IsSuccess()
+                from msg in part.Messages
+                select new ReceivedMessage
+                {
+                    Topic = topic.Topic,
+                    Partition = part.Partition,
+                    Key = msg.Key,
+                    Value = msg.Value,
+                    Offset = msg.Offset,
+                    HighWaterMarkOffset = part.HighWatermarkOffset
+                });
+            //}).
+            //Do(msg => EtwTrace.Log.FetcherMessage(_id, msg.Key != null ? msg.Key.Length : -1, msg.Value != null ? msg.Value.Length : -1, msg.Offset, msg.Partition))
+            //.Do(
+            //    _ => { }, 
+            //    err => _log.Warn("Error in ReceivedMessages stream from broker {0}. Message: {1}", _broker, err.Message), 
+            //    () => _log.Debug("ReceivedMessages stream for broker {0} is complete.", _broker)
+            //)
+            //.Publish().RefCount();
         }
 
         internal void PartitionsUpdated() 
@@ -148,9 +136,9 @@ namespace kafka4net.ConsumerImpl
             _wakeupSignal.OnNext(true);
         }
 
-        private IObservable<FetchResponse> FetchLoop()
+        private void FetchLoop()
         {
-            return Observable.Create<FetchResponse>(async observer =>
+            Task.Run(async () =>
             {
                 while (!_cancel.IsCancellationRequested)
                 {
@@ -159,12 +147,6 @@ namespace kafka4net.ConsumerImpl
                         MaxWaitTime = _consumerConfig.MaxWaitTimeMs,
                         MinBytes = _consumerConfig.MinBytesPerFetch,
                         Topics = _topicPartitions.
-                            Where(tp => {
-                                var enabled = tp.FlowControlEnabled;
-                                if(!enabled)
-                                    _log.Debug("#{0} Ignoring partition because flow controll is off {1}", _id, tp);
-                                return enabled;
-                            }).
                             GroupBy(tp=>tp.Topic).
                             Select(t => new FetchRequest.TopicData { 
                                 Topic = t.Key,
@@ -211,23 +193,12 @@ namespace kafka4net.ConsumerImpl
                         if (_log.IsDebugEnabled && fetch.Topics.Any(t=>t.Partitions.Any(p=>p.Messages.Length > 0)))
                             _log.Debug("#{0}: got FetchResponse from {2} with messages: {1}", _id, _broker.Conn, fetch.ToString(true));
                     }
-                    //catch (TaskCanceledException)
-                    //{
-                    //    // Usually reason of fetch to time out is broker closing Tcp socket.
-                    //    // Due to Tcp specifics, there are situations when closed connection can not be detected, 
-                    //    // thus we need to implement timeout to detect it and restart connection.
-                    //    _log.Info("#{0} Fetch timed out {1}", _id, this);
-
-                    //    // Continue so that socket exception happen and handle exception
-                    //    // in uniform way
-                    //    continue;
-                    //}
                     catch (ObjectDisposedException e)
                     {
                         if (!_cancel.IsCancellationRequested)
                         {
                             _log.Debug("#{0} connection closed", _id);
-                            observer.OnError(e);
+                            target.Fault(e);
                             return;
                         }
                         
@@ -238,7 +209,7 @@ namespace kafka4net.ConsumerImpl
                         if (!_cancel.IsCancellationRequested)
                         {
                             _log.Debug("#{0} connection closed", _id);
-                            observer.OnError(e);
+                            target.Fault(e);
                             return;
                         }
                         break;
@@ -248,7 +219,7 @@ namespace kafka4net.ConsumerImpl
                         if (!_cancel.IsCancellationRequested)
                         {
                             _log.Info(e, "#{0} Connection failed. {1}", _id, e.Message);
-                            observer.OnError(e);
+                            target.Fault(e);
                             return;
                         }
                         break;
@@ -258,7 +229,7 @@ namespace kafka4net.ConsumerImpl
                         if (!_cancel.IsCancellationRequested)
                         {
                             _log.Error(e, "#{0} Fetcher failed", _id);
-                            observer.OnError(e);
+                            target.Fault(e);
                             return;
                         }
                         break;
@@ -267,12 +238,31 @@ namespace kafka4net.ConsumerImpl
                     // if timeout, we got empty response
                     if (fetch.Topics.Any(t => t.Partitions.Any(p => p.Messages.Length > 0))) 
                     { 
-                        observer.OnNext(fetch);
+                        //var messages = DeserializeMessagesFromFetchResponse(fetch);
+                        RouteMessageesToSubscribers(fetch);
                     }
                 }
 
                 _log.Info("Cancellation Requested. Shutting Down.");
-                observer.OnCompleted();
+                target.Complete();
+            });
+        }
+
+        /// <summary>
+        /// Find consumers for given Topic/Partition and send message
+        /// </summary>
+        /// <param name="fetch"></param>
+        private async Task RouteMessageesToSubscribers(FetchResponse fetch)
+        {
+            (
+                from msg in DeserializeMessagesFromFetchResponse(fetch)
+                from consumer in _topicPartitions
+                where consumer.PartitionId == msg.Partition && consumer.Topic == msg.Topic
+                group msg by consumer into target
+                select new { Consumer = target.Key, Messages = target.ToArray() }
+            ).ForEach(target =>
+            {
+                await target.Consumer.IncomingFetcherMessages.SendAsync(target.Messages);
             });
         }
     }

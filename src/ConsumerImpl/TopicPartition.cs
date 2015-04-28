@@ -1,12 +1,21 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Reactive.Disposables;
 using System.Reactive.Linq;
+using System.Threading.Tasks.Dataflow;
 using kafka4net.Internal;
+using kafka4net.Protocols.Responses;
 
 namespace kafka4net.ConsumerImpl
 {
-    class TopicPartition : IObserver<ReceivedMessage>
+    /// <summary>
+    /// Link Topics and Fetchers as many-to-many relation. One topic is served by many fetchers
+    /// and single broker can fetch for multiple partitions of different topics.
+    /// When metadata change, TopicPartition will change association with Fetcher, but association between topic and its TopicPartitions remains 
+    /// the same.
+    /// </summary>
+    class TopicPartition
     {
         private static readonly ILogger _log = Logger.GetLogger();
         private Consumer _subscribedConsumer;
@@ -18,6 +27,8 @@ namespace kafka4net.ConsumerImpl
         // subscription handles
         private IDisposable _fetcherChangesSubscription;
         private IDisposable _currentfetcherSubscription;
+
+        public ITargetBlock<ReceivedMessage[]> IncomingFetcherMessages;
 
         public TopicPartition(Cluster cluster, string topic, int partitionId, long initialOffset)
         {
@@ -44,9 +55,6 @@ namespace kafka4net.ConsumerImpl
                 return _partitionFetchState.Offset;
             }
         }
-
-        public IObservable<bool> FlowControl { get { return _subscribedConsumer.FlowControl; } }
-        public bool FlowControlEnabled { get { return _subscribedConsumer.FlowControlEnabled; } }
 
         /// <summary>
         /// Subscribe a consumer to this topic partition. The act of subscribing 
@@ -76,6 +84,59 @@ namespace kafka4net.ConsumerImpl
             return Disposable.Create(DisposeImpl);
 
         }
+
+        /// <summary>
+        /// Gets an observable sequence of any changes to the Fetcher for a specific topic/partition. 
+        /// </summary>
+        /// <param name="topic"></param>
+        /// <param name="partitionId"></param>
+        /// <param name="consumerConfiguration"></param>
+        /// <returns></returns>
+        internal ISourceBlock<ReceivedMessage[]> GetFetcherChanges()
+        {
+            return _cluster.PartitionStateChanges
+                .Where(t => t.Topic == _topic && t.PartitionId == _partitionId)
+                .Select(state =>
+                {
+                    // if the state is not ready, return NULL for the fetcher.
+                    if (!state.ErrorCode.IsSuccess())
+                        return (Fetcher)null;
+
+                    // get or create the correct Fetcher for this topic/partition
+                    var broker = _cluster.FindBrokerMetaForPartitionId(state.Topic, state.PartitionId);
+
+                    var fetcher = _cluster.GetFetcher(broker);
+                    fetcher.Subscribe(_topic, _partitionId, block);
+
+                    //var fetcher = _activeFetchers.GetOrAdd(broker, b =>
+                    //{
+                    //    // all new fetchers need to be "watched" for errors.
+                    //    var f = new Fetcher(this, b, _protocol, consumerConfiguration, _cancel.Token);
+                    //    // subscribe to error and complete notifications, and remove from active fetchers
+                    //    f.ReceivedMessages.Subscribe(_ => { },
+                    //        err =>
+                    //        {
+                    //            _log.Warn("Received error from fetcher {0}. Removing from active fetchers.", f);
+                    //            Fetcher ef;
+                    //            _activeFetchers.TryRemove(broker, out ef);
+                    //        },
+                    //        () =>
+                    //        {
+                    //            _log.Info("Received complete from fetcher {0}. Removing from active fetchers.", f);
+                    //            Fetcher ef;
+                    //            _activeFetchers.TryRemove(broker, out ef);
+                    //        });
+                    //    return f;
+                    //});
+
+                    return block;
+
+                })
+                .Do(f => _log.Debug("GetFetcherChanges returning {1} fetcher {0}", f, f == null ? "null" : "new"),
+                    ex => _log.Error(ex, "GetFetcherChages saw ERROR returning new fetcher."),
+                    () => _log.Error("GetFetcherChanges saw COMPLETE from returning new fetcher."));
+        }
+
 
         /// <summary>
         /// Handle the connection of a fetcher (potentially a new fetcher) for this partition

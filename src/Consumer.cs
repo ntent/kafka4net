@@ -1,4 +1,5 @@
 ﻿using System.Reactive.Concurrency;
+using System.Threading.Tasks.Dataflow;
 using kafka4net.ConsumerImpl;
 using kafka4net.Tracing;
 using kafka4net.Utils;
@@ -7,7 +8,6 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Reactive.Disposables;
 using System.Reactive.Linq;
-using System.Reactive.Subjects;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -15,17 +15,6 @@ namespace kafka4net
 {
     public class Consumer : IDisposable
     {
-        /// <summary>
-        /// IMPORTANT!
-        /// When subscribing to message flow, remember that messages are handled in kafks4net execution thread, which is designed to be async. This thread handles all internal driver callbacks.
-        /// This way, if you handle messages with some delays or God forbids Wait/Result, than you will pause driver's ability to handle internal events.
-        /// Please, when subscribe, use ObserveOn(your scheduler or sync context) to switch handle thread to something else. Or make sure that your handle routine is instant. How instant?
-        /// For reference, driver thread is used to handle async socket data received event. This should give you an idea: for how log are you willing to delay network handling inside the driver.
-        /// </summary>
-        public readonly IObservable<ReceivedMessage> OnMessageArrived;
-
-        internal readonly ISubject<ReceivedMessage> OnMessageArrivedInput = new Subject<ReceivedMessage>();
-
         private static readonly ILogger _log = Logger.GetLogger();
 
         internal ConsumerConfiguration Configuration { get; private set; }
@@ -37,17 +26,15 @@ namespace kafka4net
         private readonly Dictionary<int, TopicPartition> _topicPartitions = new Dictionary<int, TopicPartition>(); 
         private readonly Dictionary<int, IDisposable> _partitionsSubscription = new Dictionary<int, IDisposable>();
 
+        private ActionBlock<ReceivedMessage> _consumerTarget;
+
         // called back when the connection is made for the consumer.
+        [Obsolete]
         readonly TaskCompletionSource<bool> _connectionComplete = new TaskCompletionSource<bool>();
+        private bool _isDisposed;
 
         int _outstandingMessageProcessingCount;
         int _haveSubscriber;
-
-        public bool FlowControlEnabled { get; private set; }
-
-        readonly BehaviorSubject<int> _flowControlInput = new BehaviorSubject<int>(1);
-        // Is used by Fetchers to wake up from sleep when flow turns ON
-        internal IObservable<bool> FlowControl;
 
         /// <summary>
         /// Create a new consumer using the specified configuration. See @ConsumerConfiguration
@@ -58,22 +45,6 @@ namespace kafka4net
             Configuration = consumerConfig;
             _cluster = new Cluster(consumerConfig.SeedBrokers);
             _cluster.OnThreadHang += e => OnMessageArrivedInput.OnError(e);
-
-
-            // Low/high watermark implementation
-            FlowControl = _flowControlInput.
-                Scan(1, (last, current) =>
-                {
-                    if (current < Configuration.LowWatermark)
-                        return 1;
-                    if (current > Configuration.HighWatermark)
-                        return -1;
-                    return last; // While in between watermarks, carry over previous on/off state
-                }).
-                    DistinctUntilChanged().
-                    Select(i => i > 0).
-                    Do(f =>FlowControlEnabled = f).
-                    Do(f => EtwTrace.Log.ConsumerFlowControl(f ? 1 : 0));
 
             var onMessage = Observable.Create<ReceivedMessage>(observer =>
             {
@@ -89,7 +60,7 @@ namespace kafka4net
                 // It is not possible to wait for completion of partition resolution process, so start it asynchronously.
                 // This means that OnMessageArrived.Subscribe() will complete when consumer is not actually connected yet.
                 //
-                Task.Run(async () =>
+                State.Connected = Task.Run(async () =>
                 {
                     try 
                     {
@@ -113,15 +84,6 @@ namespace kafka4net
                 return Disposable.Create(() => _partitionsSubscription.Values.ForEach(s=>s.Dispose()));
             });
 
-            if (Configuration.UseFlowControl) { 
-            // Increment counter of messages sent for processing
-                onMessage = onMessage.Do(msg =>
-                {
-                    var count = Interlocked.Increment(ref _outstandingMessageProcessingCount);
-                    _flowControlInput.OnNext(count);
-                });
-            }
-
             // handle stop condition
             onMessage = onMessage.Do(message =>
             {
@@ -135,10 +97,6 @@ namespace kafka4net
                     partitionSubscription.Dispose();
                 }
             });
-
-            OnMessageArrived = onMessage.
-                // isolate driver from user code misbehave
-                ObserveOn(Configuration.OutgoingScheduler);
 
             // If permanent error within any single partition, fail the whole consumer (intentionally). 
             // Do not try to keep going (failfast principle).
@@ -248,8 +206,6 @@ namespace kafka4net
             return string.Format("Consumer: '{0}'", Topic);
         }
 
-        private bool _isDisposed;
-
         public void Dispose()
         {
             if (_isDisposed)
@@ -277,6 +233,16 @@ namespace kafka4net
             }
 
             _isDisposed = true;
+        }
+
+        public void MessageHandler(Action<ReceivedMessage> action, int buffer = 1000, int degreeOfParallelism = 1)
+        {
+            _consumerTarget = new ActionBlock<ReceivedMessage>(action, new ExecutionDataflowBlockOptions { BoundedCapacity = buffer, MaxDegreeOfParallelism = degreeOfParallelism });
+        }
+
+        public void MessageHandler(Func<ReceivedMessage,Task> action, int buffer = 1000, int degreeOfParallelism = 1)
+        {
+            _consumerTarget = new ActionBlock<ReceivedMessage>(action, new ExecutionDataflowBlockOptions { BoundedCapacity = buffer, MaxDegreeOfParallelism = degreeOfParallelism });
         }
     }
 }

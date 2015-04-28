@@ -407,54 +407,6 @@ namespace kafka4net
                     ex => _log.Fatal(ex, "GetFetcherChages saw ERROR from PartitionStateChanges"));
         }
 
-        /// <summary>
-        /// Gets an observable sequence of any changes to the Fetcher for a specific topic/partition. 
-        /// </summary>
-        /// <param name="topic"></param>
-        /// <param name="partitionId"></param>
-        /// <param name="consumerConfiguration"></param>
-        /// <returns></returns>
-        internal IObservable<Fetcher> GetFetcherChanges(string topic, int partitionId, ConsumerConfiguration consumerConfiguration)
-        {
-            return PartitionStateChanges
-                .Where(t => t.Topic == topic && t.PartitionId == partitionId)
-                .Select(state =>
-                {
-                    // if the state is not ready, return NULL for the fetcher.
-                    if (!state.ErrorCode.IsSuccess())
-                        return (Fetcher)null;
-
-                    // get or create the correct Fetcher for this topic/partition
-                    var broker = FindBrokerMetaForPartitionId(state.Topic, state.PartitionId);
-
-                    var fetcher = _activeFetchers.GetOrAdd(broker, b =>
-                    {
-                        // all new fetchers need to be "watched" for errors.
-                        var f = new Fetcher(this, b, _protocol, consumerConfiguration, _cancel.Token);
-                        // subscribe to error and complete notifications, and remove from active fetchers
-                        f.ReceivedMessages.Subscribe(_ => { },
-                            err =>
-                            {
-                                _log.Warn("Received error from fetcher {0}. Removing from active fetchers.", f);
-                                Fetcher ef;
-                                _activeFetchers.TryRemove(broker, out ef);
-                            },
-                            () =>
-                            {
-                                _log.Info("Received complete from fetcher {0}. Removing from active fetchers.", f);
-                                Fetcher ef;
-                                _activeFetchers.TryRemove(broker, out ef);
-                            });
-                        return f;
-                    });
-
-                    return fetcher;
-
-                })
-                .Do(f => _log.Debug("GetFetcherChanges returning {1} fetcher {0}", f, f == null ? "null" : "new"),
-                    ex => _log.Error(ex, "GetFetcherChages saw ERROR returning new fetcher."),
-                    () => _log.Error("GetFetcherChanges saw COMPLETE from returning new fetcher."));
-        }
 
 
         #endregion PartitionStateChanges and FetcherChanges observables
