@@ -9,7 +9,6 @@ using kafka4net.Protocols.Responses;
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Net.Sockets;
 using System.Reactive.Linq;
 using System.Threading;
 using kafka4net.Tracing;
@@ -43,8 +42,7 @@ namespace kafka4net.ConsumerImpl
         // "bool" is a fake param, it does not carry any meaning
         readonly Subject<bool> _wakeupSignal = new Subject<bool>();
 
-
-        public Fetcher(Cluster cluster, BrokerMeta broker, Protocol protocol, ConsumerConfiguration consumerConfig, ITargetBlock<ReceivedMessage[]> target , CancellationToken cancel)
+        public Fetcher(Cluster cluster, BrokerMeta broker, Protocol protocol, ConsumerConfiguration consumerConfig, CancellationToken cancel)
         {
             _cluster = cluster;
             _broker = broker;
@@ -53,7 +51,7 @@ namespace kafka4net.ConsumerImpl
 
             _consumerConfig = consumerConfig;
             
-            FetchLoop(target);
+            FetchLoop();
             //DeserializeMessagesFromFetchResponse();
 
             _cancel.Register(() => _wakeupSignal.OnNext(true));
@@ -99,9 +97,14 @@ namespace kafka4net.ConsumerImpl
         //    return cleanup;
         //}
 
-        public void Subscribe(ITargetBlock<ReceivedMessage[]> target)
+        public void Subscribe(TopicPartition partition)
         {
+            _topicPartitions.Add(partition);
+        }
 
+        public void Unsubscribe(TopicPartition partition)
+        {
+            _topicPartitions.Remove(partition);
         }
 
         /// <summary>
@@ -131,8 +134,21 @@ namespace kafka4net.ConsumerImpl
             //.Publish().RefCount();
         }
 
+        /// <summary>
+        /// We do not wake up from possible sleep upon each Subscribe call but instead, when all partitions are 
+        /// subscribed, PartitionsUpdated would wake up and 
+        /// </summary>
+        [Obsolete]
         internal void PartitionsUpdated() 
         {
+            // TODO: if we are waiting in a long poll (minutes), than we will keep waiting. Perhaps we need to interrupt current poll here and 
+            // redo the etch with fresh list of partitions.
+
+            // TODO: BUG: Subscription of Topic to Fetcher is an Observable event, so we never can say when we are "done". Thus List<Fetchers>
+            // is not reliable and can miss some fetchers which are temporarly unavilable. Those fetchers may never receive wake up call PartitionsUpdated().
+            // Solution: Remove PartitionsUpdated() and instead within Fetcher itself implement a delayed, throttled event after partitions change, where
+            // wake up or abort current poll response.
+
             _wakeupSignal.OnNext(true);
         }
 
@@ -193,77 +209,97 @@ namespace kafka4net.ConsumerImpl
                         if (_log.IsDebugEnabled && fetch.Topics.Any(t=>t.Partitions.Any(p=>p.Messages.Length > 0)))
                             _log.Debug("#{0}: got FetchResponse from {2} with messages: {1}", _id, _broker.Conn, fetch.ToString(true));
                     }
-                    catch (ObjectDisposedException e)
-                    {
-                        if (!_cancel.IsCancellationRequested)
-                        {
-                            _log.Debug("#{0} connection closed", _id);
-                            target.Fault(e);
-                            return;
-                        }
+                    //catch (ObjectDisposedException e)
+                    //{
+                    //    if (!_cancel.IsCancellationRequested)
+                    //    {
+                    //        _log.Debug("#{0} connection closed", _id);
+                    //        target.Fault(e);
+                    //        return;
+                    //    }
                         
-                        break;
-                    }
-                    catch (CorrelationLoopException e)
-                    {
-                        if (!_cancel.IsCancellationRequested)
-                        {
-                            _log.Debug("#{0} connection closed", _id);
-                            target.Fault(e);
-                            return;
-                        }
-                        break;
-                    }
-                    catch (SocketException e)
-                    {
-                        if (!_cancel.IsCancellationRequested)
-                        {
-                            _log.Info(e, "#{0} Connection failed. {1}", _id, e.Message);
-                            target.Fault(e);
-                            return;
-                        }
-                        break;
-                    }
+                    //    break;
+                    //}
+                    //catch (CorrelationLoopException e)
+                    //{
+                    //    if (!_cancel.IsCancellationRequested)
+                    //    {
+                    //        _log.Debug("#{0} connection closed", _id);
+                    //        target.Fault(e);
+                    //        return;
+                    //    }
+                    //    break;
+                    //}
+                    //catch (SocketException e)
+                    //{
+                    //    if (!_cancel.IsCancellationRequested)
+                    //    {
+                    //        _log.Info(e, "#{0} Connection failed. {1}", _id, e.Message);
+                    //        target.Fault(e);
+                    //        return;
+                    //    }
+                    //    break;
+                    //}
+                    //catch (Exception e)
+                    //{
+                    //    if (!_cancel.IsCancellationRequested)
+                    //    {
+                    //        _log.Error(e, "#{0} Fetcher failed", _id);
+                    //        target.Fault(e);
+                    //        return;
+                    //    }
+                    //    break;
+                    //}
+
                     catch (Exception e)
                     {
-                        if (!_cancel.IsCancellationRequested)
-                        {
-                            _log.Error(e, "#{0} Fetcher failed", _id);
-                            target.Fault(e);
-                            return;
-                        }
-                        break;
+                        if (_cancel.IsCancellationRequested)
+                            break;
+                        //
+                        // 1. Inform the bus that partition(s) failed
+                        // 2. Inform the partition subscribers that this fetcher failed
+                        // 3. Clean up partition->fetcher references to allow GC to collect the fetcher
+                        //
+                        _log.Error(e, "#{0} Fetcher failed", _id);
+                        _topicPartitions.ForEach(p => p.OnFetcherError(this, e));
+                        _topicPartitions.Clear();
+                        return;
                     }
 
                     // if timeout, we got empty response
                     if (fetch.Topics.Any(t => t.Partitions.Any(p => p.Messages.Length > 0))) 
                     { 
                         //var messages = DeserializeMessagesFromFetchResponse(fetch);
-                        RouteMessageesToSubscribers(fetch);
+                        await RouteMessageesToSubscribers(fetch);
                     }
                 }
 
+                _topicPartitions.Clear();
                 _log.Info("Cancellation Requested. Shutting Down.");
-                target.Complete();
             });
         }
 
         /// <summary>
-        /// Find consumers for given Topic/Partition and send message
+        /// Find consumers for given Topic/Partition and send message.
+        /// 
+        /// FetchResponse may contain a mix of messages for different Topics and Partitions. It is nesseccary to route them to appropriate
+        /// consumer. One possibility is to broadcast response to all fetcher's subscribers and let them do filtering. But it means that every subscriber would 
+        /// execute filtering function on the same FetchResponse. So it is better to split messages by consumer within Fetcher just once and send messages to appropriate consumer.
         /// </summary>
         /// <param name="fetch"></param>
         private async Task RouteMessageesToSubscribers(FetchResponse fetch)
         {
-            (
+            // Group messages per soubscriber
+            var sendToSonsumersTasks = (
                 from msg in DeserializeMessagesFromFetchResponse(fetch)
                 from consumer in _topicPartitions
                 where consumer.PartitionId == msg.Partition && consumer.Topic == msg.Topic
                 group msg by consumer into target
-                select new { Consumer = target.Key, Messages = target.ToArray() }
-            ).ForEach(target =>
-            {
-                await target.Consumer.IncomingFetcherMessages.SendAsync(target.Messages);
-            });
+                select target.Key.IncomingFetcherMessages.SendAsync(target.ToArray())
+            );
+
+            // Send messages to appropriate subscriber
+            await Task.WhenAll(sendToSonsumersTasks);
         }
     }
 }

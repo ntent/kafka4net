@@ -703,5 +703,31 @@ namespace kafka4net
             _log.Debug("#{0} SendBatchAsync complete", _id);
             return response;
         }
+
+        internal Fetcher GetFetcher(BrokerMeta broker)
+        {
+            var fetcher = _activeFetchers.GetOrAdd(broker, b =>
+            {
+                // all new fetchers need to be "watched" for errors.
+                var f = new Fetcher(this, b, _protocol, consumerConfiguration, _cancel.Token);
+                // subscribe to error and complete notifications, and remove from active fetchers
+                f.ReceivedMessages.Subscribe(_ => { },
+                    err =>
+                    {
+                        _log.Warn("Received error from fetcher {0}. Removing from active fetchers.", f);
+                        Fetcher ef;
+                        _activeFetchers.TryRemove(broker, out ef);
+                    },
+                    () =>
+                    {
+                        _log.Info("Received complete from fetcher {0}. Removing from active fetchers.", f);
+                        Fetcher ef;
+                        _activeFetchers.TryRemove(broker, out ef);
+                    });
+                return f;
+            });
+
+            return fetcher;
+        }
     }
 }

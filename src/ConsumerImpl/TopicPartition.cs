@@ -14,6 +14,12 @@ namespace kafka4net.ConsumerImpl
     /// and single broker can fetch for multiple partitions of different topics.
     /// When metadata change, TopicPartition will change association with Fetcher, but association between topic and its TopicPartitions remains 
     /// the same.
+    /// 
+    /// TopicPartition-Fetcher subscription rules.
+    /// TopicPartition can unsubscribe from Fetcher, when Consumer is closed.
+    /// Fetcher can fail and TopicPartition needs to remove reference to it.
+    /// Fetcher never completes, only fails.
+    /// When Fetcher fails, it is TopicPartition's responsibility to broadcast partition status change.
     /// </summary>
     class TopicPartition
     {
@@ -23,10 +29,10 @@ namespace kafka4net.ConsumerImpl
         private readonly string _topic;
         private readonly int _partitionId;
         private readonly PartitionFetchState _partitionFetchState;
+        
+        private Fetcher _fetcher;
 
-        // subscription handles
-        private IDisposable _fetcherChangesSubscription;
-        private IDisposable _currentfetcherSubscription;
+        private readonly SingleAssignmentDisposable _fetcherChangesSubscription = new SingleAssignmentDisposable();
 
         public ITargetBlock<ReceivedMessage[]> IncomingFetcherMessages;
 
@@ -69,106 +75,63 @@ namespace kafka4net.ConsumerImpl
 
             _subscribedConsumer = consumer;
 
-            // subscribe to fetcher changes for this partition.
-            // We will immediately get a call with the "current" fetcher if it is available, and connect to it then.
-            var fetchers = new List<Fetcher>();
-            _fetcherChangesSubscription = _cluster
-                .GetFetcherChanges(_topic, _partitionId, consumer.Configuration).
-                Do(fetchers.Add).
-                Subscribe(OnNewFetcher,OnFetcherChangesError,OnFetcherChangesComplete);
+            _fetcherChangesSubscription.Disposable = SubscribeToFetcher();
              
-            _log.Debug("Starting {0} fetchers", fetchers.Count);
-            fetchers.ForEach(fetcher => fetcher.PartitionsUpdated());
-
             // give back a handle to close this topic partition.
             return Disposable.Create(DisposeImpl);
-
         }
 
         /// <summary>
-        /// Gets an observable sequence of any changes to the Fetcher for a specific topic/partition. 
+        /// When receiving Partition avialable event, find fetcher responsible for it and subscribe.
         /// </summary>
-        /// <param name="topic"></param>
-        /// <param name="partitionId"></param>
-        /// <param name="consumerConfiguration"></param>
-        /// <returns></returns>
-        internal ISourceBlock<ReceivedMessage[]> GetFetcherChanges()
+        internal IDisposable SubscribeToFetcher()
         {
-            return _cluster.PartitionStateChanges
-                .Where(t => t.Topic == _topic && t.PartitionId == _partitionId)
-                .Select(state =>
+            return _cluster.PartitionStateChanges.
+                Where(t => t.Topic == _topic && t.PartitionId == _partitionId).
+                Where(state => state.ErrorCode.IsSuccess()).
+                Subscribe(state =>
                 {
-                    // if the state is not ready, return NULL for the fetcher.
-                    if (!state.ErrorCode.IsSuccess())
-                        return (Fetcher)null;
-
                     // get or create the correct Fetcher for this topic/partition
                     var broker = _cluster.FindBrokerMetaForPartitionId(state.Topic, state.PartitionId);
+                    if (_fetcher != null)
+                        _fetcher.Unsubscribe(this);
+                    _fetcher = _cluster.GetFetcher(broker);
+                    _fetcher.Subscribe(this);
 
-                    var fetcher = _cluster.GetFetcher(broker);
-                    fetcher.Subscribe(_topic, _partitionId, block);
-
-                    //var fetcher = _activeFetchers.GetOrAdd(broker, b =>
-                    //{
-                    //    // all new fetchers need to be "watched" for errors.
-                    //    var f = new Fetcher(this, b, _protocol, consumerConfiguration, _cancel.Token);
-                    //    // subscribe to error and complete notifications, and remove from active fetchers
-                    //    f.ReceivedMessages.Subscribe(_ => { },
-                    //        err =>
-                    //        {
-                    //            _log.Warn("Received error from fetcher {0}. Removing from active fetchers.", f);
-                    //            Fetcher ef;
-                    //            _activeFetchers.TryRemove(broker, out ef);
-                    //        },
-                    //        () =>
-                    //        {
-                    //            _log.Info("Received complete from fetcher {0}. Removing from active fetchers.", f);
-                    //            Fetcher ef;
-                    //            _activeFetchers.TryRemove(broker, out ef);
-                    //        });
-                    //    return f;
-                    //});
-
-                    return block;
-
-                })
-                .Do(f => _log.Debug("GetFetcherChanges returning {1} fetcher {0}", f, f == null ? "null" : "new"),
-                    ex => _log.Error(ex, "GetFetcherChages saw ERROR returning new fetcher."),
-                    () => _log.Error("GetFetcherChanges saw COMPLETE from returning new fetcher."));
+                    if (_log.IsDebugEnabled)
+                        _log.Debug("Subscribed TopicPartition {0} to fetcher {1}", this, _fetcher);
+                },
+                    ex =>
+                    {
+                        IncomingFetcherMessages.Fault(ex);
+                        _log.Error(ex, "GetFetcherChages saw ERROR returning new fetcher.");
+                    },
+                    () =>
+                    {
+                        IncomingFetcherMessages.Fault(new BrokerException("Subscription to partitions status complete. Should not happen."));
+                        _log.Error("SubscribeToFetcher saw COMPLETE from returning new fetcher.");
+                    }
+                );
         }
-
 
         /// <summary>
-        /// Handle the connection of a fetcher (potentially a new fetcher) for this partition
+        /// Is called by Fetcher when it experiance an errror and won't produce any more messages.
         /// </summary>
-        /// <param name="newFetcher">The fetcher to use to fetch for this TopicPartition</param>
-        private void OnNewFetcher(Fetcher newFetcher)
+        /// <param name="fetcher">Failed Fetcher</param>
+        /// <param name="e">Exception</param>
+        public void OnFetcherError(Fetcher fetcher, Exception e)
         {
-            // first close the subscription to the old fetcher if there is one.
-            if (_currentfetcherSubscription != null)
-                _currentfetcherSubscription.Dispose();
-
-            // now subscribe to the new fetcher. This will begin pumping messages through to the consumer.
-            if (newFetcher != null)
+            // sanity check
+            if (_fetcher != fetcher)
             {
-                _log.Debug("{0} Received new fetcher. Fetcher: {1}. Subscribing to this fetcher.", this, newFetcher);
-                _currentfetcherSubscription = newFetcher.Subscribe(this);
-                newFetcher.PartitionsUpdated();
+                _log.Error("Wrong Fetcher is trying to send error");
+                return;
             }
-        }
 
-        private void OnFetcherChangesComplete()
-        {
-            // we aren't getting any more fetcher changes... shouldn't happen!
-            _log.Warn("{0} Received FetcherChanges OnComplete event.... shouldn't happen unless we're shutting down.", this);
-            DisposeImpl();
-        }
+            _cluster.NotifyPartitionStateChange(new PartitionStateChangeEvent(Topic, PartitionId, ErrorCode.FetcherException));
+            _fetcher = null;
+            _log.Warn("{0} Recieved Error from Fetcher. Waiting for new or updated Fetcher. Error: {1}", this, e.Message);
 
-        private void OnFetcherChangesError(Exception ex)
-        {
-            // we aren't getting any more fetcher changes... shouldn't happen!
-            _log.Fatal(ex, "{0} Received FetcherChanges OnError event.... shouldn't happen!", this);
-            DisposeImpl();
         }
 
         /// <summary>
@@ -203,25 +166,10 @@ namespace kafka4net.ConsumerImpl
             }
         }
 
-        public void OnError(Exception error)
-        {
-            // don't pass this error up to the consumer, log it and wait for a new fetcher
-            _log.Warn("{0} Recieved Error from Fetcher. Waiting for new or updated Fetcher. Message: {1}", this, error.Message);
-            _currentfetcherSubscription.Dispose();
-            _currentfetcherSubscription = null;
-            _cluster.NotifyPartitionStateChange(new PartitionStateChangeEvent(Topic, PartitionId, ErrorCode.FetcherException));
-        }
-
-        public void OnCompleted()
-        {
-            // this shouldn't happen, but don't pass this up to the consumer, log it and wait for a new fetcher
-            _log.Warn("{0} Recieved OnComplete from Fetcher. Fetcher may have errored out. Waiting for new or updated Fetcher.", this);
-            _currentfetcherSubscription.Dispose();
-            _currentfetcherSubscription = null;
-        }
-
         private void DisposeImpl()
         {
+            _fetcherErrorSubscription.Dispose();
+
             // just end the subscription to the current fetcher and to the consumer.
             if (_subscribedConsumer != null)
             {
@@ -229,16 +177,13 @@ namespace kafka4net.ConsumerImpl
                 _subscribedConsumer = null;
             }
 
-            if (_fetcherChangesSubscription != null)
-            {
-                _fetcherChangesSubscription.Dispose();
-                _fetcherChangesSubscription = null;
-            }
+            // Stop listening to partitions available events and subscribing to fetchers
+            _fetcherChangesSubscription.Dispose();
 
-            if (_currentfetcherSubscription != null)
+            if (_fetcher != null)
             {
-                _currentfetcherSubscription.Dispose();
-                _currentfetcherSubscription = null;
+                _fetcher.Unsubscribe(this);
+                _fetcher = null;
             }
         }
 
