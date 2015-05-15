@@ -1,21 +1,18 @@
-﻿using System.Reactive.Concurrency;
+﻿using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Reactive.Linq;
+using System.Threading.Tasks;
 using System.Threading.Tasks.Dataflow;
 using kafka4net.ConsumerImpl;
 using kafka4net.Tracing;
 using kafka4net.Utils;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Reactive.Disposables;
-using System.Reactive.Linq;
-using System.Threading;
-using System.Threading.Tasks;
 
 namespace kafka4net
 {
     public class Consumer : IDisposable
     {
-        private static readonly ILogger _log = Logger.GetLogger();
+        public readonly ConsumerState State = new ConsumerState();
 
         internal ConsumerConfiguration Configuration { get; private set; }
         internal string Topic { get { return Configuration.Topic; } }
@@ -29,6 +26,15 @@ namespace kafka4net
         private ITargetBlock<ReceivedMessage> _consumerTarget;
 
         private bool _isDisposed;
+        private static readonly ILogger _log = Logger.GetLogger();
+        static readonly Task COMPLETE_TASK;
+
+        static Consumer()
+        {
+            var t = new TaskCompletionSource<bool>();
+            t.SetResult(true);
+            COMPLETE_TASK = t.Task;
+        }
 
         /// <summary>
         /// Create a new consumer using the specified configuration. See @ConsumerConfiguration
@@ -116,17 +122,16 @@ namespace kafka4net
                 // check that we actually got any partitions subscribed
                 if (_topicPartitions.Count == 0)
                     _consumerTarget.Complete();
+
+                State._connected.TrySetResult(true);
             }
             catch (Exception e)
             {
                 _consumerTarget.Fault(e);
+                
+                State._connected.TrySetException(e);
+                State._closed.TrySetException(e);
             }
-        }
-
-        public void Disconnect()
-        {
-            _partitionsSubscription.Values.ForEach(s => s.Dispose());
-            _consumerTarget.Complete();
         }
 
         /// <summary>
@@ -227,17 +232,17 @@ namespace kafka4net
 
             try
             {
-                if (_partitionsSubscription != null)
-                    _partitionsSubscription.Values.ForEach(s=>s.Dispose());
+                _partitionsSubscription.Values.ForEach(s=>s.Dispose());
             }
             // ReSharper disable once EmptyGeneralCatchClause
             catch {}
 
+            var clusteShutdownTask = COMPLETE_TASK;
             try
             {
                 // close and release the connections in the Cluster.
                 if (_cluster != null && _cluster.State != Cluster.ClusterState.Disconnected)
-                    _cluster.CloseAsync(TimeSpan.FromSeconds(5)).
+                    clusteShutdownTask = _cluster.CloseAsync(TimeSpan.FromSeconds(5)).
                         ContinueWith(t => _log.Error(t.Exception, "Error when closing Cluster"), TaskContinuationOptions.OnlyOnFaulted);
             }
             // ReSharper disable once EmptyGeneralCatchClause
@@ -245,6 +250,14 @@ namespace kafka4net
             {
                 _log.Error(e, "Error in Dispose");
             }
+
+            _consumerTarget.Complete();
+
+            clusteShutdownTask.ContinueWith(_ => 
+            {
+                State._connected.TrySetResult(false);
+                State._closed.TrySetResult(true);
+            });
 
             _isDisposed = true;
         }
