@@ -130,6 +130,12 @@ namespace kafka4net
             return this;
         }
 
+        public ConsumerConfiguration WithStartPosition(IStartPositionProvider startPositionProvider)
+        {
+            StartPosition = startPositionProvider;
+            return this;
+        }
+
         public ConsumerConfiguration WithStopPosition(IStopPositionProvider stop)
         {
             StopPosition = stop;
