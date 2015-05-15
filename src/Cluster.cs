@@ -1,15 +1,14 @@
 ﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Diagnostics.Tracing;
 using System.Globalization;
 using System.Linq;
 using System.Net.Sockets;
 using System.Reactive.Concurrency;
+using System.Reactive.Disposables;
 using System.Reactive.Linq;
 using System.Reactive.Subjects;
 using System.Reactive.Threading.Tasks;
-using System.Runtime.Remoting.Messaging;
 using System.Threading;
 using System.Threading.Tasks;
 using kafka4net.ConsumerImpl;
@@ -66,6 +65,8 @@ namespace kafka4net
         PartitionRecoveryMonitor _partitionRecoveryMonitor;
 
         private readonly CancellationTokenSource _cancel = new CancellationTokenSource();
+
+        private readonly CompositeDisposable _shutdownDisposable = new CompositeDisposable();
 
         private Cluster() 
         {
@@ -199,6 +200,9 @@ namespace kafka4net
                 await await Scheduler.Ask(async () =>
                     await CloseAsyncImpl().TimeoutAfter(timeout)
                 ).ConfigureAwait(false);
+
+            // release references in subscriptions
+            _shutdownDisposable.Dispose();
 
             if (!success)
             {
@@ -704,30 +708,47 @@ namespace kafka4net
             return response;
         }
 
-        internal Fetcher GetFetcher(BrokerMeta broker)
+        /// <summary> 
+        /// Get or create Fetcher, which is responsible for given Broker. 
+        /// </summary>
+        internal Fetcher GetFetcher(BrokerMeta broker, ConsumerConfiguration consumerConfig)
         {
             var fetcher = _activeFetchers.GetOrAdd(broker, b =>
             {
+                var f = new Fetcher(this, b, _protocol, consumerConfig, _cancel.Token);
+
                 // all new fetchers need to be "watched" for errors.
-                var f = new Fetcher(this, b, _protocol, consumerConfiguration, _cancel.Token);
                 // subscribe to error and complete notifications, and remove from active fetchers
-                f.ReceivedMessages.Subscribe(_ => { },
-                    err =>
-                    {
-                        _log.Warn("Received error from fetcher {0}. Removing from active fetchers.", f);
-                        Fetcher ef;
-                        _activeFetchers.TryRemove(broker, out ef);
-                    },
-                    () =>
-                    {
-                        _log.Info("Received complete from fetcher {0}. Removing from active fetchers.", f);
-                        Fetcher ef;
-                        _activeFetchers.TryRemove(broker, out ef);
-                    });
+                var sub = f.State.Subscribe(_ => { },
+                    e => RemoveFetcher(broker, f),
+                    () => RemoveFetcher(broker, f)
+                );
+
+                _shutdownDisposable.Add(sub);
+
                 return f;
             });
 
+            if(fetcher.ConsumerConfig != consumerConfig)
+                throw new ArgumentException("Can not consume with different ConsumerConfiguration");
+
             return fetcher;
+        }
+
+        void RemoveFetcher(BrokerMeta broker, Fetcher fetcher)
+        {
+            Fetcher ef;
+            var res = _activeFetchers.TryRemove(broker, out ef);
+            
+            if (!res)
+                _log.Warn("Tried to remove fetcher {0} but not found it", fetcher);
+
+
+            if (!ReferenceEquals(ef, fetcher))
+            {
+                _log.Error("Should not happen. Attempt to remove wrong fetcher. Tried to remove {0} but removed {1}", fetcher, ef);
+                _activeFetchers.TryAdd(broker, ef);
+            }
         }
     }
 }

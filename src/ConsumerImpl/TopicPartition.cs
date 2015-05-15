@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Reactive.Disposables;
 using System.Reactive.Linq;
+using System.Threading.Tasks;
 using System.Threading.Tasks.Dataflow;
 using kafka4net.Internal;
 using kafka4net.Protocols.Responses;
@@ -33,8 +34,6 @@ namespace kafka4net.ConsumerImpl
         private Fetcher _fetcher;
 
         private readonly SingleAssignmentDisposable _fetcherChangesSubscription = new SingleAssignmentDisposable();
-
-        public ITargetBlock<ReceivedMessage[]> IncomingFetcherMessages;
 
         public TopicPartition(Cluster cluster, string topic, int partitionId, long initialOffset)
         {
@@ -95,88 +94,61 @@ namespace kafka4net.ConsumerImpl
                     var broker = _cluster.FindBrokerMetaForPartitionId(state.Topic, state.PartitionId);
                     if (_fetcher != null)
                         _fetcher.Unsubscribe(this);
-                    _fetcher = _cluster.GetFetcher(broker);
+                    _fetcher = _cluster.GetFetcher(broker, _subscribedConsumer.Configuration);
                     _fetcher.Subscribe(this);
+                    _fetcher.State.Subscribe(_ => { }, OnFetcherError);
 
                     if (_log.IsDebugEnabled)
                         _log.Debug("Subscribed TopicPartition {0} to fetcher {1}", this, _fetcher);
                 },
-                    ex =>
-                    {
-                        IncomingFetcherMessages.Fault(ex);
-                        _log.Error(ex, "GetFetcherChages saw ERROR returning new fetcher.");
-                    },
-                    () =>
-                    {
-                        IncomingFetcherMessages.Fault(new BrokerException("Subscription to partitions status complete. Should not happen."));
-                        _log.Error("SubscribeToFetcher saw COMPLETE from returning new fetcher.");
-                    }
-                );
+                ex => _log.Error(ex, "GetFetcherChages saw ERROR returning new fetcher."),
+                () => _log.Error("SubscribeToFetcher saw COMPLETE from returning new fetcher."));
         }
 
-        /// <summary>
-        /// Is called by Fetcher when it experiance an errror and won't produce any more messages.
-        /// </summary>
-        /// <param name="fetcher">Failed Fetcher</param>
-        /// <param name="e">Exception</param>
-        public void OnFetcherError(Fetcher fetcher, Exception e)
+        void OnFetcherError(Exception e)
         {
-            // sanity check
-            if (_fetcher != fetcher)
-            {
-                _log.Error("Wrong Fetcher is trying to send error");
-                return;
-            }
-
             _cluster.NotifyPartitionStateChange(new PartitionStateChangeEvent(Topic, PartitionId, ErrorCode.FetcherException));
             _fetcher = null;
             _log.Warn("{0} Recieved Error from Fetcher. Waiting for new or updated Fetcher. Error: {1}", this, e.Message);
-
         }
 
         /// <summary>
         /// Called when there is a new message received. Pass it to the Consumer
         /// </summary>
-        /// <param name="value"></param>
-        public void OnNext(ReceivedMessage value)
+        public async Task OnFetchedMessages(ReceivedMessage[] batch)
         {
             if (_subscribedConsumer == null)
             {
                 _log.Error("{0} Recieved Message with no subscribed consumer. Discarding message.", this);
+                return;
+            }
+
+            // Sanity check
+            if(!batch.All(msg => msg.Topic == _topic && msg.Partition == _partitionId))
+                _log.Error("Wrong Topic/Partition");
+
+            var newOffset = batch.Max(msg => msg.Offset);
+
+            if (_partitionFetchState.Offset <= newOffset)
+            {
+                // if we are sending back an offset greater than we asked for then we likely skipped an offset. 
+                // This happens when using Log Compaction (see https://kafka.apache.org/documentation.html#compaction )
+                if (_partitionFetchState.Offset < newOffset)
+                    _log.Info("{0} was expecting offset {1} but received larger offset {2}", this, _partitionFetchState.Offset, newOffset);
+
+                await _subscribedConsumer.OnPartitionMessage(batch);
+                // track that we handled this offset so the next time around, we fetch the next message
+                _partitionFetchState.Offset = newOffset + 1;
             }
             else
             {
-                if (_partitionFetchState.Offset <= value.Offset)
-                {
-                    // if we are sending back an offset greater than we asked for then we likely skipped an offset. 
-                    // This happens when using Log Compaction (see https://kafka.apache.org/documentation.html#compaction )
-                    if (_partitionFetchState.Offset < value.Offset)
-                        _log.Info("{0} was expecting offset {1} but received larger offset {2}",this,_partitionFetchState.Offset,value.Offset);
-
-                    _subscribedConsumer.OnMessageArrivedInput.OnNext(value);
-                    // track that we handled this offset so the next time around, we fetch the next message
-                    _partitionFetchState.Offset = value.Offset + 1;
-                }
-                else
-                {
-                    // the returned message offset was less than the offset we asked for, just skip this message.
-                    _log.Debug("{0} Skipping message offset {1} as it is less than requested offset {2}",this,value.Offset,_partitionFetchState.Offset);
-                }
-
+                // the returned message offset was less than the offset we asked for, just skip this message.
+                _log.Debug("{0} Skipping message offset {1} as it is less than requested offset {2}",this, newOffset, _partitionFetchState.Offset);
             }
         }
 
         private void DisposeImpl()
         {
-            _fetcherErrorSubscription.Dispose();
-
-            // just end the subscription to the current fetcher and to the consumer.
-            if (_subscribedConsumer != null)
-            {
-                _subscribedConsumer.OnTopicPartitionComplete(this);
-                _subscribedConsumer = null;
-            }
-
             // Stop listening to partitions available events and subscribing to fetchers
             _fetcherChangesSubscription.Dispose();
 

@@ -1,6 +1,4 @@
 ﻿using System;
-using System.Reactive.Concurrency;
-using System.Threading;
 using kafka4net.ConsumerImpl;
 
 namespace kafka4net
@@ -70,14 +68,6 @@ namespace kafka4net
         /// <param name="minBytesPerFetch"></param>
         /// <param name="maxBytesPerFetch"></param>
         /// <param name="highWatermark"></param>
-        /// <param name="useFlowControl">
-        ///     If set to true, subscriber must call consumers Ack function to keep data flowing.
-        ///     Is used to prevent out of memory errors when subscriber is slow and data velocity is high 
-        ///     (re-reading the log from beginning for example).
-        ///     Make sure that subscriber consumes more than lowWatermark, or data might stop flowing because driver would
-        ///     wait for subscriber to drain until lowWatermark and subscriber would wait for more data until continue processing 
-        ///     (could happen when buffering is used).
-        /// </param>
         /// <param name="lowWatermark"></param>
         /// <param name="stopPosition"></param>
         /// <param name="scheduler">Driver will schedule outgoing messages events using this scheduler. By default it is
@@ -92,13 +82,10 @@ namespace kafka4net
             int maxBytesPerFetch=256*1024,
             int lowWatermark = 500,
             int highWatermark = 2000,
-            bool useFlowControl = false,
-            IStopPositionProvider stopPosition = null,
-            IScheduler scheduler = null)
+            IStopPositionProvider stopPosition = null)
         {
             LowWatermark = lowWatermark;
             HighWatermark = highWatermark;
-            UseFlowControl = useFlowControl;
 
             if(lowWatermark < 0)
                 throw new ArgumentException("Can not be negative", "lowWatermark");
@@ -116,7 +103,6 @@ namespace kafka4net
             MinBytesPerFetch = minBytesPerFetch;
             MaxBytesPerFetch = maxBytesPerFetch;
             StopPosition = stopPosition ?? new StopPositionNever();
-            OutgoingScheduler = scheduler ?? new EventLoopScheduler(ts => new Thread(ts));
         }
 
         public string SeedBrokers { get; private set; }
@@ -128,7 +114,5 @@ namespace kafka4net
         public int MaxBytesPerFetch { get; private set; }
         public readonly int LowWatermark;
         public readonly int HighWatermark;
-        public readonly bool UseFlowControl;
-        public readonly IScheduler OutgoingScheduler;
     }
 }

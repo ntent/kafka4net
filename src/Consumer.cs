@@ -26,83 +26,107 @@ namespace kafka4net
         private readonly Dictionary<int, TopicPartition> _topicPartitions = new Dictionary<int, TopicPartition>(); 
         private readonly Dictionary<int, IDisposable> _partitionsSubscription = new Dictionary<int, IDisposable>();
 
-        private ActionBlock<ReceivedMessage> _consumerTarget;
+        private ITargetBlock<ReceivedMessage> _consumerTarget;
 
-        // called back when the connection is made for the consumer.
-        [Obsolete]
-        readonly TaskCompletionSource<bool> _connectionComplete = new TaskCompletionSource<bool>();
         private bool _isDisposed;
-
-        int _outstandingMessageProcessingCount;
-        int _haveSubscriber;
 
         /// <summary>
         /// Create a new consumer using the specified configuration. See @ConsumerConfiguration
         /// </summary>
-        /// <param name="consumerConfig"></param>
-        public Consumer(ConsumerConfiguration consumerConfig)
+        public Consumer(ConsumerConfiguration consumerConfig, ITargetBlock<ReceivedMessage> consumerTarget)
         {
             Configuration = consumerConfig;
+            _consumerTarget = consumerTarget;
             _cluster = new Cluster(consumerConfig.SeedBrokers);
-            _cluster.OnThreadHang += e => OnMessageArrivedInput.OnError(e);
+            _cluster.OnThreadHang += e => _consumerTarget.Fault(e);
 
-            var onMessage = Observable.Create<ReceivedMessage>(observer =>
-            {
-                if (Interlocked.CompareExchange(ref _haveSubscriber, 1, 0) == 1)
-                    throw new InvalidOperationException("Only one subscriber is allowed. Use OnMessageArrived.Publish().RefCount()");
+
+
+            //var onMessage = Observable.Create<ReceivedMessage>(observer =>
+            //{
+                //if (Interlocked.CompareExchange(ref _haveSubscriber, 1, 0) == 1)
+                //    throw new InvalidOperationException("Only one subscriber is allowed. Use OnMessageArrived.Publish().RefCount()");
 
                 // Relay messages from partition to consumer's output
                 // Ensure that only single subscriber is allowed because it is important to count
                 // outstanding messaged consumed by user
-                OnMessageArrivedInput.Subscribe(observer);
+                //OnMessageArrivedInput.Subscribe(observer);
 
                 //
                 // It is not possible to wait for completion of partition resolution process, so start it asynchronously.
                 // This means that OnMessageArrived.Subscribe() will complete when consumer is not actually connected yet.
                 //
-                State.Connected = Task.Run(async () =>
-                {
-                    try 
-                    {
-                        await _cluster.ConnectAsync();
-                        await SubscribeClient();
-                        EtwTrace.Log.ConsumerStarted(GetHashCode(), Topic);
-                        _connectionComplete.TrySetResult(true);
+                //State.Connected = Task.Run(async () =>
+                //{
+                //    try 
+                //    {
+                //        await _cluster.ConnectAsync();
+                //        await SubscribeClient();
+                //        EtwTrace.Log.ConsumerStarted(GetHashCode(), Topic);
+                //        _connectionComplete.TrySetResult(true);
 
-                        // check that we actually got any partitions subscribed
-                        if (_topicPartitions.Count == 0)
-                            OnMessageArrivedInput.OnCompleted();
-                    }
-                    catch (Exception e)
-                    {
-                        _connectionComplete.TrySetException(e);
-                        OnMessageArrivedInput.OnError(e);
-                    }
-                });
+                //        // check that we actually got any partitions subscribed
+                //        if (_topicPartitions.Count == 0)
+                //            OnMessageArrivedInput.OnCompleted();
+                //    }
+                //    catch (Exception e)
+                //    {
+                //        _connectionComplete.TrySetException(e);
+                //        OnMessageArrivedInput.OnError(e);
+                //    }
+                //});
 
                 // upon unsubscribe
-                return Disposable.Create(() => _partitionsSubscription.Values.ForEach(s=>s.Dispose()));
-            });
+                //return Disposable.Create(() => _partitionsSubscription.Values.ForEach(s=>s.Dispose()));
+            //});
 
             // handle stop condition
-            onMessage = onMessage.Do(message =>
-            {
-                // check if this partition is done per the condition passed in configuration. If so, unsubscribe it.
-                bool partitionDone = (Configuration.StopPosition.IsPartitionConsumingComplete(message));
-                IDisposable partitionSubscription;
-                if (partitionDone && _partitionsSubscription.TryGetValue(message.Partition, out partitionSubscription))
-                {
-                    _partitionsSubscription.Remove(message.Partition);
-                    // calling Dispose here will cause the OnTopicPartitionComplete method to be called when it is completed.
-                    partitionSubscription.Dispose();
-                }
-            });
+            //onMessage = onMessage.Do(message =>
+            //{
+            //    // check if this partition is done per the condition passed in configuration. If so, unsubscribe it.
+            //    bool partitionDone = (Configuration.StopPosition.IsPartitionConsumingComplete(message));
+            //    IDisposable partitionSubscription;
+            //    if (partitionDone && _partitionsSubscription.TryGetValue(message.Partition, out partitionSubscription))
+            //    {
+            //        _partitionsSubscription.Remove(message.Partition);
+            //        // calling Dispose here will cause the OnTopicPartitionComplete method to be called when it is completed.
+            //        partitionSubscription.Dispose();
+            //    }
+            //});
 
             // If permanent error within any single partition, fail the whole consumer (intentionally). 
             // Do not try to keep going (failfast principle).
             _cluster.PartitionStateChanges.
                 Where(s => s.ErrorCode.IsPermanentFailure()).
-                Subscribe(state => OnMessageArrivedInput.OnError(new PartitionFailedException(state.Topic, state.PartitionId, state.ErrorCode)));
+                Subscribe(state =>
+                {
+                    Dispose();
+                    _consumerTarget.Fault(new PartitionFailedException(state.Topic, state.PartitionId, state.ErrorCode));
+                });
+        }
+
+        public async Task ConnectAsync()
+        {
+            try
+            {
+                await _cluster.ConnectAsync();
+                await SubscribeClient();
+                EtwTrace.Log.ConsumerStarted(GetHashCode(), Topic);
+
+                // check that we actually got any partitions subscribed
+                if (_topicPartitions.Count == 0)
+                    _consumerTarget.Complete();
+            }
+            catch (Exception e)
+            {
+                _consumerTarget.Fault(e);
+            }
+        }
+
+        public void Disconnect()
+        {
+            _partitionsSubscription.Values.ForEach(s => s.Dispose());
+            _consumerTarget.Complete();
         }
 
         /// <summary>
@@ -125,26 +149,29 @@ namespace kafka4net
             });
         }
 
-        public void Ack(int messageCount = 1)
+        internal async Task OnPartitionMessage(ReceivedMessage[] batch)
         {
-            if(!Configuration.UseFlowControl)
-                throw new InvalidOperationException("UseFlowControl is OFF, Ack is not allowed");
+            foreach (var msg in batch)
+                await _consumerTarget.SendAsync(msg);
 
-            var count = Interlocked.Add(ref _outstandingMessageProcessingCount, - messageCount);
-            _flowControlInput.OnNext(count);
-        }
-
-        /// <summary>
-        /// Pass connection method through from Cluster
-        /// </summary>
-        /// <returns></returns>
-        public Task IsConnected 
-        {
-            get 
+            //
+            // Handle stop condition
+            //
+            foreach (var msg in batch)
             {
-                if(_haveSubscriber == 0)
-                    throw new BrokerException("Can not connect because no subscription yet");
-                return _connectionComplete.Task;
+                // check if this partition is done per the condition passed in configuration. If so, unsubscribe it.
+                bool partitionDone = (Configuration.StopPosition.IsPartitionConsumingComplete(msg));
+                IDisposable partitionSubscription;
+                if (partitionDone && _partitionsSubscription.TryGetValue(msg.Partition, out partitionSubscription))
+                {
+                    _partitionsSubscription.Remove(msg.Partition);
+                    // calling Dispose here will cause the OnTopicPartitionComplete method to be called when it is completed.
+                    partitionSubscription.Dispose();
+                    
+                    if(_partitionsSubscription.Count == 0)
+                        _consumerTarget.Complete();
+                }
+
             }
         }
 
@@ -187,19 +214,6 @@ namespace kafka4net
                     return tp;
                 });
         }
-
-        internal void OnTopicPartitionComplete(TopicPartition topicPartition)
-        {
-            // called back from TopicPartition when its subscription is completed. 
-            // Remove from our dictionary, and if all TopicPartitions are removed, call our own OnComplete.
-            _topicPartitions.Remove(topicPartition.PartitionId);
-            if (_topicPartitions.Count == 0)
-            {
-                // If we call OnCompleted right now, any last message that may be being sent will not process. Just tell the scheduler to do it in a moment.
-                _cluster.Scheduler.Schedule(() => OnMessageArrivedInput.OnCompleted());
-            }
-        }
-
 
         public override string ToString()
         {

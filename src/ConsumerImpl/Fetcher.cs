@@ -31,7 +31,7 @@ namespace kafka4net.ConsumerImpl
         private readonly BrokerMeta _broker;
         private readonly Protocol _protocol;
         private readonly CancellationToken _cancel;
-        private readonly ConsumerConfiguration _consumerConfig;
+        public readonly ConsumerConfiguration ConsumerConfig;
 
         // keep list of TopicPartitions that are subscribed
         private readonly HashSet<TopicPartition> _topicPartitions = new HashSet<TopicPartition>();
@@ -42,6 +42,12 @@ namespace kafka4net.ConsumerImpl
         // "bool" is a fake param, it does not carry any meaning
         readonly Subject<bool> _wakeupSignal = new Subject<bool>();
 
+        // No data, fires OnError event when error happen
+        // Is ued by TopicPartition and Cluster to track list of active Fetchers
+        readonly Subject<bool> _state = new Subject<bool>();
+        public IObservable<bool> State { get { return _state; } }
+
+
         public Fetcher(Cluster cluster, BrokerMeta broker, Protocol protocol, ConsumerConfiguration consumerConfig, CancellationToken cancel)
         {
             _cluster = cluster;
@@ -49,7 +55,7 @@ namespace kafka4net.ConsumerImpl
             _protocol = protocol;
             _cancel = cancel;
 
-            _consumerConfig = consumerConfig;
+            ConsumerConfig = consumerConfig;
             
             FetchLoop();
             //DeserializeMessagesFromFetchResponse();
@@ -160,8 +166,8 @@ namespace kafka4net.ConsumerImpl
                 {
                     var fetchRequest = new FetchRequest
                     {
-                        MaxWaitTime = _consumerConfig.MaxWaitTimeMs,
-                        MinBytes = _consumerConfig.MinBytesPerFetch,
+                        MaxWaitTime = ConsumerConfig.MaxWaitTimeMs,
+                        MinBytes = ConsumerConfig.MinBytesPerFetch,
                         Topics = _topicPartitions.
                             GroupBy(tp=>tp.Topic).
                             Select(t => new FetchRequest.TopicData { 
@@ -171,7 +177,7 @@ namespace kafka4net.ConsumerImpl
                                     {
                                         Partition = p.PartitionId,
                                         FetchOffset = p.CurrentOffset,
-                                        MaxBytes = _consumerConfig.MaxBytesPerFetch
+                                        MaxBytes = ConsumerConfig.MaxBytesPerFetch
                                     }).ToArray()
                             }).ToArray()
                     };
@@ -260,9 +266,9 @@ namespace kafka4net.ConsumerImpl
                         // 2. Inform the partition subscribers that this fetcher failed
                         // 3. Clean up partition->fetcher references to allow GC to collect the fetcher
                         //
-                        _log.Error(e, "#{0} Fetcher failed", _id);
-                        _topicPartitions.ForEach(p => p.OnFetcherError(this, e));
+                        _log.Info(e, "#{0} Fetcher failed", _id);
                         _topicPartitions.Clear();
+                        _state.OnError(e);
                         return;
                     }
 
@@ -295,7 +301,7 @@ namespace kafka4net.ConsumerImpl
                 from consumer in _topicPartitions
                 where consumer.PartitionId == msg.Partition && consumer.Topic == msg.Topic
                 group msg by consumer into target
-                select target.Key.IncomingFetcherMessages.SendAsync(target.ToArray())
+                select target.Key.OnFetchedMessages(target.ToArray())
             );
 
             // Send messages to appropriate subscriber
