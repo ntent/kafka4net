@@ -67,12 +67,7 @@ namespace kafka4net
         /// <param name="maxWaitTimeMs"></param>
         /// <param name="minBytesPerFetch"></param>
         /// <param name="maxBytesPerFetch"></param>
-        /// <param name="highWatermark"></param>
-        /// <param name="lowWatermark"></param>
         /// <param name="stopPosition"></param>
-        /// <param name="scheduler">Driver will schedule outgoing messages events using this scheduler. By default it is
-        /// EventLoopScheduler. Be careful if you want to redefine it. Concurrent scheduler can rearrange order of messages
-        /// within the same partition!</param>
         public ConsumerConfiguration(
             string seedBrokers,
             string topic, 
@@ -80,22 +75,8 @@ namespace kafka4net
             int maxWaitTimeMs=500, 
             int minBytesPerFetch = 1, 
             int maxBytesPerFetch=256*1024,
-            int lowWatermark = 500,
-            int highWatermark = 2000,
             IStopPositionProvider stopPosition = null)
         {
-            LowWatermark = lowWatermark;
-            HighWatermark = highWatermark;
-
-            if(lowWatermark < 0)
-                throw new ArgumentException("Can not be negative", "lowWatermark");
-
-            if (highWatermark < 0)
-                throw new ArgumentException("Can not be negative", "highWatermark");
-
-            if(highWatermark < lowWatermark)
-                throw new InvalidOperationException("highWatermark must be greater than lowWatermark");
-
             SeedBrokers = seedBrokers;
             StartPosition = startPosition;
             Topic = topic;
@@ -112,7 +93,5 @@ namespace kafka4net
         public int MaxWaitTimeMs  { get; private set; }
         public int MinBytesPerFetch { get; private set; }
         public int MaxBytesPerFetch { get; private set; }
-        public readonly int LowWatermark;
-        public readonly int HighWatermark;
     }
 }
