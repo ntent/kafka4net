@@ -46,46 +46,6 @@ namespace kafka4net
             _cluster = new Cluster(consumerConfig.SeedBrokers);
             _cluster.OnThreadHang += e => _consumerTarget.Fault(e);
 
-
-
-            //var onMessage = Observable.Create<ReceivedMessage>(observer =>
-            //{
-                //if (Interlocked.CompareExchange(ref _haveSubscriber, 1, 0) == 1)
-                //    throw new InvalidOperationException("Only one subscriber is allowed. Use OnMessageArrived.Publish().RefCount()");
-
-                // Relay messages from partition to consumer's output
-                // Ensure that only single subscriber is allowed because it is important to count
-                // outstanding messaged consumed by user
-                //OnMessageArrivedInput.Subscribe(observer);
-
-                //
-                // It is not possible to wait for completion of partition resolution process, so start it asynchronously.
-                // This means that OnMessageArrived.Subscribe() will complete when consumer is not actually connected yet.
-                //
-                //State.Connected = Task.Run(async () =>
-                //{
-                //    try 
-                //    {
-                //        await _cluster.ConnectAsync();
-                //        await SubscribeClient();
-                //        EtwTrace.Log.ConsumerStarted(GetHashCode(), Topic);
-                //        _connectionComplete.TrySetResult(true);
-
-                //        // check that we actually got any partitions subscribed
-                //        if (_topicPartitions.Count == 0)
-                //            OnMessageArrivedInput.OnCompleted();
-                //    }
-                //    catch (Exception e)
-                //    {
-                //        _connectionComplete.TrySetException(e);
-                //        OnMessageArrivedInput.OnError(e);
-                //    }
-                //});
-
-                // upon unsubscribe
-                //return Disposable.Create(() => _partitionsSubscription.Values.ForEach(s=>s.Dispose()));
-            //});
-
             // handle stop condition
             //onMessage = onMessage.Do(message =>
             //{
