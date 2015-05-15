@@ -1,4 +1,6 @@
 ﻿using System;
+using System.Threading.Tasks;
+using System.Threading.Tasks.Dataflow;
 using kafka4net.ConsumerImpl;
 
 namespace kafka4net
@@ -56,6 +58,16 @@ namespace kafka4net
 
     public class ConsumerConfiguration
     {
+        public string SeedBrokers { get; private set; }
+        public IStartPositionProvider StartPosition { get; private set; }
+        public IStopPositionProvider StopPosition { get; private set; }
+        public string Topic { get; private set; }
+        public int MaxWaitTimeMs  { get; private set; }
+        public int MinBytesPerFetch { get; private set; }
+        public int MaxBytesPerFetch { get; private set; }
+
+        private ITargetBlock<ReceivedMessage> _action;
+
         /// <summary>
         /// Subscription is performed asynchronously.
         /// </summary>
@@ -68,7 +80,7 @@ namespace kafka4net
         /// <param name="minBytesPerFetch"></param>
         /// <param name="maxBytesPerFetch"></param>
         /// <param name="stopPosition"></param>
-        public ConsumerConfiguration(
+        private ConsumerConfiguration(
             string seedBrokers,
             string topic, 
             IStartPositionProvider startPosition, 
@@ -86,12 +98,74 @@ namespace kafka4net
             StopPosition = stopPosition ?? new StopPositionNever();
         }
 
-        public string SeedBrokers { get; private set; }
-        public IStartPositionProvider StartPosition { get; private set; }
-        public IStopPositionProvider StopPosition { get; private set; }
-        public string Topic { get; private set; }
-        public int MaxWaitTimeMs  { get; private set; }
-        public int MinBytesPerFetch { get; private set; }
-        public int MaxBytesPerFetch { get; private set; }
+        public ConsumerConfiguration(string seedBrokers, string topic) : this(seedBrokers, topic, new StartPositionTopicEnd())
+        {
+        }
+
+        //
+        // Builder
+        //
+
+        public ConsumerConfiguration WithMaxWaitTimeMs(int maxWaitTimeMs)
+        {
+            MaxWaitTimeMs = maxWaitTimeMs;
+            return this;
+        }
+
+        public ConsumerConfiguration WithMinBytesPerFetch(int minBytesPerFetch)
+        {
+            MinBytesPerFetch = minBytesPerFetch;
+            return this;
+        }
+
+        public ConsumerConfiguration WithMaxBytesPerFetch(int maxBytesPErFetch)
+        {
+            MaxBytesPerFetch = maxBytesPErFetch;
+            return this;
+        }
+
+        public ConsumerConfiguration WithStartPositionAtBeginning()
+        {
+            StartPosition = new StartPositionTopicStart();
+            return this;
+        }
+
+        public ConsumerConfiguration WithStopPosition(IStopPositionProvider stop)
+        {
+            StopPosition = stop;
+            return this;
+        }
+
+        public ConsumerConfiguration WithAction(Action<ReceivedMessage> action, int buffer = 1000, int degreeOfParallelism = 1)
+        {
+            _action = new ActionBlock<ReceivedMessage>(action, new ExecutionDataflowBlockOptions { BoundedCapacity = buffer, MaxDegreeOfParallelism = degreeOfParallelism });
+            return this;
+        }
+
+        public ConsumerConfiguration WithAction(Func<ReceivedMessage,Task> action, int buffer = 1000, int degreeOfParallelism = 1)
+        {
+            _action = new ActionBlock<ReceivedMessage>(action, new ExecutionDataflowBlockOptions { BoundedCapacity = buffer, MaxDegreeOfParallelism = degreeOfParallelism });
+            return this;
+        }
+
+        /// <summary>
+        /// Make sure to set BoundedCapacity of your block, otherwise you will get OutOfMemory exception if topic contains many messages and handler is not fast enough
+        /// </summary>
+        public ConsumerConfiguration WithAction(ITargetBlock<ReceivedMessage> action)
+        {
+            if (action == null)
+                throw new ArgumentNullException("action");
+
+            _action = action;
+            return this;
+        }
+
+
+        public Consumer Build()
+        {
+            if(_action == null)
+                throw new InvalidOperationException("Action have not been configured");
+            return new Consumer(this, _action);
+        }
     }
 }

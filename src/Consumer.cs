@@ -39,11 +39,11 @@ namespace kafka4net
         /// <summary>
         /// Create a new consumer using the specified configuration. See @ConsumerConfiguration
         /// </summary>
-        public Consumer(ConsumerConfiguration consumerConfig, ITargetBlock<ReceivedMessage> consumerTarget)
+        internal Consumer(ConsumerConfiguration config, ITargetBlock<ReceivedMessage> handler)
         {
-            Configuration = consumerConfig;
-            _consumerTarget = consumerTarget;
-            _cluster = new Cluster(consumerConfig.SeedBrokers);
+            Configuration = config;
+            _consumerTarget = handler;
+            _cluster = new Cluster(config.SeedBrokers);
             _cluster.OnThreadHang += e => _consumerTarget.Fault(e);
 
             // handle stop condition
@@ -69,6 +69,11 @@ namespace kafka4net
                     Dispose();
                     _consumerTarget.Fault(new PartitionFailedException(state.Topic, state.PartitionId, state.ErrorCode));
                 });
+        }
+
+        public static ConsumerConfiguration Create(string seedBrokers, string topic)
+        {
+            return new ConsumerConfiguration(seedBrokers, topic);
         }
 
         public async Task ConnectAsync()
@@ -220,16 +225,6 @@ namespace kafka4net
             });
 
             _isDisposed = true;
-        }
-
-        public void MessageHandler(Action<ReceivedMessage> action, int buffer = 1000, int degreeOfParallelism = 1)
-        {
-            _consumerTarget = new ActionBlock<ReceivedMessage>(action, new ExecutionDataflowBlockOptions { BoundedCapacity = buffer, MaxDegreeOfParallelism = degreeOfParallelism });
-        }
-
-        public void MessageHandler(Func<ReceivedMessage,Task> action, int buffer = 1000, int degreeOfParallelism = 1)
-        {
-            _consumerTarget = new ActionBlock<ReceivedMessage>(action, new ExecutionDataflowBlockOptions { BoundedCapacity = buffer, MaxDegreeOfParallelism = degreeOfParallelism });
         }
     }
 }
