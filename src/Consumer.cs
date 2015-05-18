@@ -46,20 +46,6 @@ namespace kafka4net
             _cluster = new Cluster(config.SeedBrokers);
             _cluster.OnThreadHang += e => _consumerTarget.Fault(e);
 
-            // handle stop condition
-            //onMessage = onMessage.Do(message =>
-            //{
-            //    // check if this partition is done per the condition passed in configuration. If so, unsubscribe it.
-            //    bool partitionDone = (Configuration.StopPosition.IsPartitionConsumingComplete(message));
-            //    IDisposable partitionSubscription;
-            //    if (partitionDone && _partitionsSubscription.TryGetValue(message.Partition, out partitionSubscription))
-            //    {
-            //        _partitionsSubscription.Remove(message.Partition);
-            //        // calling Dispose here will cause the OnTopicPartitionComplete method to be called when it is completed.
-            //        partitionSubscription.Dispose();
-            //    }
-            //});
-
             // If permanent error within any single partition, fail the whole consumer (intentionally). 
             // Do not try to keep going (failfast principle).
             _cluster.PartitionStateChanges.
@@ -69,6 +55,11 @@ namespace kafka4net
                     Dispose();
                     _consumerTarget.Fault(new PartitionFailedException(state.Topic, state.PartitionId, state.ErrorCode));
                 });
+
+            // Start connecting asyncronously, dont wait for completion. Completion can be waited in
+            // Status property.
+            if (Configuration.Autoconnect)
+                ConnectAsync().ConfigureAwait(false);
         }
 
         public static ConsumerConfiguration Create(string seedBrokers, string topic)

@@ -58,13 +58,14 @@ namespace kafka4net
 
     public class ConsumerConfiguration
     {
-        public string SeedBrokers { get; private set; }
-        public IStartPositionProvider StartPosition { get; private set; }
-        public IStopPositionProvider StopPosition { get; private set; }
-        public string Topic { get; private set; }
-        public int MaxWaitTimeMs  { get; private set; }
-        public int MinBytesPerFetch { get; private set; }
-        public int MaxBytesPerFetch { get; private set; }
+        internal string SeedBrokers { get; private set; }
+        internal IStartPositionProvider StartPosition { get; private set; }
+        internal IStopPositionProvider StopPosition { get; private set; }
+        internal string Topic { get; private set; }
+        internal int MaxWaitTimeMs { get; private set; }
+        internal int MinBytesPerFetch { get; private set; }
+        internal int MaxBytesPerFetch { get; private set; }
+        internal bool Autoconnect = true;
 
         private ITargetBlock<ReceivedMessage> _action;
 
@@ -163,6 +164,12 @@ namespace kafka4net
                 throw new ArgumentNullException("action");
 
             _action = action;
+            return this;
+        }
+
+        public ConsumerConfiguration WithAutoconnect(bool autoconnect)
+        {
+            Autoconnect = autoconnect;
             return this;
         }
 
