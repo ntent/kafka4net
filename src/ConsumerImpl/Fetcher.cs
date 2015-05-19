@@ -57,8 +57,7 @@ namespace kafka4net.ConsumerImpl
 
             ConsumerConfig = consumerConfig;
             
-            FetchLoop();
-            //DeserializeMessagesFromFetchResponse();
+            FetchLoop().ContinueWith(t => _log.Debug("FetchLoop complete with status {0}", t.Status));
 
             _cancel.Register(() => _wakeupSignal.OnNext(true));
 
@@ -72,40 +71,11 @@ namespace kafka4net.ConsumerImpl
             return string.Format("{0}:{1}/{2}", _broker.Host, _broker.Port, _broker.NodeId);
         }
 
-        /// <summary>
-        /// Handles the subscription of a new TopicPartition to this fetcher.
-        /// </summary>
-        /// <param name="topicPartition"></param>
-        /// <returns></returns>
-        //public IDisposable Subscribe(TopicPartition topicPartition)
-        //{
-        //    _topicPartitions.Add(topicPartition);
-        //    EtwTrace.Log.FetcherPartitionSubscribed(_id, topicPartition.PartitionId);
-
-        //    // cleanup
-        //    var topicPartitionCleanup = Disposable.Create(() => _topicPartitions.Remove(topicPartition));
-        //    var receivedMessagesSubscriptionCleanup = ReceivedMessages.Where(rm => rm.Topic == topicPartition.Topic && rm.Partition == topicPartition.PartitionId)
-        //            .Subscribe(topicPartition);
-
-        //    var cleanup = new CompositeDisposable
-        //    {
-        //        topicPartitionCleanup,
-        //        receivedMessagesSubscriptionCleanup
-        //    };
-
-        //    if (_log.IsDebugEnabled)
-        //    {
-        //        cleanup.Add(Disposable.Create(() => _log.Debug("Fetcher #{0} {1} topicPartition is unsubscribing", _id, topicPartition)));
-        //    }
-
-        //    _log.Debug("Fetcher #{0} added {1}", _id, topicPartition);
-
-        //    return cleanup;
-        //}
-
         public void Subscribe(TopicPartition partition)
         {
             _topicPartitions.Add(partition);
+            EtwTrace.Log.FetcherPartitionSubscribed(_id, partition.PartitionId);
+            _log.Debug("Fetcher #{0} added {1}", _id, partition);
         }
 
         public void Unsubscribe(TopicPartition partition)
@@ -150,139 +120,131 @@ namespace kafka4net.ConsumerImpl
             // TODO: if we are waiting in a long poll (minutes), than we will keep waiting. Perhaps we need to interrupt current poll here and 
             // redo the etch with fresh list of partitions.
 
-            // TODO: BUG: Subscription of Topic to Fetcher is an Observable event, so we never can say when we are "done". Thus List<Fetchers>
-            // is not reliable and can miss some fetchers which are temporarly unavilable. Those fetchers may never receive wake up call PartitionsUpdated().
-            // Solution: Remove PartitionsUpdated() and instead within Fetcher itself implement a delayed, throttled event after partitions change, where
-            // wake up or abort current poll response.
-
             _wakeupSignal.OnNext(true);
         }
 
-        private void FetchLoop()
+        private async Task FetchLoop()
         {
-            Task.Run(async () =>
+            while (!_cancel.IsCancellationRequested)
             {
-                while (!_cancel.IsCancellationRequested)
+                var fetchRequest = new FetchRequest
                 {
-                    var fetchRequest = new FetchRequest
-                    {
-                        MaxWaitTime = ConsumerConfig.MaxWaitTimeMs,
-                        MinBytes = ConsumerConfig.MinBytesPerFetch,
-                        Topics = _topicPartitions.
-                            GroupBy(tp=>tp.Topic).
-                            Select(t => new FetchRequest.TopicData { 
-                                Topic = t.Key,
-                                Partitions = t.
-                                    Select(p => new FetchRequest.PartitionData
-                                    {
-                                        Partition = p.PartitionId,
-                                        FetchOffset = p.CurrentOffset,
-                                        MaxBytes = ConsumerConfig.MaxBytesPerFetch
-                                    }).ToArray()
-                            }).ToArray()
-                    };
+                    MaxWaitTime = ConsumerConfig.MaxWaitTimeMs,
+                    MinBytes = ConsumerConfig.MinBytesPerFetch,
+                    Topics = _topicPartitions.
+                        GroupBy(tp=>tp.Topic).
+                        Select(t => new FetchRequest.TopicData { 
+                            Topic = t.Key,
+                            Partitions = t.
+                                Select(p => new FetchRequest.PartitionData
+                                {
+                                    Partition = p.PartitionId,
+                                    FetchOffset = p.CurrentOffset,
+                                    MaxBytes = ConsumerConfig.MaxBytesPerFetch
+                                }).ToArray()
+                        }).ToArray()
+                };
 
-                    if (fetchRequest.Topics.Length == 0)
-                    {
-                        _log.Debug("#{0} No partitions subscribed to fetcher. Waiting for _wakeupSignal signal", _id);
-                        EtwTrace.Log.FetcherSleep(_id);
-                        await _wakeupSignal.FirstAsync();
-                        EtwTrace.Log.FetcherWakeup(_id);
+                if (fetchRequest.Topics.Length == 0)
+                {
+                    _log.Debug("#{0} No partitions subscribed to fetcher. Waiting for _wakeupSignal signal", _id);
+                    EtwTrace.Log.FetcherSleep(_id);
+                    await _wakeupSignal.FirstAsync();
+                    EtwTrace.Log.FetcherWakeup(_id);
                         
-                        if(_cancel.IsCancellationRequested)
-                        {
-                            _log.Debug("#{0}Cancel detected. Quitting FetchLoop", _id);
-                            break;
-                        }
-                        
-                        _log.Debug("#{0} Received _wakeupSignal. Have {1} partitions subscribed", _id, _topicPartitions.Count);
-                        continue;
-                    }
-
-                    // issue fetch 
-                    FetchResponse fetch;
-                    try
+                    if(_cancel.IsCancellationRequested)
                     {
-                        EtwTrace.Log.FetcherFetchRequest(_id, fetchRequest.Topics.Length, fetchRequest.Topics.Sum(td => td.Partitions.Length), _broker.Host, _broker.Port, _broker.NodeId);
-                        fetch = await _protocol.Fetch(fetchRequest, _broker.Conn);
-                        EtwTrace.Log.FetcherFetchResponse(_id);
-
-                        // if any TopicPartitions have an error, fail them with the Cluster.
-                        fetch.Topics.SelectMany(t => t.Partitions.Select(p => new PartitionStateChangeEvent(t.Topic, p.Partition, p.ErrorCode)))
-                            .Where(ps => !ps.ErrorCode.IsSuccess())
-                            .ForEach(ps => _cluster.NotifyPartitionStateChange(ps));
+                        _log.Debug("#{0}Cancel detected. Quitting FetchLoop", _id);
+                        break;
+                    }
                         
-                        if (_log.IsDebugEnabled && fetch.Topics.Any(t=>t.Partitions.Any(p=>p.Messages.Length > 0)))
-                            _log.Debug("#{0}: got FetchResponse from {2} with messages: {1}", _id, _broker.Conn, fetch.ToString(true));
-                    }
-                    //catch (ObjectDisposedException e)
-                    //{
-                    //    if (!_cancel.IsCancellationRequested)
-                    //    {
-                    //        _log.Debug("#{0} connection closed", _id);
-                    //        target.Fault(e);
-                    //        return;
-                    //    }
-                        
-                    //    break;
-                    //}
-                    //catch (CorrelationLoopException e)
-                    //{
-                    //    if (!_cancel.IsCancellationRequested)
-                    //    {
-                    //        _log.Debug("#{0} connection closed", _id);
-                    //        target.Fault(e);
-                    //        return;
-                    //    }
-                    //    break;
-                    //}
-                    //catch (SocketException e)
-                    //{
-                    //    if (!_cancel.IsCancellationRequested)
-                    //    {
-                    //        _log.Info(e, "#{0} Connection failed. {1}", _id, e.Message);
-                    //        target.Fault(e);
-                    //        return;
-                    //    }
-                    //    break;
-                    //}
-                    //catch (Exception e)
-                    //{
-                    //    if (!_cancel.IsCancellationRequested)
-                    //    {
-                    //        _log.Error(e, "#{0} Fetcher failed", _id);
-                    //        target.Fault(e);
-                    //        return;
-                    //    }
-                    //    break;
-                    //}
-
-                    catch (Exception e)
-                    {
-                        if (_cancel.IsCancellationRequested)
-                            break;
-                        //
-                        // 1. Inform the bus that partition(s) failed
-                        // 2. Inform the partition subscribers that this fetcher failed
-                        // 3. Clean up partition->fetcher references to allow GC to collect the fetcher
-                        //
-                        _log.Info(e, "#{0} Fetcher failed", _id);
-                        _topicPartitions.Clear();
-                        _state.OnError(e);
-                        return;
-                    }
-
-                    // if timeout, we got empty response
-                    if (fetch.Topics.Any(t => t.Partitions.Any(p => p.Messages.Length > 0))) 
-                    { 
-                        //var messages = DeserializeMessagesFromFetchResponse(fetch);
-                        await RouteMessageesToSubscribers(fetch);
-                    }
+                    _log.Debug("#{0} Received _wakeupSignal. Have {1} partitions subscribed", _id, _topicPartitions.Count);
+                    continue;
                 }
 
-                _topicPartitions.Clear();
-                _log.Info("Cancellation Requested. Shutting Down.");
-            });
+                // issue fetch 
+                FetchResponse fetch;
+                try
+                {
+                    EtwTrace.Log.FetcherFetchRequest(_id, fetchRequest.Topics.Length, fetchRequest.Topics.Sum(td => td.Partitions.Length), _broker.Host, _broker.Port, _broker.NodeId);
+                    fetch = await _protocol.Fetch(fetchRequest, _broker.Conn);
+                    EtwTrace.Log.FetcherFetchResponse(_id);
+
+                    // if any TopicPartitions have an error, fail them with the Cluster.
+                    fetch.Topics.SelectMany(t => t.Partitions.Select(p => new PartitionStateChangeEvent(t.Topic, p.Partition, p.ErrorCode)))
+                        .Where(ps => !ps.ErrorCode.IsSuccess())
+                        .ForEach(ps => _cluster.NotifyPartitionStateChange(ps));
+                        
+                    if (_log.IsDebugEnabled && fetch.Topics.Any(t=>t.Partitions.Any(p=>p.Messages.Length > 0)))
+                        _log.Debug("#{0}: got FetchResponse from {2} with messages: {1}", _id, _broker.Conn, fetch.ToString(true));
+                }
+                //catch (ObjectDisposedException e)
+                //{
+                //    if (!_cancel.IsCancellationRequested)
+                //    {
+                //        _log.Debug("#{0} connection closed", _id);
+                //        target.Fault(e);
+                //        return;
+                //    }
+                        
+                //    break;
+                //}
+                //catch (CorrelationLoopException e)
+                //{
+                //    if (!_cancel.IsCancellationRequested)
+                //    {
+                //        _log.Debug("#{0} connection closed", _id);
+                //        target.Fault(e);
+                //        return;
+                //    }
+                //    break;
+                //}
+                //catch (SocketException e)
+                //{
+                //    if (!_cancel.IsCancellationRequested)
+                //    {
+                //        _log.Info(e, "#{0} Connection failed. {1}", _id, e.Message);
+                //        target.Fault(e);
+                //        return;
+                //    }
+                //    break;
+                //}
+                //catch (Exception e)
+                //{
+                //    if (!_cancel.IsCancellationRequested)
+                //    {
+                //        _log.Error(e, "#{0} Fetcher failed", _id);
+                //        target.Fault(e);
+                //        return;
+                //    }
+                //    break;
+                //}
+
+                catch (Exception e)
+                {
+                    if (_cancel.IsCancellationRequested)
+                        break;
+                    //
+                    // 1. Inform the bus that partition(s) failed
+                    // 2. Inform the partition subscribers that this fetcher failed
+                    // 3. Clean up partition->fetcher references to allow GC to collect the fetcher
+                    //
+                    _log.Info(e, "#{0} Fetcher failed", _id);
+                    _topicPartitions.Clear();
+                    _state.OnError(e);
+                    return;
+                }
+
+                // if timeout, we got empty response
+                if (fetch.Topics.Any(t => t.Partitions.Any(p => p.Messages.Length > 0))) 
+                { 
+                    //var messages = DeserializeMessagesFromFetchResponse(fetch);
+                    await RouteMessageesToSubscribers(fetch);
+                }
+            }
+
+            _topicPartitions.Clear();
+            _log.Info("Cancellation Requested. Shutting Down.");
         }
 
         /// <summary>
