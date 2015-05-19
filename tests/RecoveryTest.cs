@@ -1622,7 +1622,7 @@ namespace tests
         }
 
         [Test]
-        [ExpectedException(typeof(PartitionFailedException))]
+        [ExpectedException(typeof(AggregateException))]
         public async void InvalidOffsetShouldLogErrorAndStopFetching()
         {
             var count = 100;
@@ -1636,7 +1636,17 @@ namespace tests
                 WithStartPosition(offsets).
                 WithAction(handler).
                 Build();
-            await handler.AsObservable().Take(count);
+            await consumer.State.Connected;
+            try
+            {
+                await handler.AsObservable().FirstOrDefaultAsync();
+            }
+            catch (AggregateException e)
+            {
+                Assert.IsTrue(e.InnerExceptions.Count == 1);
+                Assert.IsTrue(e.InnerExceptions[0] is PartitionFailedException);
+                throw;
+            }
             await consumer.State.Connected;
             
             _log.Info("Done");
