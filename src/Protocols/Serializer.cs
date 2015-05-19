@@ -389,7 +389,7 @@ namespace kafka4net.Protocols
         public static FetchResponse DeserializeFetchResponse(byte[] buff)
         {
             var stream = new MemoryStream(buff);
-            stream.Position += 4; // skip body
+            stream.Position += 4; // skip CorrelationId
             var response = new FetchResponse();
 
             var len = BigEndianConverter.ReadInt32(stream);
