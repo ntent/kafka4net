@@ -453,10 +453,17 @@ namespace kafka4net
 
         internal BrokerMeta FindBrokerMetaForPartitionId(string topic, int partition)
         {
-            // TODO: how to handle not found exceptions, downed partitions?
-            var partMeta = _topicPartitionMap[topic].Single(p => p.Id == partition);
-            var brokerMeta = _partitionBrokerMap[partMeta];
-            return brokerMeta;
+            try
+            {
+                var partMeta = _topicPartitionMap[topic].Single(p => p.Id == partition);
+                var brokerMeta = _partitionBrokerMap[partMeta];
+                return brokerMeta;
+            }
+            catch (KeyNotFoundException e)
+            {
+                _log.Error("Failed to get topic '{0}' partition {1}. Current metadata: {2}", topic, partition, _metadata);
+                throw;
+            }
         }
 
         internal async Task<Tuple<Connection, TcpClient>> GetAnyClientAsync()
