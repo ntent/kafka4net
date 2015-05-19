@@ -52,8 +52,10 @@ namespace kafka4net
                 Where(s => s.ErrorCode.IsPermanentFailure()).
                 Subscribe(state =>
                 {
-                    Dispose();
+                    // Important: call _consumerTarget.Fault() befor Dispose, because in Dispose _consumerTarget.Complete()
+                    // will be called.
                     _consumerTarget.Fault(new PartitionFailedException(state.Topic, state.PartitionId, state.ErrorCode));
+                    Dispose();
                 });
 
             // Start connecting asyncronously, dont wait for completion. Completion can be waited in
@@ -207,6 +209,7 @@ namespace kafka4net
                 _log.Error(e, "Error in Dispose");
             }
 
+            // If state is not Failed, do Complete
             _consumerTarget.Complete();
 
             clusteShutdownTask.ContinueWith(_ => 
