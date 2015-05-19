@@ -1,6 +1,8 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
+using System.IO;
 using System.Linq;
 using System.Reactive.Concurrency;
 using System.Reactive.Linq;
@@ -1812,6 +1814,22 @@ namespace tests
             consumer.Dispose();
             Assert.AreEqual(count, count2);
             _log.Info("Complete");
+        }
+
+        [Ignore]
+        public void TestSerializerTmp()
+        {
+            var txt = File.ReadAllText(@"c:\tmp\dump.txt").Trim();
+            var buff = new byte[txt.Length / 2];
+            for (int i = 0; i < txt.Length; i += 2)
+            {
+                var dd = txt.Substring(i, 2);
+                var b = byte.Parse(dd, NumberStyles.HexNumber);
+                buff[i / 2] = b;
+            }
+
+            var response = kafka4net.Protocols.Serializer.DeserializeFetchResponse(buff);
+            Console.WriteLine(response.Topics);
         }
 
         // if last leader is down, all in-buffer messages are errored and the new ones
