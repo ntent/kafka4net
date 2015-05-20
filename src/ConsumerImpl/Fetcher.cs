@@ -74,6 +74,7 @@ namespace kafka4net.ConsumerImpl
         public void Subscribe(TopicPartition partition)
         {
             _topicPartitions.Add(partition);
+            _wakeupSignal.OnNext(true);
             EtwTrace.Log.FetcherPartitionSubscribed(_id, partition.PartitionId);
             _log.Debug("Fetcher #{0} added {1}", _id, partition);
         }
