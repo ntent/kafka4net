@@ -1287,8 +1287,13 @@ namespace tests
             sentEvents.Subscribe(msg => _log.Debug("Sent {0}", BitConverter.ToInt32(msg.Value, 0)));
             await sentEvents.Take(100).ToTask();
 
-
             var offsets1 = await producer.Cluster.FetchPartitionOffsetsAsync(topic, ConsumerLocation.TopicStart);
+
+            _log.Debug("Offsets after producing: {0}",
+                string.Join("  \n",
+                    offsets1.Partitions.OrderBy(_=>_).
+                    Select(p => string.Format("{0}:{1}-{2}", p, offsets1.GetStartOffset(p), offsets1.GetPartitionsOffset[p]))
+            ));
 
             _log.Info("Closing producer");
             await producer.CloseAsync(TimeSpan.FromSeconds(5));
@@ -1297,25 +1302,37 @@ namespace tests
 
             // now consume the "first" 50. Stop, save offsets, and restart.
             var consumer1 = Consumer.Create(_seedAddresses, topic).
-                WithStartPosition(offsets1).WithAction(handler1).
+                WithStartPosition(offsets1).
+                WithAction(handler1).
                 Build();
-            var receivedEvents = new List<int>(100);
+            var receivedMessages = new List<int>(100);
 
             _log.Info("Consuming first half of messages.");
 
-            await handler1.AsObservable()
+            var received1 = await handler1.AsObservable()
+                // Important: do not do Take() after this Do, because it takes time for Take to 
+                // unsubscribe and during this time 2 or so more messages than expected can be processed
+                .Take(50)
                 .Do(msg =>
                 {
                     var value = BitConverter.ToInt32(msg.Value, 0);
                     _log.Info("Consumer1 Received value {0} from partition {1} at offset {2}", value, msg.Partition, msg.Offset);
-                    receivedEvents.Add(value);
+                    receivedMessages.Add(value);
                     offsets1.UpdateOffset(msg.Partition, msg.Offset);
                 })
-                .Take(50);
-            //await consumer1.IsConnected;
-
+                .TakeUntil(DateTimeOffset.Now.AddMinutes(1))
+                // Hmm, test shows that I can consume 2 more mesages before
+                // Take(50) will cut it off!
+                .ToList();
+            _log.Debug("Receved after stage 1: {0}", receivedMessages.Count);
+            
             _log.Info("Closing first consumer");
             consumer1.Dispose();
+            await consumer1.State.Closed;
+
+            //Assert.AreEqual(50, received1.Count);
+            //await consumer1.IsConnected;
+
 
             // now serialize the offsets.
             var offsetBytes = offsets1.WriteOffsets();
@@ -1329,22 +1346,28 @@ namespace tests
                 WithAction(target2).
                 Build();
 
-            await target2.AsObservable()
+            var received2 = await target2.AsObservable()
+                .Take(50)
                 .Do(msg =>
                 {
                     var value = BitConverter.ToInt32(msg.Value, 0);
-                    _log.Info("Consumer2 Received value {0} from partition {1} at offset {2}", value, msg.Partition, msg.Offset);
-                    receivedEvents.Add(value);
+                    receivedMessages.Add(value);
+                    _log.Info("Consumer2 Received value {0} from partition {1} at offset {2}. Count: {3}", value, msg.Partition, msg.Offset, receivedMessages.Count);
                     offsets2.UpdateOffset(msg.Partition, msg.Offset);
                 })
-                .Take(50);
+                .TakeUntil(DateTimeOffset.Now.AddMinutes(1)).
+                ToList();
             //await consumer2.IsConnected;
+
+            if(receivedMessages.Count != 100)
+                _log.Error("Received: {0}", string.Join(",", receivedMessages.OrderBy(_=>_)));
+            //Assert.AreEqual(50, received2.Count);
 
             _log.Info("Closing second consumer");
             consumer2.Dispose();
 
-            Assert.AreEqual(100, receivedEvents.Distinct().Count());
-            Assert.AreEqual(100, receivedEvents.Count);
+            Assert.AreEqual(100, receivedMessages.Distinct().Count());
+            Assert.AreEqual(100, receivedMessages.Count);
 
             kafka4net.Tracing.EtwTrace.Marker("/SaveOffsetsAndResumeConsuming");
         }
