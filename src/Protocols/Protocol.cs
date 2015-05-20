@@ -112,7 +112,8 @@ namespace kafka4net.Protocols
 
         internal async Task<FetchResponse> Fetch(FetchRequest req, Connection conn)
         {
-            _log.Debug("Sending FetchRequest to broker {1}. Request: {0}", req, conn);
+            if(_log.IsDebugEnabled)
+                _log.Debug("Sending FetchRequest to broker {1}. Request: {0}", req, conn);
             if (_etw.IsEnabled())
                 _etw.ProtocolFetchRequest(req.ToString());
             
@@ -126,6 +127,8 @@ namespace kafka4net.Protocols
                 id => Serializer.Serialize(req, id),
                 Serializer.DeserializeFetchResponse,
                 tcp, /*cancel.Token*/ CancellationToken.None);
+
+            _log.Debug("Received FetchResponse from broker {0}. Response: {1}", conn, response);
 
             if (_etw.IsEnabled())
                 _etw.ProtocolFetchResponse(response.ToString());
