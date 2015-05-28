@@ -1,14 +1,12 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Linq;
-using System.Linq.Expressions;
 using System.Reactive.Concurrency;
 using System.Reactive.Linq;
 using System.Reactive.Subjects;
-using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Threading.Tasks.Dataflow;
 using kafka4net.Internal;
 using kafka4net.Tracing;
 using kafka4net.Utils;
@@ -30,9 +28,7 @@ namespace kafka4net
         public event Action<Message[]> OnShutdownDirty;
         public Action<Message[]> OnSuccess; 
 
-        //public MessageCodec Codec = MessageCodec.CodecNone;
         private Task _sendLoopTask;
-        private Subject<Message> _sendMessagesSubject;
         private readonly Cluster _cluster;
         private readonly bool _internalCluster;
         private readonly SemaphoreSlim _sync = new SemaphoreSlim(1,1);
@@ -77,9 +73,6 @@ namespace kafka4net
             _internalCluster = true;
         }
 
-
-        public bool IsConnected { get { return _sendMessagesSubject != null; } }
-
         public async Task ConnectAsync()
         {
             // if we've already connected, don't do it again.
@@ -97,7 +90,6 @@ namespace kafka4net
 
                     _log.Debug("Connecting producer {1} for topic {0}", Topic, _id);
                     EtwTrace.Log.ProducerStarting(Topic, _id);
-                    _sendMessagesSubject = new Subject<Message>();
 
                     if (_cluster.State != Cluster.ClusterState.Connected)
                     {
@@ -106,6 +98,7 @@ namespace kafka4net
                         _log.Debug("Connected cluster");
                     }
 
+                    new BatchBlock<int>(1, new GroupingDataflowBlockOptions(){})
                     // Recovery: subscribe to partition offline/online events
                     _cluster.PartitionStateChanges.
                         Where(p => p.Topic == Configuration.Topic).
@@ -227,7 +220,7 @@ namespace kafka4net
             }).ConfigureAwait(false);
         }
 
-        public void Send(Message msg)
+        public async Task SendAsync(Message msg)
         {
             if (_shutdown.IsCancellationRequested || _drain.IsCancellationRequested)
                 throw new Exception("Cannot send messages after producer is canceled / closed.");
@@ -551,16 +544,16 @@ namespace kafka4net
         {
             public PartitionQueueInfo(int maxBufferSize)
             {
-                Queue = new CircularBuffer<Message>(maxBufferSize); // TODO: Max Enqueued Batches configuration!
+                Queue = Queue = new BufferBlock<Message>(new DataflowBlockOptions { BoundedCapacity = maxBufferSize});
             }
 
-            public readonly CircularBuffer<Message> Queue;
+            public readonly BufferBlock<Message> Queue;
             public int Partition;
             public bool InProgress;
             public int CountInProgress;
             public bool IsOnline;
 
-            public bool IsReadyForServing { get { return !InProgress && IsOnline && Queue.Size > 0; } }
+            public bool IsReadyForServing { get { return !InProgress && IsOnline && Queue.Count > 0; } }
         }
     }
 }

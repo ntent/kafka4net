@@ -105,7 +105,6 @@
     <Compile Include="Utils\BigEndianConverter.cs" />
     <Compile Include="Utils\Crc32.cs" />
     <Compile Include="Utils\DateTimeExtensions.cs" />
-    <Compile Include="Utils\CircularBuffer.cs" />
     <Compile Include="Utils\RxSyncContextFromScheduler.cs" />
     <Compile Include="Utils\EnumerableEx.cs" />
     <Compile Include="Utils\CountObservable.cs" />
