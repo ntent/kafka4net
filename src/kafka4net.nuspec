@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<package >
+  <metadata>
+    <id>kafka4net</id>
+    <version>$version$</version>
+    <authors>NTent</authors>
+    <licenseUrl>http://www.apache.org/licenses/</licenseUrl>
+    <projectUrl>https://github.com/ntent-ad/kafka4net</projectUrl>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <title>kafka4net</title>
+    <summary>Event-driven async Kafka driver for .NET</summary>
+    <description>
+      Kafka driver for .NET
+
+      Event-driven architecture, all asynchronous.
+      Automatic following changes of Leader Partition in case of broker failure.
+      Connection sharing: one connection per kafka broker is used.
+      Flow control: slow consumer will suspend fetching and prevent memory exhausting.
+      Integration tests are part of the codebase. Use Vagrant to provision 1 zookeeper and 3 kafka virtual servers.
+      Use RxExtensions library to expose API and for internal implementation.
+    </description>
+    <releaseNotes>Bug fix release</releaseNotes>
+    <copyright>Copyright NTent 2015</copyright>
+    <tags>kafka</tags>
+  </metadata>
+  <files>
+    <file src="bin\Release\kafka4net.kafka4net.etwManifest.man" target="etw-manifest\kafka4net.kafka4net.etwManifest.man" />
+  </files>
+</package>
