@@ -86,7 +86,7 @@ namespace kafka4net
             if (IsConnected)
                 return;
 
-            await await _cluster.Scheduler.Ask(async () =>
+            await _cluster.Scheduler.Ask(async () =>
             {
                 await _sync.WaitAsync();
 
