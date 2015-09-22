@@ -1,1 +1,1 @@
-\bin\nuget-2.8.5\NuGet.exe pack ..\src\kafka4net.csproj -Prop Configuration=Release 
+\bin\nuget-2.8.5\NuGet.exe pack ..\src\kafka4net.csproj -Symbols -Prop Configuration=Release 
