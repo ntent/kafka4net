@@ -1747,6 +1747,27 @@ namespace tests
             _log.Info("Complete");
         }
 
+        [Test]
+        public async void ProducerConnectWhenOneBrokerIsDown()
+        {
+            // Scenario: 1 broker is down, Producer connects. Broker is brought up and forced to become master.
+            // See https://github.com/ntent-ad/kafka4net/issues/14
+
+            var topic = "topic13." + _rnd.Next();
+
+            VagrantBrokerUtil.CreateTopic(topic, 1, 3);
+            var cluster = new Cluster(_seedAddresses);
+            await cluster.ConnectAsync();
+            await cluster.GetOrFetchMetaForTopicAsync(topic);
+            VagrantBrokerUtil.StopBrokerLeaderForPartition(cluster, topic, 0);
+            await cluster.CloseAsync(TimeSpan.FromSeconds(3));
+
+            cluster = new Cluster(_seedAddresses);
+            await cluster.ConnectAsync();
+            var producer = new Producer(cluster, new ProducerConfiguration(topic));
+            await producer.ConnectAsync();
+        }
+
         // if last leader is down, all in-buffer messages are errored and the new ones
         // are too.
 
