@@ -2,7 +2,6 @@ kafka4net
 =========
 
 NTent implementation of Kafka-0.8 client. <br/>
-<b>Work in progress, not ready yet!<b>
 
 Features:
 * Event-driven architecture, all asynchronous
