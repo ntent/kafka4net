@@ -18,5 +18,5 @@ kafka4net
 * No configurable partitioner (fletcher32 checksum is hardcoded)
 
 ## Documentation
-[Design](https://github.com/ntent-ad/kafka4net/wiki/Design)
-[Troubleshooting](https://github.com/ntent-ad/kafka4net/wiki/Troubleshooting)
+* [Design](https://github.com/ntent-ad/kafka4net/wiki/Design)
+* [Troubleshooting](https://github.com/ntent-ad/kafka4net/wiki/Troubleshooting)
