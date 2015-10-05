@@ -1,4 +1,5 @@
-﻿using System.Collections.Generic;
+﻿using System;
+using System.Collections.Generic;
 
 namespace kafka4net.Metadata
 {
@@ -22,7 +23,11 @@ namespace kafka4net.Metadata
         {
             public bool Equals(BrokerMeta x, BrokerMeta y)
             {
-                return x.NodeId == y.NodeId;
+                if(x.NodeId != -99 || y.NodeId != -99)
+                    return x.NodeId == y.NodeId;
+                
+                // If those are non-resolved seed brokers, do property comparison, because they all have NodeId==-99
+                return string.Equals(x.Host, y.Host, StringComparison.OrdinalIgnoreCase) && x.Port == y.Port;
             }
 
             public int GetHashCode(BrokerMeta obj)
