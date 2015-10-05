@@ -33,8 +33,9 @@ namespace tests
     class RecoveryTest
     {
         Random _rnd = new Random();
-        string _seedAddresses = "192.168.56.10,192.168.56.20";
-        //private const string _seedAddresses = "192.168.56.10";
+        string _seed2Addresses = "192.168.56.10,192.168.56.20";
+        string _seed3Addresses = "192.168.56.10,192.168.56.20,192.168.56.30";
+        private const string _seed1Addresses = "192.168.56.10";
         static readonly NLog.Logger _log = LogManager.GetCurrentClassLogger();
 
         [SetUp]
@@ -1781,6 +1782,18 @@ namespace tests
         // if connecting async but never can complete, timeout triggers, and messages are errored
 
         // if one broker refuses connection, another one will connect and function
+        [Test]
+        [Timeout(60*1000)]
+        public async void IfFirstBrokerIsDownThenNextOneWillConnect()
+        {
+            var badSeed = "192.168.56.111," + _seed2Addresses;
+            var cluster = new Cluster(badSeed);
+            await cluster.ConnectAsync();
+            await cluster.GetAllTopicsAsync();
+            //var producer = new Producer(cluster, new ProducerConfiguration("notopic"));
+            //await producer.ConnectAsync();
+            await cluster.CloseAsync(TimeSpan.FromSeconds(1));
+        }
 
         // if one broker hangs on connect, client will be ready as soon as connected via another broker
 
