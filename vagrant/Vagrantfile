@@ -7,6 +7,7 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
   k_count=3
 
   config.vm.box = "ubuntu/trusty64"
+  config.vm.box_check_update = false
   
   # zookeeper
   config.vm.define "zookeeper1" do |s|
