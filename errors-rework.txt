@@ -1,0 +1,19 @@
+Initial idea of implementing error recovery was to have single point, in tcp connection object where all error recovery would be made. 
+But it turned out too low level, because depending on what this connection is doing, we might want different strategy for recovery. 
+When RecoveryMonitor tests either broker is available, we do not want any recovery and want fail fast instead. 
+Another issue is that currently only fetcher and producer are well protected, whereas earlier stages, such as connection, offset resolution, 
+metadata fetching are more fragile, or have to implement their own recovery, thus polluting the code.
+
+Requirements:
+Fast reaction: consider partition failed immediately after tcp error, and not after many retries.
+Remember to fail all request tasks which are waiting for responses.
+While waiting for recovery, pay attention to changes in metadata
+Work nicely with shutdown and drain logic
+
+List of failure stages:
+In seed broker resolution
+In offset resolution
+In Metadata fetching
+In recovery monitor
+In produce message
+In fetch message

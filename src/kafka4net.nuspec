@@ -21,7 +21,7 @@
     </description>
     <releaseNotes>Bug fix release</releaseNotes>
     <copyright>Copyright NTent 2015</copyright>
-    <tags>kafka</tags>
+    <tags>kafka kafka4net</tags>
   </metadata>
   <files>
     <file src="bin\Release\kafka4net.kafka4net.etwManifest.man" target="etw-manifest\kafka4net.kafka4net.etwManifest.man" />
