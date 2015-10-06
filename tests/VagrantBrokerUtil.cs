@@ -51,6 +51,14 @@ namespace tests
             _log.Info("Rebalanced Leadership");
         }
 
+        public static void DescribeTopic(string topic)
+        {
+            _log.Info("Getting topic description");
+            string script = "ssh -c '/opt/kafka_2.10-" + _kafkaVersion + "/bin/kafka-topics.sh --zookeeper 192.168.56.2 --describe --topic " + topic + "' broker1";
+            Vagrant(script);
+            _log.Info("Got topic description");
+        }
+
         public static void RestartBrokers()
         {
             BrokerIpToName.Where(np=>!IsBrokerResponding(np.Key)).ForEach(np=>StartBroker(np.Value));

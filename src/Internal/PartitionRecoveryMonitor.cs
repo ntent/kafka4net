@@ -213,8 +213,27 @@ namespace kafka4net.Internal
                         _brokers.TryGetValue(brokerGrp.Key, out newBroker);
                         if (newBroker == null)
                         {
-                            _log.Error("received MetadataResponse for broker that is not yet in our list!");
-                            return;
+                            newBroker = response.Brokers.SingleOrDefault(b => b.NodeId == brokerGrp.Key);
+
+                            // If Cluster started when one of the brokers was down, and later it comes alive,
+                            // it will be missing from our list of brokers. See issue #14.
+                            _log.Debug("received MetadataResponse for broker that is not yet in our list: {0}", newBroker);
+
+                            if (newBroker == null)
+                            {
+                                _log.Error("Got metadata response with partition refering to a broker which is not part of the response: {0}", response.ToString());
+                                return;
+                            }
+
+                            // Broadcast only newly discovered broker and strip everything else, because this is the only
+                            // confirmed data.
+                            var filteredMeta = new MetadataResponse
+                            {
+                                Brokers = new[] { newBroker },
+                                Topics = new TopicMeta[] { }
+                            };
+
+                            _newMetadataEvent.OnNext(filteredMeta);
                         }
 
                         try

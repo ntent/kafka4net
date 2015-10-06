@@ -131,7 +131,7 @@ namespace tests
             // In order to make sure that topic was created by producer, send and wait for producer
             // completion before performing validation read.
             //
-            var producer = new Producer(_seedAddresses, new ProducerConfiguration(topic));
+            var producer = new Producer(_seed2Addresses, new ProducerConfiguration(topic));
 
             await producer.ConnectAsync();
 
@@ -145,7 +145,7 @@ namespace tests
             //
             // Validate by reading published messages
             //
-            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, new StartPositionTopicStart(), maxWaitTimeMs: 1000, minBytesPerFetch: 1));
+            var consumer = new Consumer(new ConsumerConfiguration(_seed2Addresses, topic, new StartPositionTopicStart(), maxWaitTimeMs: 1000, minBytesPerFetch: 1));
             var msgs = consumer.OnMessageArrived.Publish().RefCount();
             var receivedTxt = new List<string>();
             var consumerSubscription = msgs.
@@ -198,7 +198,7 @@ namespace tests
             var sent = new List<string>();
             var confirmedSent1 = new List<string>();
 
-            var producer = new Producer(_seedAddresses, new ProducerConfiguration(topic));
+            var producer = new Producer(_seed2Addresses, new ProducerConfiguration(topic));
             producer.OnSuccess += msgs =>
             {
                 msgs.ForEach(msg => confirmedSent1.Add(Encoding.UTF8.GetString(msg.Value)));
@@ -206,7 +206,7 @@ namespace tests
             };
             await producer.ConnectAsync();
 
-            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, new StartPositionTopicEnd()));
+            var consumer = new Consumer(new ConsumerConfiguration(_seed2Addresses, topic, new StartPositionTopicEnd()));
 
             const int postCount = 100;
             const int postCount2 = 50;
@@ -314,7 +314,7 @@ namespace tests
             kafka4net.Tracing.EtwTrace.Marker("ListenerOnNonExistentTopicWaitsForTopicCreation");
             const int numMessages = 400;
             var topic = "topic." + _rnd.Next();
-            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, new StartPositionTopicStart()));
+            var consumer = new Consumer(new ConsumerConfiguration(_seed2Addresses, topic, new StartPositionTopicStart()));
             var cancelSubject = new Subject<bool>();
             var receivedValuesTask = consumer.OnMessageArrived
                 .Select(msg=>BitConverter.ToInt32(msg.Value, 0))
@@ -329,7 +329,7 @@ namespace tests
             await Task.Delay(TimeSpan.FromSeconds(4));
 
             // now produce 400 messages
-            var producer = new Producer(_seedAddresses, new ProducerConfiguration(topic));
+            var producer = new Producer(_seed2Addresses, new ProducerConfiguration(topic));
             await producer.ConnectAsync();
             Enumerable.Range(1, numMessages).
                 Select(i => new Message { Value = BitConverter.GetBytes(i) }).
@@ -361,7 +361,7 @@ namespace tests
             var topic = "part33." + _rnd.Next();
             VagrantBrokerUtil.CreateTopic(topic,6,3);
 
-            var producer = new Producer(_seedAddresses, new ProducerConfiguration(topic));
+            var producer = new Producer(_seed2Addresses, new ProducerConfiguration(topic));
 
             _log.Debug("Connecting");
             await producer.ConnectAsync();
@@ -374,7 +374,7 @@ namespace tests
                 .Take(count)
                 .Subscribe(msg=> { producer.Send(msg); sentList.Add(BitConverter.ToInt32(msg.Value, 0)); });
 
-            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, new StartPositionTopicStart(), maxBytesPerFetch: 4 * 8));
+            var consumer = new Consumer(new ConsumerConfiguration(_seed2Addresses, topic, new StartPositionTopicStart(), maxBytesPerFetch: 4 * 8));
             var current =0;
             var received = new ReplaySubject<ReceivedMessage>();
             Task brokerStopped = null;
@@ -438,7 +438,7 @@ namespace tests
             var topic = "part62." + _rnd.Next();
             VagrantBrokerUtil.CreateTopic(topic, 6, 2);
 
-            var producer = new Producer(_seedAddresses, new ProducerConfiguration(topic));
+            var producer = new Producer(_seed2Addresses, new ProducerConfiguration(topic));
 
             _log.Debug("Connecting");
             await producer.ConnectAsync();
@@ -469,7 +469,7 @@ namespace tests
             //
             // Check length of result topic
             //
-            var c2 = new Cluster(_seedAddresses);
+            var c2 = new Cluster(_seed2Addresses);
             await c2.ConnectAsync();
             var heads = await c2.FetchPartitionOffsetsAsync(topic, ConsumerLocation.TopicStart);
             var tails = await c2.FetchPartitionOffsetsAsync(topic, ConsumerLocation.TopicEnd);
@@ -501,7 +501,7 @@ namespace tests
             var topic = "part33." + _rnd.Next();
             VagrantBrokerUtil.CreateTopic(topic, 6, 3);
 
-            var producer = new Producer(_seedAddresses, new ProducerConfiguration(topic));
+            var producer = new Producer(_seed2Addresses, new ProducerConfiguration(topic));
             _log.Debug("Connecting");
             await producer.ConnectAsync();
 
@@ -526,7 +526,7 @@ namespace tests
             _log.Info("Topic offsets indicate producer sent {0} messages.", messagesInTopic);
 
 
-            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, new StartPositionTopicStart(), maxBytesPerFetch: 4 * 8));
+            var consumer = new Consumer(new ConsumerConfiguration(_seed2Addresses, topic, new StartPositionTopicStart(), maxBytesPerFetch: 4 * 8));
             var current = 0;
             var received = new ReplaySubject<ReceivedMessage>();
             Task stopBrokerTask = null;
@@ -583,14 +583,14 @@ namespace tests
             const string topic = "shutdown.test";
 
             // set producer long batching period, 20 sec
-            var producer = new Producer(_seedAddresses, new ProducerConfiguration(topic, TimeSpan.FromSeconds(20), int.MaxValue));
+            var producer = new Producer(_seed2Addresses, new ProducerConfiguration(topic, TimeSpan.FromSeconds(20), int.MaxValue));
 
             _log.Debug("Connecting");
             await producer.ConnectAsync();
 
             // start listener at the end of queue and accumulate received messages
             var received = new HashSet<string>();
-            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, new StartPositionTopicEnd(), maxWaitTimeMs: 30 * 1000));
+            var consumer = new Consumer(new ConsumerConfiguration(_seed2Addresses, topic, new StartPositionTopicEnd(), maxWaitTimeMs: 30 * 1000));
             _log.Info("Subscribing to consumer");
             var consumerSubscription = consumer.OnMessageArrived
                                         .Select(msg => Encoding.UTF8.GetString(msg.Value))
@@ -676,7 +676,7 @@ namespace tests
             await Task.Delay(TimeSpan.FromSeconds(5));
 
             // we should have all of them with leader 1
-            var cluster = new Cluster(_seedAddresses);
+            var cluster = new Cluster(_seed2Addresses);
             await cluster.ConnectAsync();
             var partitionMeta = await cluster.GetOrFetchMetaForTopicAsync(topic);
 
@@ -711,7 +711,7 @@ namespace tests
             _log.Info("Topic offsets indicate producer sent {0} messages.", messagesInTopic);
 
 
-            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, new StartPositionTopicStart(), maxBytesPerFetch: 4 * 8));
+            var consumer = new Consumer(new ConsumerConfiguration(_seed2Addresses, topic, new StartPositionTopicStart(), maxBytesPerFetch: 4 * 8));
             var current = 0;
             var received = new ReplaySubject<ReceivedMessage>();
             Task rebalanceTask = null;
@@ -782,7 +782,7 @@ namespace tests
             
             // create listener in a separate connection/broker
             var receivedMsgs = new List<ReceivedMessage>();
-            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topicName, new StartPositionTopicEnd()));
+            var consumer = new Consumer(new ConsumerConfiguration(_seed2Addresses, topicName, new StartPositionTopicEnd()));
             var consumerSubscription = consumer.OnMessageArrived.Synchronize().Subscribe(msg =>
             {
                 lock (receivedMsgs)
@@ -793,7 +793,7 @@ namespace tests
             await consumer.IsConnected;
 
             // sender is configured with 50ms batch period
-            var producer = new Producer(_seedAddresses, new ProducerConfiguration(topicName, TimeSpan.FromMilliseconds(50)));
+            var producer = new Producer(_seed2Addresses, new ProducerConfiguration(topicName, TimeSpan.FromMilliseconds(50)));
             await producer.ConnectAsync();
 
             //
@@ -899,7 +899,7 @@ namespace tests
             // now publish messages
             const int count2 = 25000;
             var topic = "part13." + _rnd.Next();
-            var producer = new Producer(_seedAddresses, new ProducerConfiguration(topic));
+            var producer = new Producer(_seed2Addresses, new ProducerConfiguration(topic));
             _log.Debug("Connecting");
             await producer.ConnectAsync();
 
@@ -925,7 +925,7 @@ namespace tests
 
             // sender is configured with 50ms batch period
             var receivedSubject = new ReplaySubject<Message>();
-            producer = new Producer(_seedAddresses,
+            producer = new Producer(_seed2Addresses,
                 new ProducerConfiguration(topicName, TimeSpan.FromMilliseconds(50), sendBuffersInitialSize: 1));
             producer.OnSuccess += ms => ms.ForEach(receivedSubject.OnNext);
             await producer.ConnectAsync();
@@ -956,7 +956,7 @@ namespace tests
 
             // fill it out with 10K messages
             const int count = 10*1000;
-            var producer = new Producer(_seedAddresses, new ProducerConfiguration(topic));
+            var producer = new Producer(_seed2Addresses, new ProducerConfiguration(topic));
             await producer.ConnectAsync();
 
             var sentMessagesObservable = Observable.FromEvent<Message[]>(evtHandler => producer.OnSuccess += evtHandler, evtHandler => { })
@@ -976,7 +976,7 @@ namespace tests
             _log.Debug("Closing producer");
             await producer.CloseAsync(TimeSpan.FromSeconds(5));
 
-            var offsetFetchCluster = new Cluster(_seedAddresses);
+            var offsetFetchCluster = new Cluster(_seed2Addresses);
             await offsetFetchCluster.ConnectAsync();
 
             // consume tail-300 for each partition
@@ -986,7 +986,7 @@ namespace tests
                                         .GetPartitionsOffset.Select(kv=>new KeyValuePair<int,long>(kv.Key,kv.Value-300)));
             _log.Info("Sum of offsets {0}. Raw: {1}",offsets.Partitions.Sum(p=>offsets.NextOffset(p)), offsets);
             
-            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, offsets));
+            var consumer = new Consumer(new ConsumerConfiguration(_seed2Addresses, topic, offsets));
             var messages = consumer.OnMessageArrived.
                 GroupBy(m => m.Partition).Replay();
             messages.Connect();
@@ -1017,7 +1017,7 @@ namespace tests
 
             // fill it out with 10K messages
             const int count = 10 * 1000;
-            var producer = new Producer(_seedAddresses, new ProducerConfiguration(topic));
+            var producer = new Producer(_seed2Addresses, new ProducerConfiguration(topic));
             await producer.ConnectAsync();
 
             var sentMessagesObservable = Observable.FromEvent<Message[]>(evtHandler => producer.OnSuccess += evtHandler, evtHandler => { })
@@ -1037,7 +1037,7 @@ namespace tests
             _log.Debug("Closing producer");
             await producer.CloseAsync(TimeSpan.FromSeconds(5));
 
-            var offsetFetchCluster = new Cluster(_seedAddresses);
+            var offsetFetchCluster = new Cluster(_seed2Addresses);
             await offsetFetchCluster.ConnectAsync();
 
             await Task.Delay(TimeSpan.FromSeconds(1));
@@ -1049,7 +1049,7 @@ namespace tests
             var numMessages = offsetStops.Partitions.Sum(p => offsetStops.NextOffset(p));
             _log.Info("Attempting to consume {0} messages and stop at {1}", numMessages, offsetStops);
 
-            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, new StartPositionTopicStart(), stopPosition : offsetStops));
+            var consumer = new Consumer(new ConsumerConfiguration(_seed2Addresses, topic, new StartPositionTopicStart(), stopPosition : offsetStops));
             var messages = await consumer.OnMessageArrived.ToList();
             
             consumer.Dispose();
@@ -1069,7 +1069,7 @@ namespace tests
 
             // fill it out with 10K messages
             const int count = 10 * 1000;
-            var producer = new Producer(_seedAddresses, new ProducerConfiguration(topic));
+            var producer = new Producer(_seed2Addresses, new ProducerConfiguration(topic));
             await producer.ConnectAsync();
 
             var sentMessagesObservable = Observable.FromEvent<Message[]>(evtHandler => producer.OnSuccess += evtHandler, evtHandler => { })
@@ -1089,7 +1089,7 @@ namespace tests
             _log.Debug("Closing producer");
             await producer.CloseAsync(TimeSpan.FromSeconds(5));
 
-            var offsetFetchCluster = new Cluster(_seedAddresses);
+            var offsetFetchCluster = new Cluster(_seed2Addresses);
             await offsetFetchCluster.ConnectAsync();
 
             await Task.Delay(TimeSpan.FromSeconds(1));
@@ -1103,7 +1103,7 @@ namespace tests
             var startStopProvider = new StartAndStopAtExplicitOffsets(offsetStarts, offsetStops);
             _log.Info("Attempting to consume {0} messages and stop at {1}", numMessages, offsetStops);
 
-            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, startStopProvider, stopPosition: startStopProvider));
+            var consumer = new Consumer(new ConsumerConfiguration(_seed2Addresses, topic, startStopProvider, stopPosition: startStopProvider));
             var messages = await consumer.OnMessageArrived.ToList();
 
             consumer.Dispose();
@@ -1121,7 +1121,7 @@ namespace tests
             var topic = "part33." + _rnd.Next();
             VagrantBrokerUtil.CreateTopic(topic, 3, 3);
 
-            var offsetFetchCluster = new Cluster(_seedAddresses);
+            var offsetFetchCluster = new Cluster(_seed2Addresses);
             await offsetFetchCluster.ConnectAsync();
 
             await Task.Delay(TimeSpan.FromSeconds(1));
@@ -1132,7 +1132,7 @@ namespace tests
 
             _log.Info("Attempting to consume {0} messages and stop at {1}", 0, offsets);
 
-            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, startStopProvider, stopPosition: startStopProvider));
+            var consumer = new Consumer(new ConsumerConfiguration(_seed2Addresses, topic, startStopProvider, stopPosition: startStopProvider));
             var startTime = DateTime.Now;
             var timeout = startTime.AddSeconds(30);
             var messages = await consumer.OnMessageArrived.TakeUntil(timeout).ToList();
@@ -1155,7 +1155,7 @@ namespace tests
             VagrantBrokerUtil.CreateTopic(topic,3,2);
 
             // fill it out with 100 messages
-            var producer = new Producer(_seedAddresses, new ProducerConfiguration(topic));
+            var producer = new Producer(_seed2Addresses, new ProducerConfiguration(topic));
             await producer.ConnectAsync();
 
             _log.Info("Sending data");
@@ -1167,7 +1167,7 @@ namespace tests
             await producer.CloseAsync(TimeSpan.FromSeconds(5));
 
             // read starting from the head
-            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, new StartPositionTopicStart()));
+            var consumer = new Consumer(new ConsumerConfiguration(_seed2Addresses, topic, new StartPositionTopicStart()));
             var count2 = await consumer.OnMessageArrived.TakeUntil(DateTimeOffset.Now.AddSeconds(5))
                 //.Do(val=>_log.Info("received value {0}", BitConverter.ToInt32(val.Value,0)))
                 .Count().ToTask();
@@ -1225,7 +1225,7 @@ namespace tests
             var topic = "part12." + _rnd.Next();
             VagrantBrokerUtil.CreateTopic(topic, 5, 2);
 
-            var producer = new Producer(_seedAddresses, new ProducerConfiguration(topic));
+            var producer = new Producer(_seed2Addresses, new ProducerConfiguration(topic));
             producer.OnSuccess += e => e.ForEach(sentEvents.OnNext);
             await producer.ConnectAsync();
 
@@ -1244,7 +1244,7 @@ namespace tests
             await producer.CloseAsync(TimeSpan.FromSeconds(5));
 
             // now consume the "first" 50. Stop, save offsets, and restart.
-            var consumer1 = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, offsets1));
+            var consumer1 = new Consumer(new ConsumerConfiguration(_seed2Addresses, topic, offsets1));
             var receivedEvents = new List<int>(100);
 
             _log.Info("Consuming first half of messages.");
@@ -1269,7 +1269,7 @@ namespace tests
             // load a new set of offsets, and a new consumer
             var offsets2 = new TopicPartitionOffsets(offsetBytes);
 
-            var consumer2 = new Consumer(new ConsumerConfiguration(_seedAddresses, offsets2.Topic, offsets2));
+            var consumer2 = new Consumer(new ConsumerConfiguration(_seed2Addresses, offsets2.Topic, offsets2));
 
             await consumer2.OnMessageArrived
                 .Do(msg =>
@@ -1302,7 +1302,7 @@ namespace tests
             var topic = "part12." + _rnd.Next();
             VagrantBrokerUtil.CreateTopic(topic,1,2);
 
-            var cluster = new Cluster(_seedAddresses);
+            var cluster = new Cluster(_seed2Addresses);
             await cluster.ConnectAsync();
             var producer = new Producer(cluster, new ProducerConfiguration(topic, maxMessageSetSizeInBytes: 1024*1024));
             producer.OnSuccess += e => e.ForEach(sentEvents.OnNext);
@@ -1367,7 +1367,7 @@ namespace tests
         {
             kafka4net.Tracing.EtwTrace.Marker("TwoConsumerSubscribersOneBroker");
 
-            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, "part33", new StartPositionTopicEnd()));
+            var consumer = new Consumer(new ConsumerConfiguration(_seed2Addresses, "part33", new StartPositionTopicEnd()));
             var msgs = consumer.OnMessageArrived.Publish().RefCount();
             var t1 = msgs.TakeUntil(DateTimeOffset.Now.AddSeconds(5)).LastOrDefaultAsync().ToTask();
             var t2 = msgs.TakeUntil(DateTimeOffset.Now.AddSeconds(6)).LastOrDefaultAsync().ToTask();
@@ -1383,7 +1383,7 @@ namespace tests
         {
             kafka4net.Tracing.EtwTrace.Marker("MultipleProducersOneCluster");
 
-            var cluster = new Cluster(_seedAddresses);
+            var cluster = new Cluster(_seed2Addresses);
             var topic1 = "topic." + _rnd.Next();
             var topic2 = "topic." + _rnd.Next();
 
@@ -1437,7 +1437,7 @@ namespace tests
             var topic = "topic." + _rnd.Next();
             VagrantBrokerUtil.CreateTopic(topic,6,3);
 
-            var cluster = new Cluster(_seedAddresses);
+            var cluster = new Cluster(_seed2Addresses);
             await cluster.ConnectAsync();
             Assert.AreNotEqual(threadName, Thread.CurrentThread.Name);
 
@@ -1453,7 +1453,7 @@ namespace tests
             Assert.AreNotEqual(threadName, Thread.CurrentThread.Name);
 
             // create a producer that also creates a cluster
-            var producerWithCluster = new Producer(_seedAddresses, new ProducerConfiguration(topic));
+            var producerWithCluster = new Producer(_seed2Addresses, new ProducerConfiguration(topic));
             await producerWithCluster.ConnectAsync();
             Assert.AreNotEqual(threadName, Thread.CurrentThread.Name);
 
@@ -1471,7 +1471,7 @@ namespace tests
             Assert.AreNotEqual(threadName, Thread.CurrentThread.Name);
 
             // now consumer(s)
-            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, new StartPositionTopicStart()));
+            var consumer = new Consumer(new ConsumerConfiguration(_seed2Addresses, topic, new StartPositionTopicStart()));
             Assert.AreNotEqual(threadName, Thread.CurrentThread.Name);
 
             var msgsRcv = new List<long>();
@@ -1540,7 +1540,7 @@ namespace tests
 
             await FillOutQueue(topic, (int)100e3);
 
-            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic,
+            var consumer = new Consumer(new ConsumerConfiguration(_seed2Addresses, topic,
                 new StartPositionTopicStart(),
                 maxBytesPerFetch: 1024, 
                 lowWatermark:20, highWatermark: 200, useFlowControl: true));
@@ -1575,7 +1575,7 @@ namespace tests
 
             var badPartitionMap = new Dictionary<int, long>{{0, -1}};
             var offsets = new TopicPartitionOffsets(topic, badPartitionMap);
-            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, offsets));
+            var consumer = new Consumer(new ConsumerConfiguration(_seed2Addresses, topic, offsets));
             await consumer.OnMessageArrived.Take(count);
             await consumer.IsConnected;
             _log.Info("Done");
@@ -1583,7 +1583,7 @@ namespace tests
 
         private async Task FillOutQueue(string topic, int count)
         {
-            var producer = new Producer(_seedAddresses, new ProducerConfiguration(topic, TimeSpan.FromSeconds(20)));
+            var producer = new Producer(_seed2Addresses, new ProducerConfiguration(topic, TimeSpan.FromSeconds(20)));
 
             _log.Debug("Connecting producer");
             await producer.ConnectAsync();
@@ -1665,7 +1665,7 @@ namespace tests
         [Timeout(10 * 1000)]
         public async void OneInvalidDnsShouldNotThrow()
         {
-            var seed = "no.such.name.123.org,"+_seedAddresses;
+            var seed = "no.such.name.123.org,"+_seed2Addresses;
             var consumer = new Consumer(new ConsumerConfiguration(seed, "some.topic", new StartPositionTopicEnd()));
             consumer.OnMessageArrived.Subscribe(_ => { });
             await consumer.IsConnected;
@@ -1679,7 +1679,7 @@ namespace tests
             var topic = "topic11."+_rnd.Next();
             VagrantBrokerUtil.CreateTopic(topic, 1, 1);
 
-            var producer = new Producer(_seedAddresses, new ProducerConfiguration(topic, batchFlushSize: 2));
+            var producer = new Producer(_seed2Addresses, new ProducerConfiguration(topic, batchFlushSize: 2));
             await producer.ConnectAsync();
             // hung upon 1st confirmation
             int c = 0;
@@ -1709,7 +1709,7 @@ namespace tests
             var topic = "topic11." + _rnd.Next();
             VagrantBrokerUtil.CreateTopic(topic, 1, 1);
 
-            var producer = new Producer(_seedAddresses, new ProducerConfiguration(topic, batchFlushSize: 2));
+            var producer = new Producer(_seed2Addresses, new ProducerConfiguration(topic, batchFlushSize: 2));
             await producer.ConnectAsync();
 
             var src = Observable.Interval(TimeSpan.FromMilliseconds(10)).Take(count).
@@ -1721,7 +1721,7 @@ namespace tests
             await producer.CloseAsync(TimeSpan.FromSeconds(5));
 
             _log.Debug("Start consumer");
-            var consumer = new Consumer(new ConsumerConfiguration(_seedAddresses, topic, new StartPositionTopicStart()));
+            var consumer = new Consumer(new ConsumerConfiguration(_seed2Addresses, topic, new StartPositionTopicStart()));
             var stream = consumer.OnMessageArrived.
                 Buffer(TimeSpan.FromSeconds(1), count / 4).
                 Where(_ => _.Count > 0).
@@ -1749,24 +1749,52 @@ namespace tests
         }
 
         [Test]
-        public async void ProducerConnectWhenOneBrokerIsDown()
+        [Timeout(6*60*1000)]
+        public async void ProducerConnectWhenOneBrokerIsDownAndThanUp()
         {
             // Scenario: 1 broker is down, Producer connects. Broker is brought up and forced to become master.
             // See https://github.com/ntent-ad/kafka4net/issues/14
 
-            var topic = "topic13." + _rnd.Next();
+            var topic = "topic11." + _rnd.Next();
 
-            VagrantBrokerUtil.CreateTopic(topic, 1, 3);
-            var cluster = new Cluster(_seedAddresses);
+            // Create topic
+            VagrantBrokerUtil.CreateTopic(topic, 1, 2);
+            var cluster = new Cluster(_seed3Addresses);
             await cluster.ConnectAsync();
             await cluster.GetOrFetchMetaForTopicAsync(topic);
-            VagrantBrokerUtil.StopBrokerLeaderForPartition(cluster, topic, 0);
+            VagrantBrokerUtil.DescribeTopic(topic);
+            // Stop the leader
+            //var partitionDown = cluster.PartitionStateChanges.FirstAsync(_ => _.ErrorCode.IsFailure());
+            var preferredBroker = VagrantBrokerUtil.StopBrokerLeaderForPartition(cluster, topic, 0);
+            //_log.Info("Waiting for partition to be down");
+            //await partitionDown;
             await cluster.CloseAsync(TimeSpan.FromSeconds(3));
+            await Task.Delay(30 * 1000);
+            VagrantBrokerUtil.DescribeTopic(topic);
 
-            cluster = new Cluster(_seedAddresses);
+            // Create new cluster and publisher, while preferred leader is down
+            cluster = new Cluster(_seed3Addresses);
+            cluster.NewBrokers.Subscribe(b => _log.Info("Discovered new broker: {0}", b));
+            _log.Info("Connecting cluster");
             await cluster.ConnectAsync();
             var producer = new Producer(cluster, new ProducerConfiguration(topic));
+            _log.Info("Connecting producer");
             await producer.ConnectAsync();
+
+            // Start preferred leader up
+            _log.Info("Starting preferred broker");
+            VagrantBrokerUtil.StartBroker(preferredBroker);
+            _log.Info("Waiting for preferred broker ({0}) to start up", preferredBroker);
+            await Task.Delay(30 * 1000);
+            //VagrantBrokerUtil.RebalanceLeadership();
+            _log.Info("Stopping 2nd leader broker");
+            VagrantBrokerUtil.StopBrokerLeaderForPartition(cluster, topic, 0);
+            _log.Info("Producer Send data");
+            producer.Send(new Message() { Value = new byte[]{0,0,0,0}});
+            _log.Info("Waiting for producer to complete");
+            await producer.CloseAsync(TimeSpan.FromSeconds(60));
+
+            _log.Info("Done");
         }
 
         // if last leader is down, all in-buffer messages are errored and the new ones
