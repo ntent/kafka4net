@@ -1823,6 +1823,44 @@ namespace tests
             await cluster.CloseAsync(TimeSpan.FromSeconds(1));
         }
 
+        /// <summary>
+        /// Related to https://github.com/ntent-ad/kafka4net/issues/23
+        /// Not a real unit-test, just debug helper for memory issues.
+        /// </summary>
+        [Ignore]
+        public async void Memory()
+        {
+            var topic = "topic11." + _rnd.Next();
+            VagrantBrokerUtil.CreateTopic(topic, 1, 1);
+
+            for (int i = 0; i < 10; ++i)
+            {
+                var producer = new Producer(_seed2Addresses, new ProducerConfiguration(topic));
+                await producer.ConnectAsync();
+
+                for (int j = 0; j < (int)1e6; j++)
+                {
+                    var msg = new Message
+                    {
+                        Key = BitConverter.GetBytes(1),
+                        Value = Encoding.UTF8.GetBytes($@"SomeLongText - {j}")
+                    };
+
+                    producer.Send(msg);
+                }
+
+                await producer.CloseAsync(TimeSpan.FromSeconds(60));
+            }
+
+            var before = GC.GetTotalMemory(false);
+            GC.Collect();
+            var after = GC.GetTotalMemory(false);
+            await Task.Delay(3000);
+            GC.Collect();
+            GC.WaitForFullGCComplete();
+            _log.Info($"Memory: Before: {before}, after: {after}");
+        }
+
         // if one broker hangs on connect, client will be ready as soon as connected via another broker
 
         // Short disconnect (within timeout) wont lose any messages and will deliver all of them.

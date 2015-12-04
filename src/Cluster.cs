@@ -57,6 +57,7 @@ namespace kafka4net
         private Timer _watchdogTimer;
         internal volatile Thread CurrentWorkerThread;
         public Action<WorkingThreadHungException> OnThreadHang;
+        private IDisposable _watchdogSubscription;
 
         // Cluster ID (unique number for each Cluster instance. used in debugging messages.)
         private static int _idCount;
@@ -82,7 +83,7 @@ namespace kafka4net
             Scheduler.Schedule(() => SynchronizationContext.SetSynchronizationContext(new RxSyncContextFromScheduler(Scheduler)));
 
             var hangTimeout = TimeSpan.FromMinutes(1);
-            Scheduler.DelaySampler.Where(_ => _ > hangTimeout).
+            _watchdogSubscription = Scheduler.DelaySampler.Where(_ => _ > hangTimeout).
                 FirstOrDefaultAsync().
                 Subscribe(_ =>
                 {
@@ -213,6 +214,7 @@ namespace kafka4net
                 EtwTrace.Log.ClusterStopped(_id);
             }
 
+            _watchdogSubscription?.Dispose();
             Scheduler.Dispose();
 
             _state = ClusterState.Disconnected;

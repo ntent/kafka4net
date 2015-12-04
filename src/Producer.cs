@@ -51,6 +51,7 @@ namespace kafka4net
         // Producer ID (unique number for each Producer instance. used in debugging messages.)
         private static int _idCount;
         private readonly int _id = Interlocked.Increment(ref _idCount);
+        private IDisposable _partitionStateSubsctiption;
 
         public Producer(Cluster cluster, ProducerConfiguration producerConfiguration)
         {
@@ -107,7 +108,7 @@ namespace kafka4net
                     }
 
                     // Recovery: subscribe to partition offline/online events
-                    _cluster.PartitionStateChanges.
+                    _partitionStateSubsctiption = _cluster.PartitionStateChanges.
                         Where(p => p.Topic == Configuration.Topic).
                         Synchronize(_allPartitionQueues).
                         Subscribe(p =>
@@ -251,7 +252,7 @@ namespace kafka4net
 
                 _log.Info("Closing...");
                 EtwTrace.Log.ProducerStopping(Topic, _id);
-            
+
                 // flush messages to partition queues
                 _log.Debug("Completing _sendMessagesSubject...");
                 _sendMessagesSubject.OnCompleted();
@@ -286,6 +287,9 @@ namespace kafka4net
                             _log.Fatal(error2);
                         }
                     }
+
+                // After draining, not interested in partition state anymore
+                _partitionStateSubsctiption?.Dispose();
 
                 // close down the cluster ONLY if we created it
                 if (_internalCluster)
