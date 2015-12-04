@@ -289,7 +289,8 @@ namespace kafka4net
                     }
 
                 // After draining, not interested in partition state anymore
-                _partitionStateSubsctiption?.Dispose();
+                if(_partitionStateSubsctiption != null)
+                    _partitionStateSubsctiption.Dispose();
 
                 // close down the cluster ONLY if we created it
                 if (_internalCluster)

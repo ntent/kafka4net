@@ -214,7 +214,8 @@ namespace kafka4net
                 EtwTrace.Log.ClusterStopped(_id);
             }
 
-            _watchdogSubscription?.Dispose();
+            if(_watchdogSubscription != null)
+                _watchdogSubscription.Dispose();
             Scheduler.Dispose();
 
             _state = ClusterState.Disconnected;
