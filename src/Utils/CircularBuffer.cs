@@ -1,13 +1,13 @@
 ﻿using System;
 using System.Collections;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Linq;
 using System.Threading;
 
 namespace kafka4net.Utils
 {
-    internal class CircularBuffer<T> : ICollection<T>, IEnumerable<T>, ICollection, IEnumerable
+    internal class CircularBuffer<T> : ICollection<T>, ICollection 
+        where T: class
     {
         private static readonly ILogger _log = Logger.GetLogger();
         private int capacity;
@@ -16,7 +16,7 @@ namespace kafka4net.Utils
         private int tail;
         private T[] buffer;
 
-        [NonSerialized()]
+        [NonSerialized]
         private object syncRoot;
 
         public CircularBuffer(int capacity)
@@ -110,13 +110,13 @@ namespace kafka4net.Utils
             size = 0;
             head = 0;
             tail = 0;
+            Array.Clear(buffer, 0, buffer.Length);
         }
 
         public T Peek()
         {
             if (size == 0)
                 throw new InvalidOperationException("The buffer is empty.");
-
             return buffer[head];
         }
 
@@ -200,13 +200,6 @@ namespace kafka4net.Utils
             size++;
         }
 
-        public void Skip(int count)
-        {
-            head += count;
-            if (head >= capacity)
-                head -= capacity;
-        }
-
         public T[] Get(int count)
         {
             var dst = new T[count];
@@ -227,6 +220,7 @@ namespace kafka4net.Utils
             for (int i = 0; i < realCount; i++, dstIndex++)
             {
                 dst[dstIndex] = buffer[head];
+                buffer[head] = null;
 
                 // advance the head
                 if (++head == capacity)
@@ -243,6 +237,7 @@ namespace kafka4net.Utils
                 throw new InvalidOperationException("The buffer is empty.");
 
             var item = buffer[head];
+            buffer[head] = null;
             if (++head == capacity)
                 head = 0;
             size--;
@@ -257,6 +252,7 @@ namespace kafka4net.Utils
             for (int i = 0; i < count; i++)
             {
                 yield return buffer[head];
+                buffer[head] = null;
 
                 if (++head == capacity)
                     head = 0;
