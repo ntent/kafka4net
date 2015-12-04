@@ -1023,7 +1023,7 @@ namespace tests
             var sentMessagesObservable = Observable.FromEvent<Message[]>(evtHandler => producer.OnSuccess += evtHandler, evtHandler => { })
                 .SelectMany(msgs => msgs)
                 .Take(count)
-                .TakeUntil(DateTime.Now.AddSeconds(10))
+                .TakeUntil(DateTime.Now.AddMinutes(2))
                 .ToList();
 
             _log.Info("Sending data");
@@ -1033,9 +1033,10 @@ namespace tests
 
             var sentMsgs = await sentMessagesObservable;
             _log.Info("Producer sent {0} messages.", sentMsgs.Count);
+            Assert.AreEqual(count, sentMsgs.Count, "Sent  message count");
 
             _log.Debug("Closing producer");
-            await producer.CloseAsync(TimeSpan.FromSeconds(5));
+            await producer.CloseAsync(TimeSpan.FromSeconds(30));
 
             var offsetFetchCluster = new Cluster(_seed2Addresses);
             await offsetFetchCluster.ConnectAsync();
@@ -1300,7 +1301,7 @@ namespace tests
 
             var sentEvents = new Subject<Message>();
             var topic = "part12." + _rnd.Next();
-            VagrantBrokerUtil.CreateTopic(topic,1,2);
+            VagrantBrokerUtil.CreateTopic(topic,1,1);
 
             var cluster = new Cluster(_seed2Addresses);
             await cluster.ConnectAsync();
@@ -1331,14 +1332,15 @@ namespace tests
                 // so we need to generate large messages to force multiple segments to be created.
 
                 // send count messages
+                var t = sentEvents.Take(count).ToTask();
                 Enumerable.Range(1, count).
                     Select(_ => new Message { Value = new byte[1024] }).
                     ForEach(producer.Send);
                 _log.Info("Waiting for {0} sent messages", count);
-                await sentEvents.Take(count).ToTask();
+                await t;
 
                 // re-read offsets after messages published
-                await Task.Delay(TimeSpan.FromMilliseconds(1000)); // NOTE: There seems to be a race condition on the Kafka broker that the offsets are not immediately available after getting a successful produce response 
+                await Task.Delay(TimeSpan.FromSeconds(2)); // NOTE: There seems to be a race condition on the Kafka broker that the offsets are not immediately available after getting a successful produce response 
                 tails = await cluster.FetchPartitionOffsetsAsync(topic, ConsumerLocation.TopicEnd);
                 _log.Info("2:After loop {0} of {1} messages, Next Offset is {2}", i + 1, count, tails.NextOffset(tails.Partitions.First()));
                 Assert.AreEqual(count * (i + 1), tails.NextOffset(tails.Partitions.First()), "Expected end at " + count * (i + 1));
