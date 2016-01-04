@@ -1,5 +1,6 @@
 ﻿using kafka4net.Metadata;
 using System;
+using System.Threading;
 
 namespace kafka4net
 {
@@ -8,12 +9,12 @@ namespace kafka4net
     /// </summary>
     internal class FletcherHashedMessagePartitioner : IMessagePartitioner
     {
-        private readonly Random _rnd = new Random();
+        private readonly ThreadLocal<Random> _rnd = new ThreadLocal<Random>(() => new Random());
 
         public PartitionMeta GetMessagePartition(Message message, PartitionMeta[] allPartitions)
         {
             var index = message.Key == null ?
-                _rnd.Next(allPartitions.Length) :
+                _rnd.Value.Next(allPartitions.Length) :
             Fletcher32HashOptimized(message.Key) % allPartitions.Length;
 
             return allPartitions[index];
