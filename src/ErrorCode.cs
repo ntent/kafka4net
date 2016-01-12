@@ -84,7 +84,6 @@
             return errorCode == ErrorCode.MessageSetSizeTooLarge ||
                 errorCode == ErrorCode.MessageSizeTooLarge ||
                 errorCode == ErrorCode.InvalidMessageSize ||
-                errorCode == ErrorCode.UnknownTopicOrPartition ||
                 errorCode == ErrorCode.InvalidMessage ||
                 errorCode == ErrorCode.OffsetOutOfRange;
         }
