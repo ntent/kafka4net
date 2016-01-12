@@ -59,6 +59,25 @@ namespace tests
             _log.Info("Got topic description");
         }
 
+        public static void ReassignPartitions(Cluster cluster, string topic, int partition)
+        {
+            var brokerMeta = cluster.FindBrokerMetaForPartitionId(topic, partition);
+            var brokerToMoveTo = brokerMeta.NodeId == 1 ? 2 : 1;
+
+            var partitionsJson = string.Format("{{\"partitions\":[{{\"topic\":\"{0}\",\"partition\":{1},\"replicas\":[{2}]}}], \"version\":1}}",
+                topic, partition, brokerToMoveTo);
+
+            _log.Info(string.Format("Reassigning Partitions (topic {0}, partition {1}, from node {2} to node {3})", topic, partition, brokerMeta.NodeId, brokerToMoveTo));
+
+            var generateJson = "ssh -c \"printf '" + partitionsJson.Replace("\"", @"\\\""") + "' >partitions-to-move.json\" broker1";
+            Vagrant(generateJson);
+
+            var reassignScript = "ssh -c '/opt/kafka_2.10-" + _kafkaVersion + "/bin/kafka-reassign-partitions.sh --zookeeper 192.168.56.2 --reassignment-json-file partitions-to-move.json --execute' broker1";
+            Vagrant(reassignScript);
+
+            _log.Info("Reassigned Partitions");
+        }
+
         public static void RestartBrokers()
         {
             BrokerIpToName.Where(np=>!IsBrokerResponding(np.Key)).ForEach(np=>StartBroker(np.Value));

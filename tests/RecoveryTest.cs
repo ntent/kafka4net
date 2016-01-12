@@ -1799,6 +1799,56 @@ namespace tests
             _log.Info("Done");
         }
 
+
+
+
+        [Test]
+        [Timeout(6 * 60 * 1000)]
+        public async void ProducerTestWhenPartitionReassignmentOccurs()
+        {
+            // Scenario: Broker gives away it's topic to another broker
+            // See https://github.com/ntent-ad/kafka4net/issues/27
+
+            var topic = "topic11." + _rnd.Next();
+
+            // Create topic
+            VagrantBrokerUtil.CreateTopic(topic, 1, 1);
+
+            // Create cluster and producer
+            var cluster = new Cluster(_seed2Addresses);
+            //await cluster.ConnectAsync();
+            //await cluster.GetOrFetchMetaForTopicAsync(topic);
+            VagrantBrokerUtil.DescribeTopic(topic);
+            var producer = new Producer(cluster, new ProducerConfiguration(topic, batchFlushSize: 1));
+            var ctx = SynchronizationContext.Current;
+            producer.OnPermError += (exception, messages) => ctx.Post(d => { throw exception; }, null);
+            int successfullySent = 0;
+            producer.OnSuccess += messages => successfullySent++;
+
+            _log.Info("Connecting producer");
+            await producer.ConnectAsync();
+
+            _log.Info("Producer Send data before reassignment");
+            producer.Send(new Message { Value = new byte[] { 0, 0, 0, 0 } });
+
+
+            // Run the reassignment
+            VagrantBrokerUtil.ReassignPartitions(cluster, topic, 0);
+            _log.Info("Waiting for reassignment completion");
+            await Task.Delay(5 * 1000);
+
+            VagrantBrokerUtil.DescribeTopic(topic);
+
+            _log.Info("Producer Send data after reassignment");
+            producer.Send(new Message { Value = new byte[] { 1, 1, 1, 1 } });
+
+            _log.Info("Waiting for producer to complete");
+            await producer.CloseAsync(TimeSpan.FromSeconds(60));
+
+            Assert.That(successfullySent, Is.EqualTo(2));
+            _log.Info("Done");
+        }
+
         // if last leader is down, all in-buffer messages are errored and the new ones
         // are too.
 
