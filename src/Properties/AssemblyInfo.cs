@@ -13,4 +13,4 @@ using System.Runtime.InteropServices;
 
 [assembly: InternalsVisibleTo("kafka4net-tests")]
 
-[assembly: AssemblyVersion("1.3.*")]
+[assembly: AssemblyVersion("1.4.*")]
