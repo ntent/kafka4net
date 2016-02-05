@@ -900,6 +900,12 @@ namespace tests
             const int count2 = 25000;
             var topic = "part13." + _rnd.Next();
             var producer = new Producer(_seed2Addresses, new ProducerConfiguration(topic));
+            var sizeEvents = new List<Producer.QueueResizeInfo>();
+            producer.QueueSizeEvents.Subscribe(_ =>
+            {
+                sizeEvents.Add(_);
+                _log.Info($"Resized partition queue: {_}");
+            });
             _log.Debug("Connecting");
             await producer.ConnectAsync();
 
@@ -917,7 +923,7 @@ namespace tests
             await producer.CloseAsync(TimeSpan.FromSeconds(5));
             _log.Info("Producer closed, starting consumer subscription.");
 
-            
+            Assert.GreaterOrEqual(sizeEvents.Count, 10);
             
             // create a topic with 3 partitions
             var topicName = "part33." + _rnd.Next();

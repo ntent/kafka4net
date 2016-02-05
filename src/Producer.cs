@@ -1,12 +1,9 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Linq;
-using System.Linq.Expressions;
 using System.Reactive.Concurrency;
 using System.Reactive.Linq;
 using System.Reactive.Subjects;
-using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using kafka4net.Internal;
@@ -28,7 +25,10 @@ namespace kafka4net
 
         public Action<Exception, Message[]> OnPermError;
         public event Action<Message[]> OnShutdownDirty;
-        public Action<Message[]> OnSuccess; 
+        public Action<Message[]> OnSuccess;
+        /// <summary>Queue resizing events. Will be triggered when sending queue capacity is changed (including when queue is created).</summary>
+        public IObservable<QueueResizeInfo> QueueSizeEvents { get; private set; }
+        private ISubject<QueueResizeInfo> _queueSizeEvents;
 
         //public MessageCodec Codec = MessageCodec.CodecNone;
         private Task _sendLoopTask;
@@ -57,6 +57,9 @@ namespace kafka4net
         {
             Configuration = producerConfiguration;
             _cluster = cluster;
+
+            _queueSizeEvents = new Subject<QueueResizeInfo>();
+            QueueSizeEvents = _queueSizeEvents.ObserveOn(Scheduler.Default);
 
             _cluster.OnThreadHang += e => 
             {
@@ -118,6 +121,7 @@ namespace kafka4net
                             {
                                 queue = new PartitionQueueInfo(Configuration.SendBuffersInitialSize) { Partition = p.PartitionId };
                                 _allPartitionQueues.Add(p.PartitionId, queue);
+                                _queueSizeEvents.OnNext(new QueueResizeInfo{PartitionId = p.PartitionId, Size = queue.Queue.Size, Capacity = queue.Queue.Capacity});
                             }
 
                             _log.Info("Detected change in topic/partition '{0}'/{1}/{2} IsOnline {3}->{4}", 
@@ -153,6 +157,7 @@ namespace kafka4net
                                     _allPartitionQueues.Add(batch.Key, queue);
                                     queue.IsOnline = topicPartitions.First(p => p.Id == batch.Key).ErrorCode.IsSuccess();
                                     _log.Debug("{0} added new partition queue", this);
+                                    _queueSizeEvents.OnNext(new QueueResizeInfo { PartitionId = queue.Partition, Size = queue.Queue.Size, Capacity = queue.Queue.Capacity });
                                 }
 
                                 // now queue them up
@@ -168,6 +173,7 @@ namespace kafka4net
                                         _log.Warn("Capacity of send buffer with size {3} not large enough to accept {2} new messages. Increasing capacity from {0} to {1}", queue.Queue.Capacity, queue.Queue.Capacity+growBy, batchAr.Length, queue.Queue.Size);
 
                                         queue.Queue.Capacity += growBy;
+                                        _queueSizeEvents.OnNext(new QueueResizeInfo { PartitionId = queue.Partition, Size = queue.Queue.Size, Capacity = queue.Queue.Capacity });
                                     }
                                     else
                                     {
@@ -179,9 +185,7 @@ namespace kafka4net
                                                         .Wait());
                                         _log.Error(msg);
                                         if (OnPermError != null)
-                                            OnPermError(
-                                                new Exception(msg)
-                                                , batchAr);
+                                            OnPermError(new Exception(msg), batchAr);
                                         continue;
                                     }
                                 }
@@ -566,6 +570,14 @@ namespace kafka4net
             public bool IsOnline;
 
             public bool IsReadyForServing { get { return !InProgress && IsOnline && Queue.Size > 0; } }
+        }
+
+        public class QueueResizeInfo
+        {
+            public int PartitionId;
+            public int Size;
+            public int Capacity;
+            public override string ToString() { return $"{PartitionId}:{Size}:{Capacity}"; }
         }
     }
 }
