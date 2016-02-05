@@ -22,6 +22,7 @@ namespace kafka4net
         public readonly ProducerConfiguration Configuration;
         public string Topic { get { return Configuration.Topic; } }
         public Cluster Cluster { get { return _cluster; } }
+        public Dictionary<int, PartitionQueueInfo> PartitionsQueueInfo { get { return _allPartitionQueues; } }
 
         // TODO: execute handlers safe. Possibly in the caller sync context
         public event Action<Message[]> OnTempError;
@@ -552,20 +553,23 @@ namespace kafka4net
             return string.Format("'{0}' Batch flush time: {1} Batch flush size: {2}", Topic, Configuration.BatchFlushTime, Configuration.BatchFlushSize);
         }
 
-        class PartitionQueueInfo
+        public class PartitionQueueInfo
         {
-            public PartitionQueueInfo(int maxBufferSize)
+            internal PartitionQueueInfo(int maxBufferSize)
             {
                 Queue = new CircularBuffer<Message>(maxBufferSize); // TODO: Max Enqueued Batches configuration!
             }
 
-            public readonly CircularBuffer<Message> Queue;
-            public int Partition;
-            public bool InProgress;
-            public int CountInProgress;
-            public bool IsOnline;
+            internal readonly CircularBuffer<Message> Queue;
+            internal int Partition;
+            internal bool InProgress;
+            internal int CountInProgress;
+            internal bool IsOnline;
 
-            public bool IsReadyForServing { get { return !InProgress && IsOnline && Queue.Size > 0; } }
+            internal bool IsReadyForServing { get { return !InProgress && IsOnline && Queue.Size > 0; } }
+
+            public int QueueSize { get { return Queue.Size; } }
+            public int QueueCapacity { get { return Queue.Capacity; } }
         }
     }
 }
