@@ -38,5 +38,10 @@ namespace kafka4net.Internal
                 return hash;
             }
         }
+
+        public override string ToString()
+        {
+            return string.Format("PartitionStateChangeEvent: '{0}'/{1}/{2}", Topic, PartitionId, ErrorCode);
+        }
     }
 }
