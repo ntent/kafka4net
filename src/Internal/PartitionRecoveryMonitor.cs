@@ -205,9 +205,9 @@ namespace kafka4net.Internal
                 // broker B1 said that partition belongs to B2 and B2 can not be reach.
                 // It is checked only that said broker responds to metadata request without exceptions.
                 //
-                maybeHealedPartitions.
+                var aliveChecks = maybeHealedPartitions.
                     GroupBy(p => p.Item3).
-                    ForEach(async brokerGrp =>
+                    Select(async brokerGrp =>
                     {
                         BrokerMeta newBroker;
                         _brokers.TryGetValue(brokerGrp.Key, out newBroker);
@@ -284,6 +284,10 @@ namespace kafka4net.Internal
                             _log.Warn("Metadata points to broker but it is not accessible. Error: {0}", e.Message);
                         }
                     });
+
+                // Wait for all checks to complete, otherwise, if a broker does not respond and hold connection open until tcp timeout,
+                // we will keep accumulating responses in memory faster than they time out. See https://github.com/ntent-ad/kafka4net/issues/30
+                await Task.WhenAll(aliveChecks.ToArray());
 
                 await Task.Delay(3000, _cancel);
             }
