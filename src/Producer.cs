@@ -577,7 +577,7 @@ namespace kafka4net
             public int PartitionId;
             public int Size;
             public int Capacity;
-            public override string ToString() { return $"{PartitionId}:{Size}:{Capacity}"; }
+            public override string ToString() { return string.Format("{0}:{1}:{2}", PartitionId, Size, Capacity); }
         }
     }
 }
