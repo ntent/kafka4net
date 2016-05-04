@@ -400,7 +400,7 @@ namespace kafka4net
                 queuesToBeSent.ForEach(q => q.InProgress = true);
 
                 //
-                // Send ProduceRequist
+                // Send ProduceRequest
                 //
                 try
                 {

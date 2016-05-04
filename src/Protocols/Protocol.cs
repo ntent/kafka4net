@@ -1,19 +1,11 @@
 ﻿using System;
-using System.Collections.Concurrent;
-using System.Collections.Generic;
-using System.Linq;
-using System.Linq.Expressions;
 using System.Net.Sockets;
-using System.Reactive.Linq;
-using System.Reactive.Threading.Tasks;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using kafka4net.Metadata;
 using kafka4net.Protocols.Requests;
 using kafka4net.Protocols.Responses;
 using kafka4net.Tracing;
-using kafka4net.Utils;
 
 namespace kafka4net.Protocols
 {
