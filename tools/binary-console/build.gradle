@@ -1,0 +1,18 @@
+plugins {
+    id 'scala'
+    id 'java'
+    id 'application'
+    id 'com.github.johnrengelman.shadow' version '1.2.3'
+}
+/*apply plugin: 'scala'
+apply plugin: 'application'*/
+
+mainClassName = 'com.ntent.kafka.main'
+
+repositories{mavenCentral()}
+
+dependencies {
+    compile "org.scala-lang:scala-library:2.10.6"
+    compile 'org.apache.kafka:kafka_2.10:0.8.2.1'
+}
+

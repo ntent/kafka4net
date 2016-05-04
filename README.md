@@ -10,12 +10,10 @@ kafka4net
 * Flow control: slow consumer will suspend fetching and prevent memory exhausting
 * Integration tests are part of the codebase. Use Vagrant to provision 1 zookeeper and 3 kafka virtual servers
 * Use RxExtensions library to expose API and for internal implementation
+* Support compression (gzip, lz4, snappy). Unit-tested to be interoperable with Java implementation
 
 ##Not implemented:
 * Offset Fetch/Commit API
-* No compression
-* No configurable serializers (everything is byte array)
-* No configurable partitioner (fletcher32 checksum is hardcoded)
 
 ## Documentation
 * [Design](https://github.com/ntent-ad/kafka4net/wiki/Design)

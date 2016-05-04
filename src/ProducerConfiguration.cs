@@ -20,6 +20,7 @@ namespace kafka4net
         /// <param name="sendBuffersInitialSize">The initial size (in number of messages) of each send buffer. There is one send buffer per partition. If AutoGrowSendBuffers is true, the size will be expanded if necessary.</param>
         /// <param name="maxMessageSetSizeInBytes">The maximum size of MessageSet to send to the server. If exceed server's Segment Size, 
         /// server will fail with MessageSetSizeTooLarge error. Default is 1Gb</param>
+        /// <param name="compressionType">Type of compression</param>
         public ProducerConfiguration(
             string topic,
             TimeSpan? batchFlushTime = null,
@@ -29,7 +30,8 @@ namespace kafka4net
             int sendBuffersInitialSize = 200,
             int maxMessageSetSizeInBytes = 1024 * 1024 * 1024,
             TimeSpan? producerRequestTimeout = null,
-            IMessagePartitioner partitioner = null)
+            IMessagePartitioner partitioner = null,
+            CompressionType compressionType = CompressionType.None)
         {
             Topic = topic;
             BatchFlushTime = batchFlushTime ?? TimeSpan.FromMilliseconds(500);
@@ -40,6 +42,7 @@ namespace kafka4net
             MaxMessageSetSizeInBytes = maxMessageSetSizeInBytes;
             ProduceRequestTimeout = producerRequestTimeout ?? TimeSpan.FromSeconds(1);
             Partitioner = partitioner ?? new FletcherHashedMessagePartitioner();
+            CompressionType = compressionType;
         }
 
         public string Topic { get; private set; }
@@ -52,5 +55,6 @@ namespace kafka4net
         public bool AutoGrowSendBuffers { get; private set; }
         public int SendBuffersInitialSize { get; private set; }
         public int MaxMessageSetSizeInBytes { get; private set; }
+        public CompressionType CompressionType { get; set; }
     }
 }

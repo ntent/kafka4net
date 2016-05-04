@@ -1,11 +1,11 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Diagnostics;
+using System.IO;
 using System.Linq;
-using System.Reactive.Concurrency;
 using System.Reactive.Linq;
 using System.Reactive.Subjects;
 using System.Reactive.Threading.Tasks;
+using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -53,7 +53,7 @@ namespace tests
             config.LoggingRules.Add(new LoggingRule("tests.*", LogLevel.Debug, etwTargt));
 
             consoleTarget.Layout = "${date:format=HH\\:mm\\:ss.fff} ${level} [${threadname}:${threadid}] ${logger} ${message} ${exception:format=tostring}";
-            fileTarget.FileName = "${basedir}../../../../log.txt";
+            fileTarget.FileName = "${basedir}../../../log.txt";
             fileTarget.Layout = "${longdate} ${level} [${threadname}:${threadid}] ${logger:shortName=true} ${message} ${exception:format=tostring,stacktrace:innerFormat=tostring,stacktrace}";
 
             var rule = new LoggingRule("*", LogLevel.Info, consoleTarget);
@@ -653,7 +653,7 @@ namespace tests
         /// Wait for consuming all messages but with 120sec timeout.
         /// 
         /// </summary>
-        [Ignore]
+        [Ignore("")]
         public async void ConsumerFollowsRebalancingPartitions()
         {
             kafka4net.Tracing.EtwTrace.Marker("ConsumerFollowsRebalancingPartitions");
@@ -1536,7 +1536,7 @@ namespace tests
             kafka4net.Tracing.EtwTrace.Marker("/SchedulerThreadIsIsolatedFromUserCode");
         }
 
-        [NUnit.Framework.Ignore]
+        [NUnit.Framework.Ignore("")]
         public async void SlowConsumer()
         {
             //
@@ -1574,19 +1574,21 @@ namespace tests
         }
 
         [Test]
-        [ExpectedException(typeof(PartitionFailedException))]
         public async void InvalidOffsetShouldLogErrorAndStopFetching()
         {
             var count = 100;
             var topic = "test11."+_rnd.Next();
             await FillOutQueue(topic, count);
 
-            var badPartitionMap = new Dictionary<int, long>{{0, -1}};
-            var offsets = new TopicPartitionOffsets(topic, badPartitionMap);
-            var consumer = new Consumer(new ConsumerConfiguration(_seed2Addresses, topic, offsets));
-            await consumer.OnMessageArrived.Take(count);
-            await consumer.IsConnected;
-            _log.Info("Done");
+            Assert.ThrowsAsync<PartitionFailedException>(async () =>
+            {
+                var badPartitionMap = new Dictionary<int, long> { { 0, -1 } };
+                var offsets = new TopicPartitionOffsets(topic, badPartitionMap);
+                var consumer = new Consumer(new ConsumerConfiguration(_seed2Addresses, topic, offsets));
+                await consumer.OnMessageArrived.Take(count);
+                await consumer.IsConnected;
+                _log.Info("Done");
+            });
         }
 
         private async Task FillOutQueue(string topic, int count)
@@ -1661,12 +1663,14 @@ namespace tests
 
         [Test]
         [Timeout(10*1000)]
-        [ExpectedException(typeof(BrokerException))]
         public async void InvalidDnsShouldThrowException()
         {
-            var consumer = new Consumer(new ConsumerConfiguration("no.such.name.123.org", "some.topic", new StartPositionTopicEnd()));
-            consumer.OnMessageArrived.Subscribe(_ => { });
-            await consumer.IsConnected;
+            Assert.ThrowsAsync<BrokerException>(async () =>
+            {
+                var consumer = new Consumer(new ConsumerConfiguration("no.such.name.123.org", "some.topic", new StartPositionTopicEnd()));
+                consumer.OnMessageArrived.Subscribe(_ => { });
+                await consumer.IsConnected;
+            });
         }
 
         [Test]
@@ -1681,33 +1685,35 @@ namespace tests
 
 
         [Test]
-        [ExpectedException(typeof(WorkingThreadHungException))]
         public async void SimulateSchedulerHanging()
         {
             var topic = "topic11."+_rnd.Next();
             VagrantBrokerUtil.CreateTopic(topic, 1, 1);
 
-            var producer = new Producer(_seed2Addresses, new ProducerConfiguration(topic, batchFlushSize: 2));
-            await producer.ConnectAsync();
-            // hung upon 1st confirmation
-            int c = 0;
-            producer.OnSuccess += messages =>
+            Assert.ThrowsAsync<WorkingThreadHungException>(async () =>
             {
-                if(c++ == 1)
-                    new ManualResetEvent(false).WaitOne();
-            };
+                var producer = new Producer(_seed2Addresses, new ProducerConfiguration(topic, batchFlushSize: 2));
+                await producer.ConnectAsync();
+                // hung upon 1st confirmation
+                int c = 0;
+                producer.OnSuccess += messages =>
+                {
+                    if (c++ == 1)
+                        new ManualResetEvent(false).WaitOne();
+                };
 
-            var ctx = SynchronizationContext.Current;
-            producer.OnPermError += (exception, messages) => ctx.Post(d => { throw exception; }, null);
+                var ctx = SynchronizationContext.Current;
+                producer.OnPermError += (exception, messages) => ctx.Post(d => { throw exception; }, null);
 
-            var source = Observable.Interval(TimeSpan.FromSeconds(1)).Take(1000).Publish();
-            source.Connect();
-            
-            source.//Do(i => {if(i == 2) producer.DebugHangScheduler();}).
-            Select(i => new Message{Value = BitConverter.GetBytes(i)}).
-            Subscribe(producer.Send);
+                var source = Observable.Interval(TimeSpan.FromSeconds(1)).Take(1000).Publish();
+                source.Connect();
 
-            await source;
+                source.//Do(i => {if(i == 2) producer.DebugHangScheduler();}).
+                Select(i => new Message { Value = BitConverter.GetBytes(i) }).
+                Subscribe(producer.Send);
+
+                await source;
+            });
         }
 
         [Test]
@@ -1885,7 +1891,7 @@ namespace tests
         /// Related to https://github.com/ntent-ad/kafka4net/issues/23
         /// Not a real unit-test, just debug helper for memory issues.
         /// </summary>
-        [Ignore]
+        [Ignore("")]
         public async void Memory()
         {
             var topic = "topic11." + _rnd.Next();
@@ -1964,5 +1970,70 @@ namespace tests
 
         // For same key, order of the messages is preserved
 
+        //
+        // Compression test
+        //
+
+        // Test unknown compression
+
+        [Category("Compression")]
+        [Test(Description = "Make sure it's possible to uncompress Java generated gzip-ed messages")]
+        [Repeat(5)]
+        public async Task UncompressJavaGeneratedMessage([Values("gzip","lz4","snappy")]string codec)
+        {
+            var topic = "topic11.java.compressed";
+            var hashFileName = AppDomain.CurrentDomain.BaseDirectory + @"..\..\..\vagrant\files\hashes.txt";
+            var sizesFileName = AppDomain.CurrentDomain.BaseDirectory + @"..\..\..\vagrant\files\sizes.txt";
+
+            var sizes =
+                Enumerable.Range(1, 1024 + 10).
+                Concat(
+                    from i in new[] { 5, 10, 16, 50, 64, 256, 500 }   // message size in Kb
+                    // Create 100 messages of slightly different size (+/-100 bytes)
+                    from rnd in Enumerable.Range(1, 100).Select(_ => _rnd.Next(-100, 100))
+                    select i * 1024 + rnd
+                ).
+                Select(_ => _.ToString()).ToArray();
+
+            File.WriteAllLines(sizesFileName, sizes);
+
+            //
+            // Start consumer
+            //
+            var hashes = new List<string>();
+            var consumer = new Consumer(new ConsumerConfiguration(_seed2Addresses, topic, new StartPositionTopicEnd(), 
+                maxWaitTimeMs: 10*1000, 
+                maxBytesPerFetch:10*1024*1024));
+            var hash = MD5.Create();
+
+            var gotHashesTask = consumer.OnMessageArrived.
+                Select(msg => hash.ComputeHash(msg.Value)).
+                Select(buff => string.Join("", buff.Select(_ => _.ToString("X2")).ToArray())).
+                Take(sizes.Length).
+                Timeout(TimeSpan.FromMinutes(3)).
+                Do(_ => hashes.Add(_)).
+                Do(_ => _log.Debug("Got message")).
+                ToList().ToTask();
+                //Subscribe(msg => hashes.Add(msg));
+            await consumer.IsConnected;
+
+            VagrantBrokerUtil.GenerateMessagesWithJava(codec);
+
+            try {
+                var gotHashes = await gotHashesTask;
+                var javaHashes = File.ReadAllLines(hashFileName);
+                Assert.IsTrue(gotHashes.SequenceEqual(javaHashes), "Hashes mismatch");
+            } catch(Exception)
+            {
+                _log.Info($"Got ${hashes.Count} messages");
+                throw;
+            }
+        }
+
+        // Test .net compressed can be read by java
+
+        // Test java interoperability
+        // Test large message with different power(2) alignments to test compressors framing
+        // Test compressed messageset with multiple messages inside
     }
 }

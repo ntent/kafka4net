@@ -82,7 +82,7 @@ namespace kafka4net.Utils
             return ~CalculateHash(InitializeTable(polynomial), seed, buffer, 0, buffer.Length);
         }
 
-        public static byte[] Compute(MemoryStream stream, long start, long size)
+        public static byte[] Compute(Stream stream, long start, long size)
         {
             var initPos = stream.Position;
             var crc = DefaultSeed;

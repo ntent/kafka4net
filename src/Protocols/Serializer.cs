@@ -1,7 +1,10 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Compression;
 using System.Linq;
+using System.Net.Configuration;
+using System.Runtime.Remoting.Messaging;
 using System.Text;
 using kafka4net.Metadata;
 using kafka4net.Protocols.Requests;
@@ -44,9 +47,9 @@ namespace kafka4net.Protocols
             ConsumerMetadataRequest	= 10
         }
 
-        public static MetadataResponse DeserializeMetadataResponse(byte[] body)
+        public static MetadataResponse DeserializeMetadataResponse(byte[] body, int len)
         {
-            var stream = new MemoryStream(body);
+            var stream = new MemoryStream(body, 0 , len);
             stream.Position += 4; 
             var ret = new MetadataResponse();
             
@@ -260,10 +263,10 @@ namespace kafka4net.Protocols
             stream.Write(_clientId, 0, _clientId.Length);
         }
 
-        public static ProducerResponse GetProducerResponse(byte[] buff)
+        public static ProducerResponse GetProducerResponse(byte[] buff, int len)
         {
             var resp = new ProducerResponse();
-            var stream = new MemoryStream(buff);
+            var stream = new MemoryStream(buff, 0, len);
             stream.Position += 4; // skip message size
 
             var count = BigEndianConverter.ReadInt32(stream);
@@ -325,9 +328,9 @@ namespace kafka4net.Protocols
             return WriteMessageLength(stream);
         }
 
-        internal static OffsetResponse DeserializeOffsetResponse(byte[] buff)
+        internal static OffsetResponse DeserializeOffsetResponse(byte[] buff, int count)
         {
-            var stream = new MemoryStream(buff);
+            var stream = new MemoryStream(buff, 0, count);
             stream.Position += 4; // skip body
 
             var response = new OffsetResponse();
@@ -386,9 +389,9 @@ namespace kafka4net.Protocols
         /// </summary>
         /// <param name="buff"></param>
         /// <returns></returns>
-        public static FetchResponse DeserializeFetchResponse(byte[] buff)
+        public static FetchResponse DeserializeFetchResponse(byte[] buff, int count)
         {
-            var stream = new MemoryStream(buff);
+            var stream = new MemoryStream(buff, 0, count);
             stream.Position += 4; // skip body
             var response = new FetchResponse();
 
@@ -403,13 +406,21 @@ namespace kafka4net.Protocols
                 var len2 = BigEndianConverter.ReadInt32(stream);
                 topic.Partitions = new FetchResponse.PartitionFetchData[len2];
                 for (int i = 0; i < len2; i++)
+                {
+                    var partition = BigEndianConverter.ReadInt32(stream);
+                    var error = (ErrorCode)BigEndianConverter.ReadInt16(stream);
+                    var highWatermark = BigEndianConverter.ReadInt64(stream);
+                    var messageSetSize = BigEndianConverter.ReadInt32(stream);
+                    var messages = ReadMessageSet(stream, messageSetSize).ToArray();
+
                     topic.Partitions[i] = new FetchResponse.PartitionFetchData
                     {
-                        Partition = BigEndianConverter.ReadInt32(stream),
-                        ErrorCode = (ErrorCode)BigEndianConverter.ReadInt16(stream),
-                        HighWatermarkOffset = BigEndianConverter.ReadInt64(stream),
-                        Messages = ReadMessageSet(stream).ToArray()
+                        Partition = partition,
+                        ErrorCode = error,
+                        HighWatermarkOffset = highWatermark,
+                        Messages = messages
                     };
+                }
             }
 
             return response;
@@ -428,18 +439,17 @@ namespace kafka4net.Protocols
         //  Attributes => int8
         //  Key => bytes
         //  Value => bytes
-        private static IEnumerable<Message> ReadMessageSet(MemoryStream stream)
+        private static IEnumerable<Message> ReadMessageSet(Stream stream, int messageSetSize)
         {
             // "As an optimization the server is allowed to return a partial message at the end of the message set. 
             // Clients should handle this case"
 
-            var messageSetSize = BigEndianConverter.ReadInt32(stream);
             var remainingMessageSetBytes = messageSetSize;
 
             while (remainingMessageSetBytes > 0)
             {
                 // we need at least be able to read offset and messageSize
-                if (remainingMessageSetBytes < + 8 + 4)
+                if (remainingMessageSetBytes < 8 + 4)
                 {
                     // not enough bytes left. This is a partial message. Skip to the end of the message set.
                     stream.Position += remainingMessageSetBytes;
@@ -463,25 +473,90 @@ namespace kafka4net.Protocols
                 var crcPos = stream.Position;
                 var magic = stream.ReadByte();
                 var attributes = stream.ReadByte();
-                var msg = new Message();
-                msg.Key = ReadByteArray(stream);
-                msg.Value = ReadByteArray(stream);
-                msg.Offset = offset;
-                var pos = stream.Position;
-                var computedCrcArray = Crc32.Compute(stream, crcPos, pos - crcPos);
-                var computedCrc = BigEndianConverter.ToInt32(computedCrcArray);
-                if (computedCrc != crc)
+                var compression = ParseCompression(attributes);
+                var key = ReadByteArray(stream);
+                var value = ReadByteArray(stream);
+                if (compression == CompressionType.None)
                 {
-                    throw new BrokerException(string.Format("Corrupt message: Crc does not match. Caclulated {0} but got {1}", computedCrc, crc));
+                    var msg = new Message();
+                    msg.Key = key;
+                    msg.Value = value;
+                    msg.Offset = offset;
+                    var pos = stream.Position;
+                    var computedCrcArray = Crc32.Compute(stream, crcPos, pos - crcPos);
+                    var computedCrc = BigEndianConverter.ToInt32(computedCrcArray);
+                    if (computedCrc != crc)
+                    {
+                        throw new BrokerException(string.Format("Corrupt message: Crc does not match. Caclulated {0} but got {1}", computedCrc, crc));
+                    }
+                    yield return msg;
                 }
-                yield return msg;
+                else if(compression == CompressionType.Gzip)
+                {
+                    var decompressedStream = new MemoryStream();
+                    new GZipStream(new MemoryStream(value), CompressionMode.Decompress).CopyTo(decompressedStream);
+                    decompressedStream.Seek(0, SeekOrigin.Begin);
+                    // Recursion
+                    var innerMessages = ReadMessageSet(decompressedStream, (int)decompressedStream.Length);
+                    foreach (var innerMessage in innerMessages)
+                        yield return innerMessage;
+                }
+                else if(compression == CompressionType.Lz4)
+                {
+                    using (var lz4Stream = new Lz4KafkaStream(new MemoryStream(value), CompressionStreamMode.Decompress))
+                    {
+                        var decompressed = new MemoryStream();
+                        lz4Stream.CopyTo(decompressed);
+                        decompressed.Seek(0, SeekOrigin.Begin);
+                        var decompressedMessages = ReadMessageSet(decompressed, (int)decompressed.Length);
+                        foreach (var msg in decompressedMessages)
+                            yield return msg;
+                    }
+                }
+                else if(compression == CompressionType.Snappy)
+                {
+                    using (var snappyStream = new KafkaSnappyStream(new MemoryStream(value), CompressionStreamMode.Decompress))
+                    {
+                        var decompressed = new MemoryStream();
+                        snappyStream.CopyTo(decompressed);
+                        decompressed.Seek(0, SeekOrigin.Begin);
+                        var decompressedMessages = ReadMessageSet(decompressed, (int)decompressed.Length);
+                        foreach (var msg in decompressedMessages)
+                            yield return msg;
+                    }
+                }
+                else
+                {
+                    throw new BrokerException(string.Format("Unknown compression type: {0}", attributes & 3));
+                }
 
                 // subtract messageSize of that message from remaining bytes
                 remainingMessageSetBytes -= messageSize;
             }
         }
 
-        private static byte[] ReadByteArray(MemoryStream stream)
+        static void Dump(byte[] a)
+        {
+            var str1 = string.Join(" ", a.Select(_ => _.ToString("x2")).ToArray());
+            Console.WriteLine(str1);
+
+            var str = string.Join("\n", a.Select((_, i) =>
+            {
+                if(char.IsLetterOrDigit((char)_))
+                    return $"{i} " + _.ToString("x2") + " " + ((char)_).ToString();
+                else
+                    return $"{i} " + _.ToString("x2") + " ?";
+            }).ToArray());
+            Console.WriteLine(str);
+        }
+
+        static CompressionType ParseCompression(int attributes)
+        {
+            // The lowest 3 bits contain the compression codec used for the message
+            return (CompressionType)(attributes & 3);
+        }
+
+        private static byte[] ReadByteArray(Stream stream)
         {
             var len = BigEndianConverter.ReadInt32(stream);
             if (len == -1)

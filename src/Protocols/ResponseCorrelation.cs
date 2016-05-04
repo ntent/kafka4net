@@ -1,7 +1,5 @@
 ﻿using System;
 using System.Collections.Concurrent;
-using System.Collections.Generic;
-using System.Diagnostics.Tracing;
 using System.IO;
 using System.Linq;
 using System.Net.Sockets;
@@ -17,7 +15,7 @@ namespace kafka4net.Protocols
     {
         // It is possible to have id per connection, but it's just simpler code and debug/tracing when it's global
         private static int _correlationId;
-        private readonly ConcurrentDictionary<int, Action<byte[], Exception>> _corelationTable = new ConcurrentDictionary<int, Action<byte[], Exception>>();
+        private readonly ConcurrentDictionary<int, Action<byte[], int, Exception>> _corelationTable = new ConcurrentDictionary<int, Action<byte[], int, Exception>>();
         private readonly Action<Exception> _onError;
         private static readonly ILogger _log = Logger.GetLogger();
         readonly string _id;
@@ -63,12 +61,14 @@ namespace kafka4net.Protocols
                 _log.Debug("Starting reading loop from socket. {0}", _id);
                 _etw.CorrelationStart();
 
+                var buff = new byte[16 * 1024];
+
                 while (client.Connected && !cancel.IsCancellationRequested)
                 {
                     try
                     {
                         // read message size
-                        var buff = new byte[4];
+                        //var buff = new byte[4];
                         _etw.CorrelationReadingMessageSize();
                         await ReadBuffer(client, buff, 4, cancel);
                         if (cancel.IsCancellationRequested)
@@ -81,21 +81,21 @@ namespace kafka4net.Protocols
                         _etw.CorrelationReadMessageSize(size);
 
                         // TODO: size sanity check. What is the reasonable max size?
-                        var body = new byte[size];
-                        await ReadBuffer(client, body, size, cancel);
+                        //var body = new byte[size];
+                        if(size > buff.Length)
+                            buff = new byte[size];
+                        await ReadBuffer(client, buff, size, cancel);
                         _etw.CorrelationReadBody(size);
 
                         try
                         {
                             int correlationId = -1;
                             // TODO: check read==size && read > 4
-                            correlationId = BigEndianConverter.ToInt32(body);
+                            correlationId = BigEndianConverter.ToInt32(buff);
                             _etw.CorrelationReceivedCorrelationId(correlationId);
-                            //_log.Debug("<-{0}\n {1}", correlationId, FormatBytes(body));
-                            //_log.Debug("<-{0}", correlationId);
 
                             // find correlated action
-                            Action<byte[], Exception> handler;
+                            Action<byte[], int, Exception> handler;
                             // TODO: if correlation id is not found, there is a chance of corrupt 
                             // connection. Maybe recycle the connection?
                             if (!_corelationTable.TryRemove(correlationId, out handler))
@@ -104,12 +104,12 @@ namespace kafka4net.Protocols
                                 continue;
                             }
                             _etw.CorrelationExecutingHandler();
-                            handler(body, null);
+                            handler(buff, size, null);
                             _etw.CorrelationExecutedHandler();
                         }
                         catch (Exception ex)
                         {
-                            var error = string.Format("Error with handling message. Message bytes:\r\n{0}", FormatBytes(body));
+                            var error = string.Format("Error with handling message. Message bytes:\n{0}\n", FormatBytes(buff, size));
                             _etw.CorrelationError(ex.Message + " " + error);
                             _log.Error(ex, error);
                             throw;
@@ -143,7 +143,7 @@ namespace kafka4net.Protocols
             }
             catch (Exception e)
             {
-                _corelationTable.Values.ForEach(c => c(null, e));
+                _corelationTable.Values.ForEach(c => c(null, 0, e));
                 if (_onError != null && !cancel.IsCancellationRequested) // don't call back OnError if we were told to cancel
                     _onError(e);
 
@@ -153,12 +153,12 @@ namespace kafka4net.Protocols
             finally
             {
                 _log.Debug("Finishing CorrelationLoop. Calling back error to clear waiters.");
-                _corelationTable.Values.ForEach(c => c(null, new CorrelationLoopException("Correlation loop closed. Request will never get a response.") { IsRequestedClose = cancel.IsCancellationRequested }));
+                _corelationTable.Values.ForEach(c => c(null, 0, new CorrelationLoopException("Correlation loop closed. Request will never get a response.") { IsRequestedClose = cancel.IsCancellationRequested }));
                 _log.Debug("Finished CorrelationLoop.");
             }
         }
 
-        internal async Task<T> SendAndCorrelateAsync<T>(Func<int, byte[]> serialize, Func<byte[], T> deserialize, TcpClient tcp, CancellationToken cancel)
+        internal async Task<T> SendAndCorrelateAsync<T>(Func<int, byte[]> serialize, Func<byte[], int, T> deserialize, TcpClient tcp, CancellationToken cancel)
         {
             var correlationId = Interlocked.Increment(ref _correlationId);
 
@@ -169,10 +169,10 @@ namespace kafka4net.Protocols
             //var timeout = new CancellationTokenSource(5 * 1000);
             try
             {
-                var res = _corelationTable.TryAdd(correlationId, (body, ex) =>
+                var res = _corelationTable.TryAdd(correlationId, (body, size, ex) =>
                 {
                     if (ex == null)
-                        callback.TrySetResult(deserialize(body));
+                        callback.TrySetResult(deserialize(body, size));
                     else
                         callback.TrySetException(ex);
                     //timeout.Dispose();
@@ -180,8 +180,8 @@ namespace kafka4net.Protocols
                 if (!res)
                     throw new ApplicationException("Failed to add correlationId: " + correlationId);
                 var buff = serialize(correlationId);
-                //_log.Debug("{0}->\n{1}", correlationId, FormatBytes(buff));
-                //_log.Debug("{0}->", correlationId);
+
+                // TODO: think how buff can be reused. Would it be safe to declare buffer as a member? Is there a guarantee of one write at the time?
                 _etw.CorrelationWritingMessage(correlationId, buff.Length);
                 await tcp.GetStream().WriteAsync(buff, 0, buff.Length, cancel);
             }
@@ -207,9 +207,9 @@ namespace kafka4net.Protocols
             }
         }
 
-        private static string FormatBytes(byte[] buff)
+        private static string FormatBytes(byte[] buff, int len)
         {
-            return buff.Aggregate(new StringBuilder(), (builder, b) => builder.Append(b.ToString("x2")),
+            return buff.Take(Math.Min(256, len)).Aggregate(new StringBuilder(), (builder, b) => builder.Append(b.ToString("x2")),
                 str => str.ToString());
         }
     }

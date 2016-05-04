@@ -123,12 +123,13 @@ namespace tests
             }
         }
 
-        private static void Vagrant(string script)
+        private static string Vagrant(string script)
         {
             // TODO: implement vagrant-control 
             var dir = AppDomain.CurrentDomain.BaseDirectory;
             dir = Path.Combine(dir, @"..\..\..\vagrant");
             dir = Path.GetFullPath(dir);
+            var output = new StringBuilder();
             var pi = new ProcessStartInfo(@"vagrant.exe", script)
             {
                 CreateNoWindow = true,
@@ -139,7 +140,11 @@ namespace tests
             };
 
             var p = Process.Start(pi);
-            p.OutputDataReceived += (sender, args) => _log.Info(args.Data);
+            p.OutputDataReceived += (sender, args) =>
+            {
+                output.Append(args.Data);
+                _log.Info(args.Data);
+            } ;
             p.ErrorDataReceived += (sender, args) => _log.Info(args.Data);
             p.BeginOutputReadLine();
             p.BeginErrorReadLine();
@@ -147,6 +152,13 @@ namespace tests
 
             if(p.ExitCode != 0)
                 throw new Exception("Vagrant failed with exit code " + p.ExitCode);
+
+            return output.ToString();
+        }
+
+        public static string GenerateMessagesWithJava(string codec)
+        {
+            return Vagrant($"ssh broker1 -c 'java -jar /vagrant/files/binary-console-all.jar {codec}'");
         }
     }
 }

@@ -33,3 +33,7 @@ vagrant/files
 /Build.proj
 /src/Properties/AssemblyInfoGenerated.cs
 nuget/*.nupkg
+.gradle
+.idea
+*.iml
+build
