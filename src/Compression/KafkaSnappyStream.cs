@@ -1,47 +1,76 @@
 ﻿using System;
 using System.IO;
-using System.Text;
-using kafka4net.Compression;
 using kafka4net.Utils;
+using Snappy;
 
-namespace kafka4net.Protocols
+namespace kafka4net.Compression
 {
     /// <summary>
     /// Kafka's snappy framing is non-standard. See https://github.com/xerial/snappy-java
     /// [magic header:16 bytes]([block size:int32][compressed data:byte array])*
+    /// Version and min compatible version are both 1
     /// </summary>
-    class KafkaSnappyStream : Stream
+    sealed class KafkaSnappyStream : Stream
     {
         static readonly byte[] _snappyMagic = { 0x82, 0x53, 0x4e, 0x41, 0x50, 0x50, 0x59, 0 };
         const int SnappyHeaderLen = 16; // 8 bytes of magic and 2 ints for version compatibility
 
         CompressionStreamMode _mode;
         readonly Stream _base;
-        byte[] _uncompressedBuffer = new byte[32*1024];  // 32K is default buffer size in xerces
+        byte[] _uncompressedBuffer;
         // Working buffer to store data from compressed stream and avoid allocations. Can be resized
-        byte[] _compressedBuffer = new byte[10*1024];
+        byte[] _compressedBuffer;// = new byte[10*1024];
         int _bufferLen;
         int _bufferPtr;
         readonly byte[] _headerWorkingBuffer = new byte[SnappyHeaderLen];
+        static readonly byte[] _versionsHeader = { 0, 0, 0, 1, 0, 0, 0, 1};
 
-        public KafkaSnappyStream(Stream stream, CompressionStreamMode mode)
+        /// <summary>
+        /// 
+        /// </summary>
+        /// <param name="stream"></param>
+        /// <param name="mode"></param>
+        /// <param name="uncompressedBuffer">Recommended size is 32Kb, as default in java xerces implementation</param>
+        public KafkaSnappyStream(Stream stream, CompressionStreamMode mode, byte[] uncompressedBuffer, byte[] compressedBuffer)
         {
             _mode = mode;
             _base = stream;
-            var hasHeader = ReadHeader();
+            _uncompressedBuffer = uncompressedBuffer;
+            _compressedBuffer = compressedBuffer;
 
-            if (!hasHeader)
-                throw new InvalidDataException("Failed to read snappy header");
-            else
+            if (mode == CompressionStreamMode.Decompress)
             {
+                if (!ReadHeader())
+                    throw new InvalidDataException("Failed to read snappy header");
                 ReadBlock();
             }
+            else
+            {
+                WriteHeader();
+            }
+        }
 
+        /// <summary>
+        /// Allocate buffers of size, recommended for kafka usage. CompressedBuffer will be allocated of enough size, which will not require reallocation.
+        /// </summary>
+        /// <param name="uncompressedBuffer"></param>
+        /// <param name="compressedBuffer"></param>
+        public static void AllocateBuffers(out byte[] uncompressedBuffer, out byte[] compressedBuffer)
+        {
+            uncompressedBuffer = new byte[32 * 1024];  // 32K is default buffer size in xerces
+            compressedBuffer = new byte[SnappyCodec.GetMaxCompressedLength(uncompressedBuffer.Length)];
         }
 
         public override void Flush()
         {
-            throw new NotImplementedException();
+            // TODO: memory optmization
+            var compressed = new byte[SnappyCodec.GetMaxCompressedLength(_bufferLen)];
+            var compressedSize = SnappyCodec.Compress(_uncompressedBuffer, 0, _bufferLen, compressed, 0);
+
+            BigEndianConverter.Write(_base, compressedSize);
+            _base.Write(compressed, 0, compressedSize);
+
+            _bufferLen = 0;
         }
 
         public override long Seek(long offset, SeekOrigin origin)
@@ -56,6 +85,9 @@ namespace kafka4net.Protocols
 
         public override int Read(byte[] buffer, int offset, int count)
         {
+            if(!CanRead)
+                throw new InvalidOperationException("Not a read stream");
+
             if(_bufferPtr < _bufferLen)
                 return ReadInternalBuffer(buffer, offset, count);
 
@@ -67,7 +99,23 @@ namespace kafka4net.Protocols
 
         public override void Write(byte[] buffer, int offset, int count)
         {
-            throw new NotImplementedException();
+            if(!CanWrite)
+                throw new InvalidOperationException("Not a write stream");
+            // TODO: optimize output buffer allocation
+
+            while(count > 0)
+            {
+                // TODO: if full frame is going to be flushed, skip array copy and compress stright from input buffer
+
+                var size = Math.Min(count, _uncompressedBuffer.Length - _bufferLen);
+                Buffer.BlockCopy(buffer, offset, _uncompressedBuffer, _bufferLen, size);
+                _bufferLen += size;
+                count -= size;
+                offset += size;
+
+                if(_bufferLen == _uncompressedBuffer.Length)
+                    Flush();
+            }
         }
 
         public override bool CanRead => _mode == CompressionStreamMode.Decompress;
@@ -97,6 +145,12 @@ namespace kafka4net.Protocols
             return true;
         }
 
+        void WriteHeader()
+        {
+            _base.Write(_snappyMagic, 0, _snappyMagic.Length);
+            _base.Write(_versionsHeader, 0, 8);
+        }
+
         bool ReadBlock()
         {
             if (!StreamUtils.ReadAll(_base, _compressedBuffer, 4))
@@ -115,7 +169,7 @@ namespace kafka4net.Protocols
             if (uncompressedLen > _uncompressedBuffer.Length)
                 _uncompressedBuffer = new byte[uncompressedLen];
 
-            var read = Snappy.SnappyCodec.Uncompress(_compressedBuffer, 0, blockSize, _uncompressedBuffer, 0);
+            var read = SnappyCodec.Uncompress(_compressedBuffer, 0, blockSize, _uncompressedBuffer, 0);
             
             _bufferLen = read;
             _bufferPtr = 0;
@@ -129,6 +183,14 @@ namespace kafka4net.Protocols
             Buffer.BlockCopy(_uncompressedBuffer, _bufferPtr, buffer, offset, canRead);
             _bufferPtr += canRead;
             return canRead;
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if(_mode == CompressionStreamMode.Compress && _bufferLen != 0)
+                Flush();
+
+            base.Dispose(disposing);
         }
     }
 

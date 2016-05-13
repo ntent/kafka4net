@@ -156,9 +156,9 @@ namespace tests
             return output.ToString();
         }
 
-        public static string GenerateMessagesWithJava(string codec)
+        public static string GenerateMessagesWithJava(string codec, string topic)
         {
-            return Vagrant($"ssh broker1 -c 'java -jar /vagrant/files/binary-console-all.jar {codec}'");
+            return Vagrant($"ssh broker1 -c 'java -jar /vagrant/files/binary-console-all.jar {topic} {codec} produce'");
         }
     }
 }

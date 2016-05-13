@@ -51,6 +51,11 @@ namespace kafka4net.Utils
             WriteByte(stream, i);
         }
 
+        public static void Write(Stream stream, uint i)
+        {
+            Write(stream, (int)i);
+        }
+
         public static void Write(Stream stream, short i)
         {
             WriteByte(stream, i >> 8);

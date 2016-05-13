@@ -1,21 +1,25 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Reactive.Linq;
 using System.Reactive.Subjects;
 using System.Reactive.Threading.Tasks;
+using System.Runtime.Remoting.Messaging;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using kafka4net;
 using kafka4net.ConsumerImpl;
+using kafka4net.Protocols;
 using kafka4net.Utils;
 using NLog;
 using NLog.Config;
 using NLog.Targets;
 using NUnit.Framework;
+using NUnit.Framework.Constraints;
 using Logger = kafka4net.Logger;
 
 namespace tests
@@ -1974,8 +1978,6 @@ namespace tests
         // Compression test
         //
 
-        // Test unknown compression
-
         [Category("Compression")]
         [Test(Description = "Make sure it's possible to uncompress Java generated gzip-ed messages")]
         [Repeat(5)]
@@ -1983,19 +1985,6 @@ namespace tests
         {
             var topic = "topic11.java.compressed";
             var hashFileName = AppDomain.CurrentDomain.BaseDirectory + @"..\..\..\vagrant\files\hashes.txt";
-            var sizesFileName = AppDomain.CurrentDomain.BaseDirectory + @"..\..\..\vagrant\files\sizes.txt";
-
-            var sizes =
-                Enumerable.Range(1, 1024 + 10).
-                Concat(
-                    from i in new[] { 5, 10, 16, 50, 64, 256, 500 }   // message size in Kb
-                    // Create 100 messages of slightly different size (+/-100 bytes)
-                    from rnd in Enumerable.Range(1, 100).Select(_ => _rnd.Next(-100, 100))
-                    select i * 1024 + rnd
-                ).
-                Select(_ => _.ToString()).ToArray();
-
-            File.WriteAllLines(sizesFileName, sizes);
 
             //
             // Start consumer
@@ -2005,6 +1994,7 @@ namespace tests
                 maxWaitTimeMs: 10*1000, 
                 maxBytesPerFetch:10*1024*1024));
             var hash = MD5.Create();
+            var sizes = GenerateMessageSizesAndWriteToFile();
 
             var gotHashesTask = consumer.OnMessageArrived.
                 Select(msg => hash.ComputeHash(msg.Value)).
@@ -2017,7 +2007,7 @@ namespace tests
                 //Subscribe(msg => hashes.Add(msg));
             await consumer.IsConnected;
 
-            VagrantBrokerUtil.GenerateMessagesWithJava(codec);
+            VagrantBrokerUtil.GenerateMessagesWithJava(codec, topic);
 
             try {
                 var gotHashes = await gotHashesTask;
@@ -2030,10 +2020,102 @@ namespace tests
             }
         }
 
-        // Test .net compressed can be read by java
+        readonly string _sizesFileName = AppDomain.CurrentDomain.BaseDirectory + @"..\..\..\vagrant\files\sizes.txt";
+        int[] GenerateMessageSizesAndWriteToFile()
+        {
+            var sizes =
+                Enumerable.Range(1, 1024 + 10).
+                Concat(
+                    from i in new[] { 5, 10, 16, 50, 64, 256, 500 }   // message size in Kb
+                    // Create 100 messages of slightly different size (+/-100 bytes)
+                    from rnd in Enumerable.Range(1, 100).Select(_ => _rnd.Next(-100, 100))
+                    select i * 1024 + rnd
+                ).ToArray();
 
-        // Test java interoperability
-        // Test large message with different power(2) alignments to test compressors framing
-        // Test compressed messageset with multiple messages inside
+            File.WriteAllLines(_sizesFileName, sizes.Select(_=>_.ToString()));
+            return sizes;
+        }
+
+        // Test .net compressed can be read by java
+        [Category("Compression")]
+        [Test(Description = "Java can read .net-compressed messages")]
+        public async Task JavaCanReadCompressedMessages([Values("gzip", "lz4", "snappy")]string codec)
+        {
+            var rnd = new Random(0);
+            var topic = "topic31.csharp.compressed-14";
+            VagrantBrokerUtil.CreateTopic(topic, 3, 1);
+
+            var consumedMessages = new List<int>();
+            var consumer = new Consumer(new ConsumerConfiguration(_seed3Addresses, topic, new StartPositionTopicEnd(), 
+                maxBytesPerFetch: 500*1024*1024, maxWaitTimeMs:10*1000));
+            consumer.OnMessageArrived.
+                //Synchronize().
+                Subscribe(msg =>
+                {
+                    consumedMessages.Add(msg.Value.Length);
+                    _log.Info($">>> {consumedMessages.Count}");
+                });
+            await consumer.IsConnected;
+
+            var sizes = GenerateMessageSizesAndWriteToFile();
+            int successCount = 0;
+            var producer = new Producer(_seed3Addresses, new ProducerConfiguration(topic, maxMessageSetSizeInBytes: 40*1000*1000) {
+                CompressionType = (CompressionType)Enum.Parse(typeof(CompressionType), codec, true)
+            });
+            //var rnd = new Random(1);
+            var sharpHashes = new List<string>();
+            var md5 = MD5.Create();
+
+            producer.OnPermError += (exception, messages) => {
+                _log.Error("Message len: {0} Error: {1}", string.Join(",", messages.Select(_=>_.Value.Length.ToString()).ToArray()), exception.Message );
+            };
+
+            producer.OnSuccess += messages =>
+            {
+                Interlocked.Add(ref successCount, messages.Length);
+            };
+
+            var javaConsumer = StartJavaConsumer(topic);
+            await Task.Delay(30 * 1000);
+
+            await producer.ConnectAsync();
+
+            var key = new byte[] { 0 };
+
+            _log.Info("Start sending...");
+            sizes.Select(size => {
+                var buff = new byte[size];
+                rnd.NextBytes(buff);
+                var hash = string.Join("", md5.ComputeHash(buff).Select(_ => _.ToString("X2")).ToArray());
+                sharpHashes.Add(hash);
+                return buff;
+            }).
+            Select(buff => new Message { Value = buff, Key = key}).
+            ForEach(msg => {
+                producer.Send(msg);
+            });
+
+            await producer.CloseAsync(TimeSpan.FromMinutes(1));
+            _log.Info("Sent {0} messages", successCount);
+            Assert.AreEqual(sizes.Length, successCount, "Message count is not equal to sent count");
+
+            _log.Info("Waiting for java process");
+            await javaConsumer;
+
+            _log.Info("Comparing hashes");
+            var javaHashes = File.ReadLines(AppDomain.CurrentDomain.BaseDirectory + @"..\..\..\vagrant\files\hashes.txt").ToArray();
+            Assert.IsTrue(sharpHashes.SequenceEqual(javaHashes), "Hashes mismatch");
+        }
+
+        // Test that .net can decompress what it has compressed (self-compatibility)
+
+        public Task StartJavaConsumer(string topic)
+        {
+            var path = AppDomain.CurrentDomain.BaseDirectory;
+            path = Path.Combine(path, @"..\..\..\vagrant\files\binary-console-all.jar");
+            path = Path.GetFullPath(path);
+            var process = Process.Start("C:\\Program Files\\Java\\jdk1.8.0_73\\bin\\java.exe", "-jar " + path + $" {topic} gzip consume");
+            return Task.Run(() => process.WaitForExit());
+        }
     }
 }

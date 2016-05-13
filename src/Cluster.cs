@@ -3,6 +3,8 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics.Tracing;
 using System.Globalization;
+using System.IO;
+using System.IO.Compression;
 using System.Linq;
 using System.Net.Sockets;
 using System.Reactive.Concurrency;
@@ -739,22 +741,25 @@ namespace kafka4net
                                 Pub = producer,
                                 OriginalMessages = partitionGrp.ToArray(),
                                 Partition = partitionGrp.Key,
+                                CompressionType = producer.Configuration.CompressionType,
                                 Messages = (
                                     from msg in partitionGrp
                                     select new MessageData {
                                         Key = msg.Key,
                                         Value = msg.Value
-                                    }
-                                    )
+                                    })
                             }
                             )
                     }
                 }
             };
 
+
+
             var response = await _protocol.Produce(request).ConfigureAwait(false);
             _log.Debug("#{0} SendBatchAsync complete", _id);
             return response;
         }
+
     }
 }

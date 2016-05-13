@@ -13,6 +13,6 @@ repositories{mavenCentral()}
 
 dependencies {
     compile "org.scala-lang:scala-library:2.10.6"
-    compile 'org.apache.kafka:kafka_2.10:0.8.2.1'
+    compile 'org.apache.kafka:kafka_2.10:0.8.2.2'
 }
 

@@ -3,30 +3,38 @@ using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
-using System.Net.Configuration;
-using System.Runtime.Remoting.Messaging;
 using System.Text;
+using kafka4net.Compression;
 using kafka4net.Metadata;
 using kafka4net.Protocols.Requests;
 using kafka4net.Protocols.Responses;
-using kafka4net.Tracing;
 using kafka4net.Utils;
 
 namespace kafka4net.Protocols
 {
-    // TODO: move functions into business objects
+    /// <summary>
+    /// Compression buffers are allocated as thread static in order to minimaze buffer allocation.
+    /// This is safe because serializer is called from Protocol's socket loop which is synchronized by EventLoopScheduler, which is single-threaded.
+    /// </summary>
     static class Serializer
     {
         static readonly byte[] _minusOne32 = { 0xff, 0xff, 0xff, 0xff };
         static readonly byte[] _one32 = { 0x00, 0x00, 0x00, 0x01 };
-        static readonly byte[] _two32 = { 0x00, 0x00, 0x00, 0x02 };
-        static readonly byte[] _eight32 = { 0x00, 0x00, 0x00, 0x08 };
         static readonly byte[] _minusOne16 = { 0xff, 0xff };
         static readonly byte[] _apiVersion = { 0x00, 0x00 };
         static readonly byte[] _zero64 = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
         static readonly byte[] _zero32 = { 0x00, 0x00, 0x00, 0x00 };
+        // Byte representation of CompressionType
+        static readonly byte[] _compressionEnumTable = {
+            0x00,   // None
+            0x01,   // Gzip
+            0x02,   // Snappy
+            0x03    // Lz4
+        };
         // TODO: make it configurable
         static byte[] _clientId;
+
+        private static readonly ILogger _log = Logger.GetLogger();
 
         static Serializer()
         {
@@ -158,31 +166,145 @@ namespace kafka4net.Protocols
         private static void Write(MemoryStream stream, PartitionData partition)
         {
             BigEndianConverter.Write(stream, partition.Partition);
-            Write(stream, partition.Messages);
-        }
-
-        private static void Write(MemoryStream stream, IEnumerable<MessageData> messages)
-        {
-            // MessageSetInBytes
-            WriteSizeInBytes(stream, () =>
+            if (partition.CompressionType == CompressionType.None)
             {
-                foreach (var message in messages)
-                {
-                    stream.Write(_zero64, 0, 8); // producer does fake offset
-                    var m = message;
-                    WriteSizeInBytes(stream, () => Write(stream, m));
-                }
-            });
+                var messageArray = partition.Messages.ToArray();  // make sure linq evaluation happen just once
+                var messageSetSize = EstimateMessageSetSize(messageArray);
+                BigEndianConverter.Write(stream, messageSetSize);
+
+                Write(stream, partition.Messages);
+            }
+            else
+            {
+                var compressedMessage = Compress(partition.CompressionType, partition.Messages);
+                WriteCompressedMessageSet(stream, compressedMessage, partition.CompressionType);
+            }
         }
 
-        private static void Write(MemoryStream stream, MessageData message)
+        [ThreadStatic] static byte[] _snappyUncompressedBuffer;
+        [ThreadStatic] static byte[] _snappyCompressedBuffer;
+        static MessageData Compress(CompressionType compressionType, IEnumerable<MessageData> messages)
         {
-            var crcPos = stream.Position;
-            stream.Write(_minusOne32, 0, 4); // crc placeholder
-            var bodyPos = stream.Position;
-            
+            // TODO: optimize memory allocation
+            var compressed = new MemoryStream();
+            switch (compressionType)
+            {
+                case CompressionType.Gzip:
+                    {
+                        var gzip = new GZipStream(compressed, CompressionLevel.Optimal);
+                        Write(gzip, messages);
+                        gzip.Close();
+                        break;
+                    }
+                    case CompressionType.Snappy:
+                    {
+                        if(_snappyCompressedBuffer == null)
+                            KafkaSnappyStream.AllocateBuffers(out _snappyUncompressedBuffer, out _snappyCompressedBuffer);
+                        var snappy = new KafkaSnappyStream(compressed, CompressionStreamMode.Compress, _snappyUncompressedBuffer, _snappyCompressedBuffer);
+                        Write(snappy, messages);
+                        snappy.Close();
+                        break;
+                    }
+                    case CompressionType.Lz4:
+                    {
+                        var lz4 = new Lz4KafkaStream(compressed, CompressionStreamMode.Compress);
+                        Write(lz4, messages);
+                        lz4.Close();
+                        break;
+                    }
+                default:
+                    throw new NotImplementedException($"Compression '{compressionType}' is not implemented");
+            }
+
+            var buff = compressed.ToArray();
+            return new MessageData {Key = null, Value = buff };
+        }
+
+        private static void Write(Stream stream, IEnumerable<MessageData> messages)
+        {
+            foreach (var message in messages)
+            {
+                stream.Write(_zero64, 0, 8); // producer does fake offset
+
+                var messageSize = _messageOverheadSize + (message.Key?.Length ?? 0) + (message.Value?.Length ?? 0);
+                BigEndianConverter.Write(stream, messageSize);
+
+                Write(stream, message);
+            }
+        }
+
+        static void WriteCompressedMessageSet(Stream stream, MessageData message, CompressionType compresionType)
+        {
+            var messageRawSize = 0;
+            if (message.Key != null)
+                messageRawSize += message.Key.Length;
+            if (message.Value != null)
+                messageRawSize += message.Value.Length;
+
+            var messageSetSize = _messageSetOverheadSize + messageRawSize;
+            BigEndianConverter.Write(stream, messageSetSize);
+            _log.Debug("WriteCompressedMessageSet: size: {0}", messageSetSize);
+
+            stream.Write(_zero64, 0, 8);    // Producer fake offset
+
+            var messageSize = _messageOverheadSize + messageRawSize;
+            BigEndianConverter.Write(stream, messageSize);
+
+            Write(stream, message, compresionType);
+        }
+
+        const int _messageOverheadSize =
+                + 4 // crc
+                + 1 // magic
+                + 1 // attributes
+                + 4 * 2; // key size plus value size
+
+        const int _messageSetOverheadSize = 
+                8   // offset
+                + 4 // message size field
+                + _messageOverheadSize;
+
+        static int EstimateMessageSetSize(MessageData[] messages)
+        {
+            var size = _messageSetOverheadSize * messages.Length;
+
+            foreach (var message in messages)
+            {
+                if (message.Key != null)
+                    size += message.Key.Length;
+                if (message.Value != null)
+                    size += message.Value.Length;
+            }
+
+            return size;
+        }
+
+        private static void Write(Stream stream, MessageData message, CompressionType compression = CompressionType.None)
+        {
+            var crc = Crc32.Update(_zero32, len: 1);
+            crc = Crc32.Update(_compressionEnumTable, crc, 1, (int)compression);
+            if (message.Key == null) {
+                crc = Crc32.Update(_minusOne32, crc);
+            }
+            else {
+                crc = Crc32.Update(message.Key.Length, crc);
+                crc = Crc32.Update(message.Key, crc);
+            }
+
+            if (message.Value == null)
+            {
+                crc = Crc32.Update(_minusOne32, crc);
+            }
+            else
+            {
+                crc = Crc32.Update(message.Value.Length, crc);
+                crc = Crc32.Update(message.Value, crc);
+            }
+            crc = Crc32.GetHash(crc);
+            BigEndianConverter.Write(stream, crc);
+
             stream.WriteByte(0); // magic byte
-            stream.WriteByte(0); // attributes
+            stream.Write(_compressionEnumTable, (int)compression, 1); // attributes
             if (message.Key == null)
             {
                 stream.Write(_minusOne32, 0, 4);
@@ -200,10 +322,6 @@ namespace kafka4net.Protocols
                 BigEndianConverter.Write(stream, message.Value.Length);
                 stream.Write(message.Value, 0, message.Value.Length);
             }
-
-            // update crc
-            var crc = Crc32.Compute(stream, bodyPos, stream.Position - bodyPos);
-            Update(stream, crcPos, crc);
         }
 
         static void WriteArray<T>(MemoryStream stream, IEnumerable<T> items, Action<T> write)
@@ -220,26 +338,6 @@ namespace kafka4net.Protocols
             stream.Position = sizePosition;
             BigEndianConverter.Write(stream, count);
             stream.Position = pos;
-        }
-
-        static void WriteSizeInBytes(MemoryStream stream, Action write)
-        {
-            stream.Write(_zero32, 0, 4);
-            var initPos = stream.Position;
-            write();
-            var pos = stream.Position;
-            var size = pos - initPos;
-            stream.Position = initPos - 4;
-            BigEndianConverter.Write(stream, (int)size);
-            stream.Position = pos;
-        }
-
-        static void Update(MemoryStream stream, long pos, byte[] buff)
-        {
-            var currPos = stream.Position;
-            stream.Position = pos;
-            stream.Write(buff, 0, buff.Length);
-            stream.Position = currPos;
         }
 
         private static void Write(MemoryStream stream, string s)
@@ -469,10 +567,11 @@ namespace kafka4net.Protocols
                 }
 
                 // Message
-                var crc = BigEndianConverter.ReadInt32(stream);
-                var crcPos = stream.Position;
-                var magic = stream.ReadByte();
-                var attributes = stream.ReadByte();
+                var crc = (uint)BigEndianConverter.ReadInt32(stream);
+                byte magic = (byte)stream.ReadByte();
+                if(magic != 0)
+                    throw new BrokerException("Invalid kafks message magic");  // TODO: use special exception for data corruption
+                var attributes = (byte)stream.ReadByte();
                 var compression = ParseCompression(attributes);
                 var key = ReadByteArray(stream);
                 var value = ReadByteArray(stream);
@@ -482,9 +581,27 @@ namespace kafka4net.Protocols
                     msg.Key = key;
                     msg.Value = value;
                     msg.Offset = offset;
-                    var pos = stream.Position;
-                    var computedCrcArray = Crc32.Compute(stream, crcPos, pos - crcPos);
-                    var computedCrc = BigEndianConverter.ToInt32(computedCrcArray);
+
+                    var computedCrc = Crc32.Update(magic);
+                    computedCrc = Crc32.Update(attributes, computedCrc);
+                    if (key == null) {
+                        computedCrc = Crc32.Update(_minusOne32, computedCrc);
+                    } else
+                    {
+                        computedCrc = Crc32.Update(key.Length, computedCrc);
+                        computedCrc = Crc32.Update(key, computedCrc);
+                    }
+                    if(value == null)
+                    {
+                        computedCrc = Crc32.Update(_minusOne32);
+                    }
+                    else
+                    {
+                        computedCrc = Crc32.Update(value.Length, computedCrc);
+                        computedCrc = Crc32.Update(value, computedCrc);
+                    }
+                    computedCrc = Crc32.GetHash(computedCrc);
+
                     if (computedCrc != crc)
                     {
                         throw new BrokerException(string.Format("Corrupt message: Crc does not match. Caclulated {0} but got {1}", computedCrc, crc));
@@ -515,7 +632,10 @@ namespace kafka4net.Protocols
                 }
                 else if(compression == CompressionType.Snappy)
                 {
-                    using (var snappyStream = new KafkaSnappyStream(new MemoryStream(value), CompressionStreamMode.Decompress))
+                    if(_snappyCompressedBuffer == null)
+                        KafkaSnappyStream.AllocateBuffers(out _snappyUncompressedBuffer, out _snappyCompressedBuffer);
+
+                    using (var snappyStream = new KafkaSnappyStream(new MemoryStream(value), CompressionStreamMode.Decompress, _snappyUncompressedBuffer, _snappyCompressedBuffer))
                     {
                         var decompressed = new MemoryStream();
                         snappyStream.CopyTo(decompressed);
@@ -552,7 +672,7 @@ namespace kafka4net.Protocols
 
         static CompressionType ParseCompression(int attributes)
         {
-            // The lowest 3 bits contain the compression codec used for the message
+            // The lowest 3 bits contain the compression codec
             return (CompressionType)(attributes & 3);
         }
 

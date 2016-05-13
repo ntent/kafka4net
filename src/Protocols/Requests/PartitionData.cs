@@ -21,6 +21,12 @@ namespace kafka4net.Protocols.Requests
         /// </summary>
         public Message[] OriginalMessages;
 
+        /// <summary>
+        /// Non serialazable. Carries compression type until serialization happen, where messages are re-packaged
+        /// into compressed message set.
+        /// </summary>
+        public CompressionType CompressionType;
+
         public override string ToString()
         {
             return string.Format("Part: {0} Messages: {1}", Partition, Messages == null ? "null" : Messages.Count().ToString());

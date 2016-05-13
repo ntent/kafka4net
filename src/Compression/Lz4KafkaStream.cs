@@ -1,12 +1,22 @@
 ﻿using System;
 using System.IO;
-using kafka4net.Compression;
 using kafka4net.Utils;
 using LZ4;
 using xxHashSharp;
 
-namespace kafka4net.Protocols
+namespace kafka4net.Compression
 {
+    /// <summary>
+    /// Lz4 spec: https://docs.google.com/document/d/1Tdxmn5_2e5p1y4PtXkatLndWVb0R8QARJFe6JI4Keuo/edit
+    /// Kafka use the following settings:
+    ///     Version: 01
+    ///     Block independence: 1
+    ///     Block checksum: 0
+    ///     Content size: 0
+    ///     Content checksum: 0
+    ///     Preset dictionary: 0
+    ///     Block maximum size: 64Kb
+    /// </summary>
     class Lz4KafkaStream : Stream
     {
         Stream _base;
@@ -14,29 +24,60 @@ namespace kafka4net.Protocols
         readonly byte[] _headerBuffer = new byte[LZ4_MAX_HEADER_LENGTH];
         byte[] _blockBuffer;
         byte[] _uncompressedBuffer;
-        static readonly int[] _maxBlockSizeTable = new []{0,0,0,0, 64*1024, 256*1024, 1024*1024, 4*1024*1024 };
+        static readonly int[] _maxBlockSizeTable = {0,0,0,0, 64*1024, 256*1024, 1024*1024, 4*1024*1024 };
+        static readonly byte[] _zero32 = { 0, 0, 0, 0 };
 
         const int LZ4_MAX_HEADER_LENGTH = 19;
         const uint MAGIC = 0x184D2204;
-        xxHash _hasher;
+        static readonly byte[] _frameDescriptor = CreateHeader();
+        xxHash _hasher = new xxHash();
         int _bufferLen;
         int _bufferPtr;
         bool _isComplete;
+        int _blockSize = 64 * 1024;
+        bool _eofWritten;
 
         public Lz4KafkaStream(Stream @base, CompressionStreamMode mode)
         {
             _base = @base;
             _mode = mode;
-            _hasher = new xxHash();
-            if (!ReadHeader())
-                throw new InvalidDataException("Failed to read lz4 header");
 
-            ReadBlock();
+            if (mode == CompressionStreamMode.Decompress)
+            {
+                if (!ReadHeader())
+                    throw new InvalidDataException("Failed to read lz4 header");
+
+                ReadBlock();
+            }
+            else
+            {
+                WriteHeader();
+            }
         }
 
         public override void Flush()
         {
-            throw new NotImplementedException();
+            // TODO: memory optimization
+            var compressedBlock = new byte[LZ4Codec.MaximumOutputLength(_blockSize)];
+            var compressedSize = LZ4Codec.Encode(_blockBuffer, 0, _bufferLen, compressedBlock, 0, compressedBlock.Length);
+
+            if (compressedSize >= _bufferLen)
+            {
+                // Write non-compressed
+                // TODO: avoid allocation
+                var buff4 = new byte[4];
+                LittleEndianConverter.Write((uint)(_bufferLen | 1 << 31), buff4, 0); // highest bit set indicates no compression
+                _base.Write(buff4, 0, 4);
+                _base.Write(_blockBuffer, 0, _bufferLen);
+            }
+            else
+            {
+                LittleEndianConverter.Write((uint)compressedSize, _blockBuffer, 0);
+                _base.Write(_blockBuffer, 0, 4);
+                _base.Write(compressedBlock, 0, compressedSize);
+            }
+
+            _bufferLen = 0;
         }
 
         public override long Seek(long offset, SeekOrigin origin)
@@ -65,7 +106,21 @@ namespace kafka4net.Protocols
 
         public override void Write(byte[] buffer, int offset, int count)
         {
-            throw new NotImplementedException();
+            if (_blockBuffer == null)
+                _blockBuffer = new byte[_blockSize];
+
+            while(count > 0)
+            {
+                // TODO: if full frame is going to be flushed, skip array copy and compress stright from input buffer
+                var size = Math.Min(count, _blockSize - _bufferLen);
+                Buffer.BlockCopy(buffer, offset, _blockBuffer, _bufferLen, size);
+                _bufferLen += size;
+                count -= size;
+                offset += size;
+                
+                if(_bufferLen == _blockSize)
+                    Flush();
+            }
         }
 
         public override bool CanRead => _mode == CompressionStreamMode.Decompress;
@@ -120,6 +175,35 @@ namespace kafka4net.Protocols
             return true;
         }
 
+        // TODO: for optimization, hardcode the whole header as static array
+        static byte[] CreateHeader()
+        {
+            var buff = new byte[4 + 3];
+
+            LittleEndianConverter.Write(MAGIC, buff, 0);
+            // Version 1; Block Independence
+            var flags = 1 << 6 | 1 << 5; //96;
+            // TODO: make lz4 block size configurable
+            // Block size 64Kb
+            var bd = 1 << 6; //64;
+
+            buff[4] = (byte)flags;
+            buff[5] = (byte)bd;
+
+            var hasher = new xxHash();
+            hasher.Init();
+            hasher.Update(buff, 6);  
+            var checksum = hasher.Digest() >> 8 & 0xff; // 26
+            buff[6] = (byte)checksum;
+
+            return buff;
+        }
+
+        void WriteHeader()
+        {
+            _base.Write(_frameDescriptor, 0, _frameDescriptor.Length);
+        }
+
         bool ReadBlock()
         {
             // Reuse _uncompressedBuffer to read block size uint32
@@ -166,6 +250,23 @@ namespace kafka4net.Protocols
             Buffer.BlockCopy(_uncompressedBuffer, _bufferPtr, buffer, offset, canRead);
             _bufferPtr += canRead;
             return canRead;
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (_mode == CompressionStreamMode.Compress && _blockBuffer != null && _bufferLen != 0)
+                Flush();
+
+            if (_mode == CompressionStreamMode.Compress && !_eofWritten)
+                WriteEof();
+
+            base.Dispose(disposing);
+        }
+
+        void WriteEof()
+        {
+            _base.Write(_zero32, 0, 4);
+            _eofWritten = true;
         }
 
     }

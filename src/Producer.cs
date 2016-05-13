@@ -427,7 +427,7 @@ namespace kafka4net
                                         1 + // magic
                                         1 + // attributes
                                         4 + // size of key array
-                                        4;  // size og value array
+                                        4;  // size of value array
 
                                 brokerBatch.Queues.ForEach(q => q.CountInProgress = 0);
                                 var queueCount = brokerBatch.Queues.Length;

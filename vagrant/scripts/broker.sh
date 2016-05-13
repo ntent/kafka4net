@@ -5,7 +5,7 @@ id=$1
 
 sed -i -e "s/^broker\.id=.*/broker.id=$id/" "/opt/kafka_2.10-${kafka_version}/config/server.properties"
 sed -i -e "s/^#*host\.name=.*/host.name=192.168.56.${id}0/" "/opt/kafka_2.10-${kafka_version}/config/server.properties"
-sed -i -e "s/^log.segment.bytes=.*/log.segment.bytes=10048576/" "/opt/kafka_2.10-${kafka_version}/config/server.properties"
+#sed -i -e "s/^log.segment.bytes=.*/log.segment.bytes=1000048576/" "/opt/kafka_2.10-${kafka_version}/config/server.properties"
 sed -i -e "s/^#*num\.io\.threads=.*/num.io.threads=2/" "/opt/kafka_2.10-${kafka_version}/config/server.properties"
 sed -i -e 's/^num\.partitions=.*/num\.partitions=6\
 default.replication.factor=3/' "/opt/kafka_2.10-${kafka_version}/config/server.properties"
