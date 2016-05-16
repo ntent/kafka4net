@@ -2042,11 +2042,13 @@ namespace tests
         public async Task JavaCanReadCompressedMessages([Values("gzip", "lz4", "snappy")]string codec)
         {
             var rnd = new Random(0);
-            var topic = "topic31.csharp.compressed-14";
+            var topic = "topic31.csharp.compressed-16";
             VagrantBrokerUtil.CreateTopic(topic, 3, 1);
+            var server = //"localhost"; 
+                        _seed3Addresses;
 
             var consumedMessages = new List<int>();
-            var consumer = new Consumer(new ConsumerConfiguration(_seed3Addresses, topic, new StartPositionTopicEnd(), 
+            var consumer = new Consumer(new ConsumerConfiguration(server, topic, new StartPositionTopicEnd(), 
                 maxBytesPerFetch: 500*1024*1024, maxWaitTimeMs:10*1000));
             consumer.OnMessageArrived.
                 //Synchronize().
@@ -2059,7 +2061,7 @@ namespace tests
 
             var sizes = GenerateMessageSizesAndWriteToFile();
             int successCount = 0;
-            var producer = new Producer(_seed3Addresses, new ProducerConfiguration(topic, maxMessageSetSizeInBytes: 40*1000*1000) {
+            var producer = new Producer(server, new ProducerConfiguration(topic, maxMessageSetSizeInBytes: 40*1000*1000) {
                 CompressionType = (CompressionType)Enum.Parse(typeof(CompressionType), codec, true)
             });
             //var rnd = new Random(1);

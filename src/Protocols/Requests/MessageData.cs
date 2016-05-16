@@ -1,4 +1,6 @@
-﻿namespace kafka4net.Protocols.Requests
+﻿using System;
+
+namespace kafka4net.Protocols.Requests
 {
     class MessageData
     {

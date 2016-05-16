@@ -19,6 +19,17 @@ namespace kafka4net.Utils
             return state;
         }
 
+        public static UInt32 Update(ArraySegment<byte> buffer, UInt32 state = ~0U)
+        {
+            var array = buffer.Array;
+            var end = buffer.Offset + buffer.Count;
+
+            for (int i = buffer.Offset; i < end; i++)
+                state = (state >> 8) ^ _table[array[i] ^ state & 0xff];
+
+            return state;
+        }
+
         public static UInt32 Update(int i, UInt32 state)
         {
             state = (state >> 8) ^ _table[(i >> 8 * 3 & 0xff) ^ state & 0xff];

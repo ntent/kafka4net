@@ -183,15 +183,25 @@ namespace kafka4net.Protocols
 
         [ThreadStatic] static byte[] _snappyUncompressedBuffer;
         [ThreadStatic] static byte[] _snappyCompressedBuffer;
+        [ThreadStatic] static MemoryStream compressed;
         static MessageData Compress(CompressionType compressionType, IEnumerable<MessageData> messages)
         {
-            // TODO: optimize memory allocation
-            var compressed = new MemoryStream();
+            if (compressed == null)
+            {
+                compressed = new MemoryStream();
+            }
+            else
+            {
+                compressed.Position = 0;
+                compressed.SetLength(0);
+            }
+            //var compressed = new MemoryStream();
+
             switch (compressionType)
             {
                 case CompressionType.Gzip:
                     {
-                        var gzip = new GZipStream(compressed, CompressionLevel.Optimal);
+                        var gzip = new GZipStream(compressed, CompressionLevel.Optimal, true);
                         Write(gzip, messages);
                         gzip.Close();
                         break;
@@ -200,6 +210,7 @@ namespace kafka4net.Protocols
                     {
                         if(_snappyCompressedBuffer == null)
                             KafkaSnappyStream.AllocateBuffers(out _snappyUncompressedBuffer, out _snappyCompressedBuffer);
+
                         var snappy = new KafkaSnappyStream(compressed, CompressionStreamMode.Compress, _snappyUncompressedBuffer, _snappyCompressedBuffer);
                         Write(snappy, messages);
                         snappy.Close();

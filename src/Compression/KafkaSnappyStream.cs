@@ -63,14 +63,19 @@ namespace kafka4net.Compression
 
         public override void Flush()
         {
-            // TODO: memory optmization
-            var compressed = new byte[SnappyCodec.GetMaxCompressedLength(_bufferLen)];
-            var compressedSize = SnappyCodec.Compress(_uncompressedBuffer, 0, _bufferLen, compressed, 0);
+            if(_bufferLen == 0)
+                return;
+
+            Flush(_uncompressedBuffer, 0, _bufferLen);
+            _bufferLen = 0;
+        }
+
+        void Flush(byte[] buff, int offset, int count)
+        {
+            var compressedSize = SnappyCodec.Compress(buff, offset, count, _compressedBuffer, 0);
 
             BigEndianConverter.Write(_base, compressedSize);
-            _base.Write(compressed, 0, compressedSize);
-
-            _bufferLen = 0;
+            _base.Write(_compressedBuffer, 0, compressedSize);
         }
 
         public override long Seek(long offset, SeekOrigin origin)
@@ -105,9 +110,17 @@ namespace kafka4net.Compression
 
             while(count > 0)
             {
-                // TODO: if full frame is going to be flushed, skip array copy and compress stright from input buffer
-
                 var size = Math.Min(count, _uncompressedBuffer.Length - _bufferLen);
+
+                // Optimization: if full frame is going to be flushed, skip array copying and compress stright from input buffer
+                if (_bufferLen == 0 && size == _uncompressedBuffer.Length)
+                {
+                    Flush(buffer, offset, size);
+                    count -= size;
+                    offset += size;
+                    continue;
+                }
+
                 Buffer.BlockCopy(buffer, offset, _uncompressedBuffer, _bufferLen, size);
                 _bufferLen += size;
                 count -= size;
