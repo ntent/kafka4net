@@ -14,6 +14,6 @@ namespace kafka4net.Protocols.Requests
         /// <summary>The value is the actual message contents as an opaque byte array. 
         /// Kafka supports recursive messages in which case this may itself contain a message set. 
         /// The message can be null</summary>
-        public byte[] Value;
+        public ArraySegment<byte> Value;
     }
 }

@@ -746,7 +746,7 @@ namespace kafka4net
                                     from msg in partitionGrp
                                     select new MessageData {
                                         Key = msg.Key,
-                                        Value = msg.Value
+                                        Value = new ArraySegment<byte>(msg.Value)
                                     })
                             }
                             )

@@ -227,7 +227,7 @@ namespace kafka4net.Protocols
                     throw new NotImplementedException($"Compression '{compressionType}' is not implemented");
             }
 
-            var buff = compressed.ToArray();
+            var buff = new ArraySegment<byte>(compressed.GetBuffer(), 0, (int)compressed.Length);
             return new MessageData {Key = null, Value = buff };
         }
 
@@ -237,7 +237,7 @@ namespace kafka4net.Protocols
             {
                 stream.Write(_zero64, 0, 8); // producer does fake offset
 
-                var messageSize = _messageOverheadSize + (message.Key?.Length ?? 0) + (message.Value?.Length ?? 0);
+                var messageSize = _messageOverheadSize + (message.Key?.Length ?? 0) + message.Value.Count;
                 BigEndianConverter.Write(stream, messageSize);
 
                 Write(stream, message);
@@ -250,7 +250,7 @@ namespace kafka4net.Protocols
             if (message.Key != null)
                 messageRawSize += message.Key.Length;
             if (message.Value != null)
-                messageRawSize += message.Value.Length;
+                messageRawSize += message.Value.Count;
 
             var messageSetSize = _messageSetOverheadSize + messageRawSize;
             BigEndianConverter.Write(stream, messageSetSize);
@@ -283,8 +283,7 @@ namespace kafka4net.Protocols
             {
                 if (message.Key != null)
                     size += message.Key.Length;
-                if (message.Value != null)
-                    size += message.Value.Length;
+                size += message.Value.Count;
             }
 
             return size;
@@ -308,7 +307,7 @@ namespace kafka4net.Protocols
             }
             else
             {
-                crc = Crc32.Update(message.Value.Length, crc);
+                crc = Crc32.Update(message.Value.Count, crc);
                 crc = Crc32.Update(message.Value, crc);
             }
             crc = Crc32.GetHash(crc);
@@ -326,13 +325,8 @@ namespace kafka4net.Protocols
                 stream.Write(message.Key, 0, message.Key.Length);
             }
 
-            if (message.Value == null)
-                stream.Write(_minusOne32, 0, 4);
-            else
-            {
-                BigEndianConverter.Write(stream, message.Value.Length);
-                stream.Write(message.Value, 0, message.Value.Length);
-            }
+            BigEndianConverter.Write(stream, message.Value.Count);
+            stream.Write(message.Value.Array, 0, message.Value.Count);
         }
 
         static void WriteArray<T>(MemoryStream stream, IEnumerable<T> items, Action<T> write)
