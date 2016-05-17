@@ -106,7 +106,6 @@ namespace kafka4net.Compression
         {
             if(!CanWrite)
                 throw new InvalidOperationException("Not a write stream");
-            // TODO: optimize output buffer allocation
 
             while(count > 0)
             {
