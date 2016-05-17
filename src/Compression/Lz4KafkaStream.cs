@@ -16,14 +16,18 @@ namespace kafka4net.Compression
     ///     Content checksum: 0
     ///     Preset dictionary: 0
     ///     Block maximum size: 64Kb
+    /// 
+    /// This implementation is kafka4net specific by assumming that it is executed in EventLoopScheduler and can reuse thread-static buffers
+    /// to minimize memory (re)allocation.
     /// </summary>
-    class Lz4KafkaStream : Stream
+    sealed class Lz4KafkaStream : Stream
     {
+        [ThreadStatic] static byte[] _uncompressedBuffer;
+        [ThreadStatic] static byte[] _compressedBuffer;
+
         Stream _base;
         CompressionStreamMode _mode;
         readonly byte[] _headerBuffer = new byte[LZ4_MAX_HEADER_LENGTH];
-        byte[] _blockBuffer;
-        byte[] _uncompressedBuffer;
         static readonly int[] _maxBlockSizeTable = {0,0,0,0, 64*1024, 256*1024, 1024*1024, 4*1024*1024 };
         static readonly byte[] _zero32 = { 0, 0, 0, 0 };
 
@@ -35,6 +39,7 @@ namespace kafka4net.Compression
         int _bufferPtr;
         bool _isComplete;
         int _blockSize = 64 * 1024;
+        // Flag to prevent EOF to be written twice when both, Dispose and Close are called
         bool _eofWritten;
 
         public Lz4KafkaStream(Stream @base, CompressionStreamMode mode)
@@ -57,24 +62,25 @@ namespace kafka4net.Compression
 
         public override void Flush()
         {
-            // TODO: memory optimization
-            var compressedBlock = new byte[LZ4Codec.MaximumOutputLength(_blockSize)];
-            var compressedSize = LZ4Codec.Encode(_blockBuffer, 0, _bufferLen, compressedBlock, 0, compressedBlock.Length);
+            var maxCompressedSize = LZ4Codec.MaximumOutputLength(_uncompressedBuffer.Length);
+            if (_compressedBuffer == null || _compressedBuffer.Length < maxCompressedSize)
+                _compressedBuffer = new byte[maxCompressedSize];
+
+            var compressedSize = LZ4Codec.Encode(_uncompressedBuffer, 0, _bufferLen, _compressedBuffer, 0, _compressedBuffer.Length);
 
             if (compressedSize >= _bufferLen)
             {
-                // Write non-compressed
-                // TODO: avoid allocation
-                var buff4 = new byte[4];
-                LittleEndianConverter.Write((uint)(_bufferLen | 1 << 31), buff4, 0); // highest bit set indicates no compression
-                _base.Write(buff4, 0, 4);
-                _base.Write(_blockBuffer, 0, _bufferLen);
+                // Lz4 allows to write non-compressed block. 
+                // Reuse _ncompressedBuffer which is not needed anymore to serialize block size
+                LittleEndianConverter.Write((uint)(_bufferLen | 1 << 31), _compressedBuffer, 0); // highest bit set indicates no compression
+                _base.Write(_compressedBuffer, 0, 4);
+                _base.Write(_uncompressedBuffer, 0, _bufferLen);
             }
             else
             {
-                LittleEndianConverter.Write((uint)compressedSize, _blockBuffer, 0);
-                _base.Write(_blockBuffer, 0, 4);
-                _base.Write(compressedBlock, 0, compressedSize);
+                LittleEndianConverter.Write((uint)compressedSize, _uncompressedBuffer, 0);
+                _base.Write(_uncompressedBuffer, 0, 4);
+                _base.Write(_compressedBuffer, 0, compressedSize);
             }
 
             _bufferLen = 0;
@@ -106,14 +112,17 @@ namespace kafka4net.Compression
 
         public override void Write(byte[] buffer, int offset, int count)
         {
-            if (_blockBuffer == null)
-                _blockBuffer = new byte[_blockSize];
+            if (!CanWrite)
+                throw new InvalidOperationException("Not a write stream");
+
+            if (_uncompressedBuffer == null)
+                _uncompressedBuffer = new byte[_blockSize];
 
             while(count > 0)
             {
                 // TODO: if full frame is going to be flushed, skip array copy and compress stright from input buffer
-                var size = Math.Min(count, _blockSize - _bufferLen);
-                Buffer.BlockCopy(buffer, offset, _blockBuffer, _bufferLen, size);
+                var size = Math.Min(count, _uncompressedBuffer.Length - _bufferLen);
+                Buffer.BlockCopy(buffer, offset, _uncompressedBuffer, _bufferLen, size);
                 _bufferLen += size;
                 count -= size;
                 offset += size;
@@ -161,7 +170,8 @@ namespace kafka4net.Compression
             int maxBlockSize = _maxBlockSizeTable[maxBlockSizeIndex];
             if(maxBlockSize == 0)
                 throw new InvalidDataException($"Invalid LZ4 max data block size index: {maxBlockSizeIndex}");
-            _uncompressedBuffer = new byte[maxBlockSize];
+            if(_uncompressedBuffer == null || _uncompressedBuffer.Length < maxBlockSize)
+                _uncompressedBuffer = new byte[Math.Max(maxBlockSize, _blockSize)];
 
             _hasher.Init();
             // Yep, this is the bug in kafka's framing checksum KAFKA-3160. Magic should not be checksummed but it is
@@ -219,24 +229,26 @@ namespace kafka4net.Compression
             var isCompressed = (blockSize & 0x80000000) == 0;
             blockSize = blockSize & 0x7fffffff;
 
-            if (_blockBuffer == null || _blockBuffer.Length < blockSize)
-                _blockBuffer = new byte[Math.Max(blockSize, 16*1024)];
+            if (_compressedBuffer == null || _compressedBuffer.Length < blockSize)
+                _compressedBuffer = new byte[Math.Max(blockSize, LZ4Codec.MaximumOutputLength(_blockSize))];
 
-            if(!StreamUtils.ReadAll(_base, _blockBuffer, blockSize))
+            if(!StreamUtils.ReadAll(_base, _compressedBuffer, blockSize))
                 throw new InvalidDataException("Unexpected end of LZ4 data block");
 
             // Ignore block checksum because kafka does not set it
 
             if (!isCompressed)
             {
-                _blockBuffer.CopyTo(_uncompressedBuffer, 0);
+                // TODO: opportunity to optimize by saving the fact that buffer is not compressed and reading from
+                // "compressed" buffer in Read method
+                Buffer.BlockCopy(_compressedBuffer, 0, _uncompressedBuffer, 0, blockSize);
                 _bufferLen = blockSize;
                 _bufferPtr = 0;
                 return true;
             }
 
 
-            var decodedSize = LZ4Codec.Decode(_blockBuffer, 0, blockSize, _uncompressedBuffer, 0, _uncompressedBuffer.Length);
+            var decodedSize = LZ4Codec.Decode(_compressedBuffer, 0, blockSize, _uncompressedBuffer, 0, _uncompressedBuffer.Length);
 
             _bufferLen = decodedSize;
             _bufferPtr = 0;
@@ -254,7 +266,7 @@ namespace kafka4net.Compression
 
         protected override void Dispose(bool disposing)
         {
-            if (_mode == CompressionStreamMode.Compress && _blockBuffer != null && _bufferLen != 0)
+            if (_mode == CompressionStreamMode.Compress && _bufferLen != 0)
                 Flush();
 
             if (_mode == CompressionStreamMode.Compress && !_eofWritten)
