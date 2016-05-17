@@ -195,7 +195,6 @@ namespace kafka4net.Protocols
                 compressed.Position = 0;
                 compressed.SetLength(0);
             }
-            //var compressed = new MemoryStream();
 
             switch (compressionType)
             {
@@ -301,15 +300,8 @@ namespace kafka4net.Protocols
                 crc = Crc32.Update(message.Key, crc);
             }
 
-            if (message.Value == null)
-            {
-                crc = Crc32.Update(_minusOne32, crc);
-            }
-            else
-            {
-                crc = Crc32.Update(message.Value.Count, crc);
-                crc = Crc32.Update(message.Value, crc);
-            }
+            crc = Crc32.Update(message.Value.Count, crc);
+            crc = Crc32.Update(message.Value, crc);
             crc = Crc32.GetHash(crc);
             BigEndianConverter.Write(stream, crc);
 
