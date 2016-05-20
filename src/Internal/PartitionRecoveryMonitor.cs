@@ -47,6 +47,11 @@ namespace kafka4net.Internal
             _cancel = cancel;
             _id = Interlocked.Increment(ref _idGenerator);
 
+            _cancel.Register(() => {
+                _subscriptionsDisposable.Dispose();
+                _log.Debug("Cancel requested, unsubscribed new broker and partition state listeners");
+            });
+
             _log.Debug("Created PartitionRecoveryMonitor {0}", this);
             EtwTrace.Log.RecoveryMonitor_Create(_id);
 
@@ -55,7 +60,15 @@ namespace kafka4net.Internal
                 broker =>
                 {
                     // check and add this broker
-                    if (_brokers.ContainsKey(broker.NodeId)) return;
+                    if (_brokers.ContainsKey(broker.NodeId))
+                        return;
+
+                    if(_cancel.IsCancellationRequested)
+                    {
+                        _log.Warn($"#{_id} Ignoring new broker event because cancel has been requested");
+                        return;
+                    }
+
                     _recoveryTasks.Add(RecoveryLoop(broker)
                         .ContinueWith(t =>
                         {
