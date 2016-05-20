@@ -19,10 +19,6 @@ object main extends App {
   val topic = args(0)
   val compression = args(1)
   val action = args(2)
-  val hashFileName = "C:\\projects\\kafka4net\\vagrant\\files\\hashes.txt"
-                      //"/vagrant/files/hashes.txt"
-  val sizesFileName = "C:\\projects\\kafka4net\\vagrant\\files\\sizes.txt"
-                      //"/vagrant/files/sizes.txt"
   val md5 = MessageDigest.getInstance("MD5")
 
   action match {
@@ -32,8 +28,11 @@ object main extends App {
   }
 
   def produce() = {
+    val hashFileName = "/vagrant/files/hashes.txt"
+    val sizesFileName = "/vagrant/files/sizes.txt"
+
     val hashFile = new PrintWriter(new File(hashFileName))
-    val sizes = readSizes
+    val sizes = readSizes(sizesFileName)
 
     val producer = new KafkaProducer[Array[Byte], Array[Byte]](producerProps)
     println(s"Read ${sizes.length} lines")
@@ -53,13 +52,14 @@ object main extends App {
   }
 
   def consume(): Unit = {
-
+    val hashFileName = "C:\\projects\\kafka4net\\vagrant\\files\\hashes.txt"
+    val sizesFileName = "C:\\projects\\kafka4net\\vagrant\\files\\sizes.txt"
 
     val hashFile = new PrintWriter(new File(hashFileName))
     val consumer = Consumer.create(new ConsumerConfig(consumerProps))
     val consumerMap = consumer.createMessageStreams(Map(topic -> 3))
     val streams = consumerMap.get(topic).get
-    val expectedCount = readSizes.length
+    val expectedCount = readSizes(sizesFileName).length
     val count = new AtomicInteger()
 
     val threads = for(stream <- streams) yield {
@@ -73,13 +73,12 @@ object main extends App {
                 val msg = it.next()
                 val value = msg.message()
                 count.incrementAndGet()
-                println(s"Got ${count.get()}/$expectedCount size: ${value.length} part: ${msg.partition} offset: ${msg.offset}")
+                //println(s"Got ${count.get()}/$expectedCount size: ${value.length} part: ${msg.partition} offset: ${msg.offset}")
                 val hash = md5.digest(value).map("%02X".format(_)).mkString
                 hashFile.println(hash)
                 if (count.get() == expectedCount) {
                   consumer.shutdown()
                 }
-                //consumer.commitOffsets(true)
               } catch {
                 case e: Throwable => println(e.getMessage)
               }
@@ -103,7 +102,6 @@ object main extends App {
     Random.nextBytes(buff)
     val hash = md5.digest(buff).map("%02X".format(_)).mkString
     hashFile.println(hash)
-    //System.out.println(hash)
 
     // put all messages into the same partition
     val key = Array[Byte](0)
@@ -134,28 +132,10 @@ object main extends App {
     //props.setProperty("auto.offset.reset", "largest")
     props.setProperty("fetch.message.max.bytes", (500*1024*1024).toString)
     props.put("auto.commit.enable", "false")
-    //props.put("auto.commit.interval.ms", "5000");
-    //props.put("session.timeout.ms", "30000")
-    //props.setProperty("auto.offset.reset", "largest")
-
-    //props.setProperty("key.deserializer", "org.apache.kafka.common.serialization.ByteArrayDeserializer")
-    //props.setProperty("value.deserializer", "org.apache.kafka.common.serialization.ByteArrayDeserializer")
-
-    //props.setProperty("partition.assignment.strategy", "range")
-
-
-    //
-    //
-
-    /*
-
-    */
-
-    //new ConsumerConfig(props)
     props
   }
 
-  def readSizes = {
+  def readSizes(sizesFileName: String) = {
     Source.fromFile(sizesFileName).getLines().map(Integer.parseInt(_)).toArray
   }
 }
