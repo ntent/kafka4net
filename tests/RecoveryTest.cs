@@ -1439,11 +1439,11 @@ namespace tests
         }
 
         [Test]
-        public async void SchedulerThreadIsIsolatedFromUserCode()
+        public async Task SchedulerThreadIsIsolatedFromUserCode()
         {
             kafka4net.Tracing.EtwTrace.Marker("SchedulerThreadIsIsolatedFromUserCode");
 
-            const string threadName = "kafka-scheduler";
+            //const string threadName = "kafka-scheduler";
             _log.Info("Test Runner is using thread {0}", Thread.CurrentThread.Name);
 
             var topic = "topic." + _rnd.Next();
@@ -1451,23 +1451,23 @@ namespace tests
 
             var cluster = new Cluster(_seed2Addresses);
             await cluster.ConnectAsync();
-            Assert.AreNotEqual(threadName, Thread.CurrentThread.Name);
+            Assert.AreNotEqual(cluster.CurrentWorkerThread, Thread.CurrentThread);
 
             await cluster.FetchPartitionOffsetsAsync(topic, ConsumerLocation.TopicStart);
-            Assert.AreNotEqual(threadName, Thread.CurrentThread.Name);
+            Assert.AreNotEqual(cluster.CurrentWorkerThread, Thread.CurrentThread);
 
             var topics = await cluster.GetAllTopicsAsync();
-            Assert.AreNotEqual(threadName, Thread.CurrentThread.Name);
+            Assert.AreNotEqual(cluster.CurrentWorkerThread, Thread.CurrentThread);
 
             // now create a producer
             var producer = new Producer(cluster, new ProducerConfiguration(topic));
             await producer.ConnectAsync();
-            Assert.AreNotEqual(threadName, Thread.CurrentThread.Name);
+            Assert.AreNotEqual(cluster.CurrentWorkerThread, Thread.CurrentThread);
 
             // create a producer that also creates a cluster
             var producerWithCluster = new Producer(_seed2Addresses, new ProducerConfiguration(topic));
             await producerWithCluster.ConnectAsync();
-            Assert.AreNotEqual(threadName, Thread.CurrentThread.Name);
+            Assert.AreNotEqual(cluster.CurrentWorkerThread, Thread.CurrentThread);
 
             // TODO: Subscribe and check thread on notification observables!
 
@@ -1480,32 +1480,38 @@ namespace tests
                     _log.Debug("After Producer Send using thread {0}", Thread.CurrentThread.Name);
 
                 }).Take(50).ToArray();
-            Assert.AreNotEqual(threadName, Thread.CurrentThread.Name);
+            Assert.AreNotEqual(cluster.CurrentWorkerThread, Thread.CurrentThread);
 
             // now consumer(s)
             var consumer = new Consumer(new ConsumerConfiguration(_seed2Addresses, topic, new StartPositionTopicStart()));
-            Assert.AreNotEqual(threadName, Thread.CurrentThread.Name);
+            Assert.AreNotEqual(cluster.CurrentWorkerThread, Thread.CurrentThread);
 
             var msgsRcv = new List<long>();
             var messageSubscription = consumer.OnMessageArrived
-                .Do(msg => Assert.AreEqual(threadName, Thread.CurrentThread.Name), exception => Assert.AreEqual(threadName, Thread.CurrentThread.Name), () => Assert.AreEqual(threadName, Thread.CurrentThread.Name))
+                .Do(
+                    msg => Assert.AreEqual("Consumer outgoing scheduler", Thread.CurrentThread.Name),
+                    exception => Assert.AreEqual(cluster.CurrentWorkerThread, Thread.CurrentThread), 
+                    () => Assert.AreEqual(cluster.CurrentWorkerThread, Thread.CurrentThread))
                 .Take(50)
                 .TakeUntil(DateTime.Now.AddSeconds(500))
                 .ObserveOn(System.Reactive.Concurrency.DefaultScheduler.Instance)
-                .Do(msg => Assert.AreNotEqual(threadName, Thread.CurrentThread.Name), exception => Assert.AreNotEqual(threadName, Thread.CurrentThread.Name), () => Assert.AreNotEqual(threadName, Thread.CurrentThread.Name))
+                .Do(
+                    msg => Assert.AreNotEqual(cluster.CurrentWorkerThread, Thread.CurrentThread), 
+                    exception => Assert.AreNotEqual(cluster.CurrentWorkerThread, Thread.CurrentThread), 
+                    () => Assert.AreNotEqual(cluster.CurrentWorkerThread, Thread.CurrentThread))
                 .Subscribe(
                     msg=>
                     {
                         msgsRcv.Add(BitConverter.ToInt64(msg.Value,0));
-                        Assert.AreNotEqual(threadName, Thread.CurrentThread.Name);
+                        Assert.AreNotEqual(cluster.CurrentWorkerThread, Thread.CurrentThread);
                         _log.Debug("In Consumer Subscribe OnNext using thread {0}", Thread.CurrentThread.Name);
                     }, exception =>
                     {
-                        _log.Debug("In Consumer Subscribe OnError using thread {0} Error: {1}", Thread.CurrentThread.Name, exception.Message);
+                        _log.Debug(exception, $"In Consumer Subscribe OnError using thread {Thread.CurrentThread.Name}");
                         throw exception;
                     }, () =>
                     {
-                        Assert.AreNotEqual(threadName, Thread.CurrentThread.Name);
+                        Assert.AreNotEqual(cluster.CurrentWorkerThread, Thread.CurrentThread);
                         _log.Debug("In Consumer Subscribe OnComplete using thread {0}", Thread.CurrentThread.Name);
                     });
             
@@ -1515,27 +1521,27 @@ namespace tests
             await Task.Delay(TimeSpan.FromSeconds(6));
             _log.Debug("After Consumer Subscribe using thread {0}", Thread.CurrentThread.Name);
             consumer.Dispose();
-            Assert.AreNotEqual(threadName, Thread.CurrentThread.Name);
+            Assert.AreNotEqual(cluster.CurrentWorkerThread, Thread.CurrentThread);
 
             Assert.AreEqual(msgs.Length, msgsRcv.Count);
 
             messageSubscription.Dispose();
-            Assert.AreNotEqual(threadName, Thread.CurrentThread.Name);
+            Assert.AreNotEqual(cluster.CurrentWorkerThread, Thread.CurrentThread);
 
             // now close down
             await producer.CloseAsync(TimeSpan.FromSeconds(5));
             _log.Debug("After Consumer Close using thread {0}", Thread.CurrentThread.Name);
-            Assert.AreNotEqual(threadName, Thread.CurrentThread.Name);
+            Assert.AreNotEqual(cluster.CurrentWorkerThread, Thread.CurrentThread);
 
             await producerWithCluster.CloseAsync(TimeSpan.FromSeconds(5));
             _log.Debug("After Producer Subscribe using thread {0}", Thread.CurrentThread.Name);
-            Assert.AreNotEqual(threadName, Thread.CurrentThread.Name);
+            Assert.AreNotEqual(cluster.CurrentWorkerThread, Thread.CurrentThread);
 
-            Assert.AreNotEqual(threadName, Thread.CurrentThread.Name);
+            Assert.AreNotEqual(cluster.CurrentWorkerThread, Thread.CurrentThread);
 
             await cluster.CloseAsync(TimeSpan.FromSeconds(5));
             _log.Debug("After Cluster Close using thread {0}", Thread.CurrentThread.Name);
-            Assert.AreNotEqual(threadName, Thread.CurrentThread.Name);
+            Assert.AreNotEqual(cluster.CurrentWorkerThread, Thread.CurrentThread);
 
             kafka4net.Tracing.EtwTrace.Marker("/SchedulerThreadIsIsolatedFromUserCode");
         }
