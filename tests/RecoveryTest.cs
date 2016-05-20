@@ -121,7 +121,7 @@ namespace tests
 
         // if topic does not exists, it is created when producer connects
         [Test]
-        public async void TopicIsAutocreatedByProducer()
+        public async Task TopicIsAutocreatedByProducer()
         {
             kafka4net.Tracing.EtwTrace.Marker("TopicIsAutocreatedByProducer");
 
@@ -193,7 +193,7 @@ namespace tests
         // and are committed (can be read) within (5sec?)
         // Also, order of messages is preserved
         [Test]
-        public async void LeaderDownProducerAndConsumerRecovery()
+        public async Task LeaderDownProducerAndConsumerRecovery()
         {
             kafka4net.Tracing.EtwTrace.Marker("LeaderDownProducerAndConsumerRecovery");
             string topic = "part32." + _rnd.Next();
@@ -313,7 +313,7 @@ namespace tests
         }
 
         [Test]
-        public async void ListenerOnNonExistentTopicWaitsForTopicCreation()
+        public async Task ListenerOnNonExistentTopicWaitsForTopicCreation()
         {
             kafka4net.Tracing.EtwTrace.Marker("ListenerOnNonExistentTopicWaitsForTopicCreation");
             const int numMessages = 400;
@@ -358,7 +358,7 @@ namespace tests
         /// Test listener and producer recovery together
         /// </summary>
         [Test]
-        public async void ProducerAndListenerRecoveryTest()
+        public async Task ProducerAndListenerRecoveryTest()
         {
             kafka4net.Tracing.EtwTrace.Marker("ProducerAndListenerRecoveryTest");
             const int count = 200;
@@ -434,7 +434,7 @@ namespace tests
         /// Check confirmed sent messasges count is sequal to intendent sent.
         /// </summary>
         [Test]
-        public async void ProducerRecoveryTest()
+        public async Task ProducerRecoveryTest()
         {
             kafka4net.Tracing.EtwTrace.Marker("ProducerRecoveryTest");
 
@@ -498,7 +498,7 @@ namespace tests
         /// Test just listener recovery isolated from producer
         /// </summary>
         [Test]
-        public async void ListenerRecoveryTest()
+        public async Task ListenerRecoveryTest()
         {
             kafka4net.Tracing.EtwTrace.Marker("ListenerRecoveryTest");
             const int count = 10000;
@@ -581,7 +581,7 @@ namespace tests
         /// buffered data.
         /// </summary>
         [Test]
-        public async void CleanShutdownTest()
+        public async Task CleanShutdownTest()
         {
             kafka4net.Tracing.EtwTrace.Marker("CleanShutdownTest");
             const string topic = "shutdown.test";
@@ -658,7 +658,7 @@ namespace tests
         /// 
         /// </summary>
         [Ignore("")]
-        public async void ConsumerFollowsRebalancingPartitions()
+        public async Task ConsumerFollowsRebalancingPartitions()
         {
             kafka4net.Tracing.EtwTrace.Marker("ConsumerFollowsRebalancingPartitions");
 
@@ -777,7 +777,7 @@ namespace tests
         /// Make sure that messages were received in the same order as they were sent.
         /// </summary>
         [Test]
-        public async void KeyedMessagesPreserveOrder()
+        public async Task KeyedMessagesPreserveOrder()
         {
             kafka4net.Tracing.EtwTrace.Marker("KeyedMessagesPreserveOrder");
             // create a topic with 3 partitions
@@ -896,7 +896,7 @@ namespace tests
         }
 
         [Test]
-        public async void ProducerSendBufferGrowsAutomatically()
+        public async Task ProducerSendBufferGrowsAutomatically()
         {
             kafka4net.Tracing.EtwTrace.Marker("ProducerSendBufferGrowsAutomatically");
 
@@ -957,7 +957,7 @@ namespace tests
 
         // explicit offset works
         [Test]
-        public async void ExplicitOffset()
+        public async Task ExplicitOffset()
         {
             kafka4net.Tracing.EtwTrace.Marker("ExplicitOffset");
             // create new topic with 3 partitions
@@ -985,6 +985,7 @@ namespace tests
 
             _log.Debug("Closing producer");
             await producer.CloseAsync(TimeSpan.FromSeconds(5));
+            _log.Debug("Closed producer");
 
             var offsetFetchCluster = new Cluster(_seed2Addresses);
             await offsetFetchCluster.ConnectAsync();
@@ -1011,14 +1012,16 @@ namespace tests
             // wait for 3 partitions to arrrive and every partition to read at least 100 messages
             await messages.Select(g => g.Take(100)).Take(3).ToTask();
 
+            _log.Debug("Unsubscribing from consumer");
             consumerSubscription.Dispose();
+            _log.Debug("Disposing consumer");
             consumer.Dispose();
 
             kafka4net.Tracing.EtwTrace.Marker("/ExplicitOffset");
         }
 
         [Test]
-        public async void StopAtExplicitOffset()
+        public async Task StopAtExplicitOffset()
         {
             kafka4net.Tracing.EtwTrace.Marker("StopAtExplicitOffset");
             // create new topic with 3 partitions
@@ -1071,7 +1074,7 @@ namespace tests
         }
 
         [Test]
-        public async void StartAndStopAtExplicitOffset()
+        public async Task StartAndStopAtExplicitOffset()
         {
             kafka4net.Tracing.EtwTrace.Marker("StartAndStopAtExplicitOffset");
             // create new topic with 3 partitions
@@ -1125,7 +1128,7 @@ namespace tests
         }
 
         [Test]
-        public async void StopAtExplicitOffsetOnEmptyTopic()
+        public async Task StopAtExplicitOffsetOnEmptyTopic()
         {
             kafka4net.Tracing.EtwTrace.Marker("StopAtExplicitOffsetOnEmptyTopic");
             // create new topic with 3 partitions
@@ -1157,7 +1160,7 @@ namespace tests
 
         // can read from the head of queue
         [Test]
-        public async void ReadFromHead()
+        public async Task ReadFromHead()
         {
             kafka4net.Tracing.EtwTrace.Marker("ReadFromHead");
 
@@ -1228,7 +1231,7 @@ namespace tests
         }
 
         [Test]
-        public async void SaveOffsetsAndResumeConsuming()
+        public async Task SaveOffsetsAndResumeConsuming()
         {
             kafka4net.Tracing.EtwTrace.Marker("SaveOffsetsAndResumeConsuming");
 
@@ -1305,7 +1308,7 @@ namespace tests
         // Create a new 1-partition topic and sent 100 messages.
         // Read offsets, they should be [0, 100]
         [Test]
-        public async void ReadOffsets()
+        public async Task ReadOffsets()
         {
             kafka4net.Tracing.EtwTrace.Marker("ReadOffsets");
 
@@ -1375,7 +1378,7 @@ namespace tests
         }
 
         [Test]
-        public async void TwoConsumerSubscribersOneBroker()
+        public async Task TwoConsumerSubscribersOneBroker()
         {
             kafka4net.Tracing.EtwTrace.Marker("TwoConsumerSubscribersOneBroker");
 
@@ -1391,7 +1394,7 @@ namespace tests
         }
 
         [Test]
-        public async void MultipleProducersOneCluster()
+        public async Task MultipleProducersOneCluster()
         {
             kafka4net.Tracing.EtwTrace.Marker("MultipleProducersOneCluster");
 
@@ -1547,7 +1550,7 @@ namespace tests
         }
 
         [NUnit.Framework.Ignore("")]
-        public async void SlowConsumer()
+        public async Task SlowConsumer()
         {
             //
             // 1. Create a topic with 100K messages.
@@ -1584,7 +1587,7 @@ namespace tests
         }
 
         [Test]
-        public async void InvalidOffsetShouldLogErrorAndStopFetching()
+        public async Task InvalidOffsetShouldLogErrorAndStopFetching()
         {
             var count = 100;
             var topic = "test11."+_rnd.Next();
@@ -1627,7 +1630,7 @@ namespace tests
         }
 
         [Test]
-        public async void SpeedTest()
+        public async Task SpeedTest()
         {
             int _pageViewBatchSize = 10 * 1000;
             TimeSpan _batchTime = TimeSpan.FromSeconds(10);
@@ -1673,7 +1676,7 @@ namespace tests
 
         [Test]
         [Timeout(10*1000)]
-        public async void InvalidDnsShouldThrowException()
+        public void InvalidDnsShouldThrowException()
         {
             Assert.ThrowsAsync<BrokerException>(async () =>
             {
@@ -1685,7 +1688,7 @@ namespace tests
 
         [Test]
         [Timeout(10 * 1000)]
-        public async void OneInvalidDnsShouldNotThrow()
+        public async Task OneInvalidDnsShouldNotThrow()
         {
             var seed = "no.such.name.123.org,"+_seed2Addresses;
             var consumer = new Consumer(new ConsumerConfiguration(seed, "some.topic", new StartPositionTopicEnd()));
@@ -1695,7 +1698,7 @@ namespace tests
 
 
         [Test]
-        public async void SimulateSchedulerHanging()
+        public async Task SimulateSchedulerHanging()
         {
             var topic = "topic11."+_rnd.Next();
             VagrantBrokerUtil.CreateTopic(topic, 1, 1);
@@ -1727,7 +1730,7 @@ namespace tests
         }
 
         [Test]
-        public async void SimulateLongBufferedMessageHandling()
+        public async Task SimulateLongBufferedMessageHandling()
         {
             var count = 2000;
             var topic = "topic11." + _rnd.Next();
@@ -1774,7 +1777,7 @@ namespace tests
 
         [Test]
         [Timeout(6*60*1000)]
-        public async void ProducerConnectWhenOneBrokerIsDownAndThanUp()
+        public async Task ProducerConnectWhenOneBrokerIsDownAndThanUp()
         {
             // Scenario: 1 broker is down, Producer connects. Broker is brought up and forced to become master.
             // See https://github.com/ntent-ad/kafka4net/issues/14
@@ -1826,7 +1829,7 @@ namespace tests
 
         [Test]
         [Timeout(6 * 60 * 1000)]
-        public async void ProducerTestWhenPartitionReassignmentOccurs()
+        public async Task ProducerTestWhenPartitionReassignmentOccurs()
         {
             // Scenario: Broker gives away it's topic to another broker
             // See https://github.com/ntent-ad/kafka4net/issues/27
@@ -1886,7 +1889,7 @@ namespace tests
         // if one broker refuses connection, another one will connect and function
         [Test]
         [Timeout(60*1000)]
-        public async void IfFirstBrokerIsDownThenNextOneWillConnect()
+        public async Task IfFirstBrokerIsDownThenNextOneWillConnect()
         {
             var badSeed = "192.168.56.111," + _seed2Addresses;
             var cluster = new Cluster(badSeed);
@@ -1902,7 +1905,7 @@ namespace tests
         /// Not a real unit-test, just debug helper for memory issues.
         /// </summary>
         [Ignore("")]
-        public async void Memory()
+        public async Task Memory()
         {
             var topic = "topic11." + _rnd.Next();
             VagrantBrokerUtil.CreateTopic(topic, 1, 1);
@@ -2084,7 +2087,7 @@ namespace tests
             };
 
             var javaConsumer = StartJavaConsumer(topic);
-            await Task.Delay(30 * 1000);
+            await Task.Delay(5 * 1000);
 
             await producer.ConnectAsync();
 
