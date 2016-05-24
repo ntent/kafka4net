@@ -1693,39 +1693,6 @@ namespace tests
             await consumer.IsConnected;
         }
 
-
-        [Test]
-        public async Task SimulateSchedulerHanging()
-        {
-            var topic = "topic11."+_rnd.Next();
-            VagrantBrokerUtil.CreateTopic(topic, 1, 1);
-
-            Assert.ThrowsAsync<WorkingThreadHungException>(async () =>
-            {
-                var producer = new Producer(_seed2Addresses, new ProducerConfiguration(topic, batchFlushSize: 2));
-                await producer.ConnectAsync();
-                // hung upon 1st confirmation
-                int c = 0;
-                producer.OnSuccess += messages =>
-                {
-                    if (c++ == 1)
-                        new ManualResetEvent(false).WaitOne();
-                };
-
-                var ctx = SynchronizationContext.Current;
-                producer.OnPermError += (exception, messages) => ctx.Post(d => { throw exception; }, null);
-
-                var source = Observable.Interval(TimeSpan.FromSeconds(1)).Take(1000).Publish();
-                source.Connect();
-
-                source.//Do(i => {if(i == 2) producer.DebugHangScheduler();}).
-                Select(i => new Message { Value = BitConverter.GetBytes(i) }).
-                Subscribe(producer.Send);
-
-                await source;
-            });
-        }
-
         [Test]
         public async Task SimulateLongBufferedMessageHandling()
         {
