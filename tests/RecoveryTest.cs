@@ -380,7 +380,7 @@ namespace tests
             var received = new ReplaySubject<ReceivedMessage>();
             Task brokerStopped = null;
             var consumerSubscription = consumer.OnMessageArrived.
-                Subscribe(async msg => {
+                Subscribe(msg => {
                     current++;
                     if (current == 18)
                     {
@@ -1489,7 +1489,7 @@ namespace tests
             var msgsRcv = new List<long>();
             var messageSubscription = consumer.OnMessageArrived
                 .Do(
-                    msg => Assert.AreEqual("Consumer outgoing scheduler", Thread.CurrentThread.Name),
+                    msg => Assert.AreNotEqual(cluster.CurrentWorkerThread, Thread.CurrentThread),
                     exception => Assert.AreEqual(cluster.CurrentWorkerThread, Thread.CurrentThread), 
                     () => Assert.AreEqual(cluster.CurrentWorkerThread, Thread.CurrentThread))
                 .Take(50)
