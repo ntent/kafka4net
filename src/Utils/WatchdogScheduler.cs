@@ -1,7 +1,10 @@
 ﻿using System;
 using System.Diagnostics;
 using System.Reactive.Concurrency;
+using System.Reactive.Disposables;
 using System.Reactive.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace kafka4net.Utils
 {
@@ -16,6 +19,9 @@ namespace kafka4net.Utils
         DateTime _actionStart = DateTime.MaxValue;
         public readonly IObservable<TimeSpan> DelaySampler;
         public StackTrace LastStack;
+        bool _disposed;
+        private static readonly ILogger _log = Logger.GetLogger();
+
 
         public WatchdogScheduler(IScheduler scheduler)
         {
@@ -71,9 +77,11 @@ namespace kafka4net.Utils
 
         public void Dispose()
         {
-            var scheduler = _scheduler as IDisposable;
-            if(scheduler != null)
-                scheduler.Dispose();
+            if(_disposed)
+                return;
+            _disposed = true;
+
+            (_scheduler as IDisposable)?.Dispose();
         }
     }
 }

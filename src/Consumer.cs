@@ -15,13 +15,7 @@ namespace kafka4net
 {
     public class Consumer : IDisposable
     {
-        /// <summary>
-        /// IMPORTANT!
-        /// When subscribing to message flow, remember that messages are handled in kafks4net execution thread, which is designed to be async. This thread handles all internal driver callbacks.
-        /// This way, if you handle messages with some delays or God forbids Wait/Result, than you will pause driver's ability to handle internal events.
-        /// Please, when subscribe, use ObserveOn(your scheduler or sync context) to switch handle thread to something else. Or make sure that your handle routine is instant. How instant?
-        /// For reference, driver thread is used to handle async socket data received event. This should give you an idea: for how log are you willing to delay network handling inside the driver.
-        /// </summary>
+        /// <summary></summary>
         public readonly IObservable<ReceivedMessage> OnMessageArrived;
 
         internal readonly ISubject<ReceivedMessage> OnMessageArrivedInput = new Subject<ReceivedMessage>();
@@ -48,6 +42,9 @@ namespace kafka4net
         readonly BehaviorSubject<int> _flowControlInput = new BehaviorSubject<int>(1);
         // Is used by Fetchers to wake up from sleep when flow turns ON
         internal IObservable<bool> FlowControl;
+
+        private bool _isDisposed;
+        bool _closed;
 
         /// <summary>
         /// Create a new consumer using the specified configuration. See @ConsumerConfiguration
@@ -234,11 +231,13 @@ namespace kafka4net
         {
             // called back from TopicPartition when its subscription is completed. 
             // Remove from our dictionary, and if all TopicPartitions are removed, call our own OnComplete.
-            _topicPartitions.Remove(topicPartition.PartitionId);
+            if(_topicPartitions.Remove(topicPartition.PartitionId))
+                _log.Debug($"TopicPartition signalled compretion: {topicPartition}");
             if (_topicPartitions.Count == 0)
             {
                 // If we call OnCompleted right now, any last message that may be being sent will not process. Just tell the scheduler to do it in a moment.
                 _cluster.Scheduler.Schedule(() => OnMessageArrivedInput.OnCompleted());
+                _log.Debug("Scheduled OnMessageArrivedInput.OnCompleted call");
             }
         }
 
@@ -248,8 +247,7 @@ namespace kafka4net
             return string.Format("Consumer: '{0}'", Topic);
         }
 
-        private bool _isDisposed;
-
+        [Obsolete("Dispose contains async call to close Cluster, which can be still in-progress when control is return to the caller. Use CloseAsync, which can be awaited.")]
         public void Dispose()
         {
             if (_isDisposed)
@@ -257,11 +255,11 @@ namespace kafka4net
 
             try
             {
-                if (_partitionsSubscription != null)
-                    _partitionsSubscription.Values.ForEach(s=>s.Dispose());
+                _partitionsSubscription?.Values.ForEach(s => s.Dispose());
+                _partitionsSubscription?.Clear();
             }
-            // ReSharper disable once EmptyGeneralCatchClause
-            catch {}
+                // ReSharper disable once EmptyGeneralCatchClause
+            catch { }
 
             try
             {
@@ -271,16 +269,43 @@ namespace kafka4net
                         ContinueWith(t => _log.Error(t.Exception, "Error when closing Cluster"), TaskContinuationOptions.OnlyOnFaulted);
             }
             // ReSharper disable once EmptyGeneralCatchClause
-            catch(Exception e)
+            catch (Exception e)
             {
                 _log.Error(e, "Error in Dispose");
             }
 
-            var dispose = Configuration.OutgoingScheduler as IDisposable;
-            if(dispose != null)
-                dispose.Dispose();
-
+            (Configuration.OutgoingScheduler as IDisposable)?.Dispose();
             _isDisposed = true;
+            _log.Debug("Disposed OutgoingScheduler");
+        }
+
+        public async Task CloseAsync()
+        {
+            if (_closed)
+                return;
+            _closed = true;
+
+            try
+            {
+                _partitionsSubscription?.Values.ForEach(s => s.Dispose());
+                _partitionsSubscription?.Clear();
+            }
+            // ReSharper disable once EmptyGeneralCatchClause
+            catch { }
+
+            try
+            {
+                // close and release the connections in the Cluster.
+                if (_cluster != null && _cluster.State != Cluster.ClusterState.Disconnected)
+                    await _cluster.CloseAsync(TimeSpan.FromSeconds(5));
+            }
+            // ReSharper disable once EmptyGeneralCatchClause
+            catch (Exception e)
+            {
+                _log.Error(e, "Error when closing Cluster");
+            }
+
+            (Configuration.OutgoingScheduler as IDisposable)?.Dispose();
         }
     }
 }

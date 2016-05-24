@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Reactive.Concurrency;
 using System.Reactive.Linq;
 using System.Reactive.Subjects;
 using System.Reactive.Threading.Tasks;
@@ -1004,7 +1005,7 @@ namespace tests
             await consumer.IsConnected;
 
             var consumerSubscription = messages.Subscribe(p => p.Take(10).Subscribe(
-                m => _log.Debug("Got message {0}/{1}", m.Partition, BitConverter.ToInt32(m.Value, 0)),
+                m => _log.Debug($"Got message {m.Partition}/{BitConverter.ToInt32(m.Value, 0)} offset: {m.Offset}"),
                 e => _log.Error("Error", e),
                 () => _log.Debug("Complete part {0}", p.Key)
             ));
@@ -1014,8 +1015,8 @@ namespace tests
 
             _log.Debug("Unsubscribing from consumer");
             consumerSubscription.Dispose();
-            _log.Debug("Disposing consumer");
-            consumer.Dispose();
+            _log.Debug("Closing consumer");
+            await consumer.CloseAsync();
 
             kafka4net.Tracing.EtwTrace.Marker("/ExplicitOffset");
         }

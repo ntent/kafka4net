@@ -146,14 +146,14 @@ namespace kafka4net
         /// <returns></returns>
         public async Task ConnectAsync()
         {
-            await await Scheduler.Ask(async () =>
+            await Scheduler.Ask(() =>
             {
                 // we cannot reconnect if we have closed already.
                 if (_state == ClusterState.Closed)
                     throw new BrokerException("Cluster is already closed. Cannot reconnect. Please create a new Cluster.");
 
                 if (_state != ClusterState.Disconnected)
-                    return;
+                    return false;
 
                 _log.Debug("Connecting");
 
@@ -177,6 +177,7 @@ namespace kafka4net
                 _partitionRecoveryMonitor.NewMetadataEvents.Subscribe(MergeTopicMeta, ex => _log.Error(ex, "Error thrown by RecoveryMonitor.NewMetadataEvents!"));
                 _log.Debug("Connected");
                 EtwTrace.Log.ClusterStarted(_id);
+                return true;
             }).ConfigureAwait(false);
         }
 

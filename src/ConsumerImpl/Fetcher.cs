@@ -90,8 +90,9 @@ namespace kafka4net.ConsumerImpl
 
             // cleanup
             var topicPartitionCleanup = Disposable.Create(() => _topicPartitions.Remove(topicPartition));
-            var receivedMessagesSubscriptionCleanup = ReceivedMessages.Where(rm => rm.Topic == topicPartition.Topic && rm.Partition == topicPartition.PartitionId)
-                    .Subscribe(topicPartition);
+            var receivedMessagesSubscriptionCleanup = ReceivedMessages.
+                Where(rm => rm.Topic == topicPartition.Topic && rm.Partition == topicPartition.PartitionId)
+                .Subscribe(topicPartition);
             var flowControlCleanup = topicPartition.FlowControl.
                 // we need to wake up from waiting loop any time flow control hits low watermark and becomes enabled
                 Where(enabled => enabled).
