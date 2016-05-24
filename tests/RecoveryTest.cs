@@ -3,24 +3,20 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
-using System.Reactive.Concurrency;
 using System.Reactive.Linq;
 using System.Reactive.Subjects;
 using System.Reactive.Threading.Tasks;
-using System.Runtime.Remoting.Messaging;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using kafka4net;
 using kafka4net.ConsumerImpl;
-using kafka4net.Protocols;
 using kafka4net.Utils;
 using NLog;
 using NLog.Config;
 using NLog.Targets;
 using NUnit.Framework;
-using NUnit.Framework.Constraints;
 using Logger = kafka4net.Logger;
 
 namespace tests

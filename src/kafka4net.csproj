@@ -137,7 +137,6 @@
     <None Include="packages.config">
       <SubType>Designer</SubType>
     </None>
-    <None Include="_EventRegisterUsersGuide.docx" />
   </ItemGroup>
   <ItemGroup />
   <PropertyGroup>

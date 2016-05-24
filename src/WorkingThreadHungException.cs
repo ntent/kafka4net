@@ -1,6 +1,4 @@
-﻿using System;
-
-namespace kafka4net
+﻿namespace kafka4net
 {
     public class WorkingThreadHungException : BrokerException
     {

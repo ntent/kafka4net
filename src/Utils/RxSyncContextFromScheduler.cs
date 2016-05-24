@@ -9,7 +9,6 @@ namespace kafka4net.Utils
     class RxSyncContextFromScheduler : SynchronizationContext
     {
         private readonly IScheduler _scheduler;
-        static readonly ILogger _log = Logger.GetLogger();
 
         public RxSyncContextFromScheduler(IScheduler scheduler) 
         {

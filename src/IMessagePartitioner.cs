@@ -1,9 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-using kafka4net.Metadata;
+﻿using kafka4net.Metadata;
 
 namespace kafka4net
 {

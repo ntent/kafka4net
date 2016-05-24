@@ -4,7 +4,6 @@ using kafka4net.Protocols;
 using kafka4net.Protocols.Requests;
 using kafka4net.Protocols.Responses;
 using kafka4net.Tracing;
-using kafka4net.Utils;
 using System;
 using System.Collections.Generic;
 using System.Linq;

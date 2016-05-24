@@ -1,10 +1,7 @@
 ﻿using System;
 using System.Diagnostics;
 using System.Reactive.Concurrency;
-using System.Reactive.Disposables;
 using System.Reactive.Linq;
-using System.Threading;
-using System.Threading.Tasks;
 
 namespace kafka4net.Utils
 {

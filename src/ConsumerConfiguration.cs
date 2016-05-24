@@ -1,6 +1,5 @@
 ﻿using System;
 using System.Reactive.Concurrency;
-using System.Threading;
 using kafka4net.ConsumerImpl;
 
 namespace kafka4net
