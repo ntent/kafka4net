@@ -1,4 +1,4 @@
-[![NuGet](https://img.shields.io/nuget/v/kafka4net.svg?maxAge=2592000)]()
+[![NuGet version](https://badge.fury.io/nu/kafka4net.svg)](https://badge.fury.io/nu/kafka4net)
 kafka4net
 =========
 
