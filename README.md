@@ -1,3 +1,4 @@
+[![NuGet](https://img.shields.io/nuget/v/kafka4net.svg?maxAge=2592000)]()
 kafka4net
 =========
 
