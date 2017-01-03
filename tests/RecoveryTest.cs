@@ -68,6 +68,7 @@ namespace tests
 
             rule = new LoggingRule("*", LogLevel.Debug, fileTarget);
             rule.ChildRules.Add(new LoggingRule("tests.*", LogLevel.Debug, consoleTarget));
+            rule.ChildRules.Add(new LoggingRule("*", LogLevel.Info, consoleTarget));
             config.LoggingRules.Add(rule);
 
             // disable Transport noise
@@ -489,6 +490,63 @@ namespace tests
             Assert.AreEqual(sentList.Count, tails.MessagesSince(heads), "Offsets");
             
             kafka4net.Tracing.EtwTrace.Marker("/ProducerRecoveryTest");
+        }
+
+
+        /// <summary>
+        /// We should be able to create a new cluster connection, and fetch topic offsets even while a broker is down.
+        /// </summary>
+        [Test]
+        public async Task CanConnectToClusterAndFetchOffsetsWithBrokerDown()
+        {
+            kafka4net.Tracing.EtwTrace.Marker("CanConnectToClusterAndFetchOffsetsWithBrokerDown");
+            const int count = 10000;
+            var topic = "part33." + _rnd.Next();
+            VagrantBrokerUtil.CreateTopic(topic, 6, 3);
+
+            var producer = new Producer(_seed2Addresses, new ProducerConfiguration(topic));
+            _log.Debug("Connecting");
+            await producer.ConnectAsync();
+
+            _log.Debug("Filling out {0} with {1} messages", topic, count);
+            var sentList = await Enumerable.Range(0, count)
+                .Select(i => new Message { Value = BitConverter.GetBytes(i) })
+                .ToObservable()
+                .Do(producer.Send)
+                .Select(msg => BitConverter.ToInt32(msg.Value, 0))
+                .ToList();
+
+            await Task.Delay(TimeSpan.FromSeconds(5));
+
+            var heads = await producer.Cluster.FetchPartitionOffsetsAsync(topic, ConsumerLocation.TopicStart);
+            var tails = await producer.Cluster.FetchPartitionOffsetsAsync(topic, ConsumerLocation.TopicEnd);
+
+            _log.Info("Done sending messages.");
+            _log.Info("Stopping Broker Leader for partition 0");
+            VagrantBrokerUtil.StopBrokerLeaderForPartition(producer.Cluster, topic, 0);
+
+            _log.Info("Closing producer.");
+            await producer.CloseAsync(TimeSpan.FromSeconds(5));
+            _log.Info("Producer closed.");
+
+            var messagesInTopic = (int)tails.MessagesSince(heads);
+            _log.Info("Topic offsets indicate producer sent {0} messages.", messagesInTopic);
+
+
+            _log.Info("Opening new Cluster connection");
+            var c2 = new Cluster(_seed2Addresses);
+            await c2.ConnectAsync();
+            heads = await c2.FetchPartitionOffsetsAsync(topic, ConsumerLocation.TopicStart);
+            tails = await c2.FetchPartitionOffsetsAsync(topic, ConsumerLocation.TopicEnd);
+
+            _log.Info("Total messages in topic from new Cluster connection: {0}", tails.MessagesSince(heads));
+            _log.Info("Offsets: [{0}]", string.Join(",", tails.Partitions.Select(p => string.Format("{0}:{1}", p, tails.NextOffset(p)))));
+
+            await c2.CloseAsync(TimeSpan.FromSeconds(5));
+            _log.Info("Closed cluster.");
+
+            Assert.AreEqual(messagesInTopic, tails.MessagesSince(heads));
+            kafka4net.Tracing.EtwTrace.Marker("/CanConnectToClusterAndFetchOffsetsWithBrokerDown");
         }
 
         /// <summary>
