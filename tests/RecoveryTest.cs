@@ -1685,51 +1685,6 @@ namespace tests
         }
 
         [Test]
-        public async Task SpeedTest()
-        {
-            int _pageViewBatchSize = 10 * 1000;
-            TimeSpan _batchTime = TimeSpan.FromSeconds(10);
-
-            var conf = new ConsumerConfiguration("kafkadev-01.lv.ntent.com", 
-                "vsw.avrodto.addelivery.activitylogging.pageview", 
-                new StartPositionTopicStart(), 
-                useFlowControl: true,
-                highWatermark: _pageViewBatchSize * 5,
-                lowWatermark: _pageViewBatchSize * 2
-            );
-            var consumer = new Consumer(conf);
-            var count = 0L;
-            var lastCount = count;
-            
-            var msg = consumer.OnMessageArrived.Publish().RefCount();
-            msg.
-                Buffer(_batchTime, _pageViewBatchSize).
-                Subscribe(_ =>
-                {
-                    Interlocked.Add(ref count, _.Count);
-                    consumer.Ack(_.Count);
-                    //consumer.Ack();
-                });
-            
-            var interval = TimeSpan.FromSeconds(5);
-            var lastTime = DateTime.Now;
-            Observable.Interval(interval).Subscribe(_ => {
-                var c = count;
-                var now = DateTime.Now;
-                var time = now - lastTime;
-                var speed = (c - lastCount)/time.TotalSeconds;
-                lastCount = c;
-                lastTime = now;
-                Console.WriteLine("{0}msg/sec #{1}", speed, c);
-            });
-
-            await consumer.IsConnected;
-
-            await msg.Timeout(TimeSpan.FromSeconds(30));
-            Console.WriteLine("Complete {0}", count);
-        }
-
-        [Test]
         [Timeout(10*1000)]
         public void InvalidDnsShouldThrowException()
         {
