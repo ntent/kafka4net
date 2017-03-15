@@ -24,6 +24,7 @@
     <ErrorReport>prompt</ErrorReport>
     <WarningLevel>4</WarningLevel>
     <UseVSHostingProcess>false</UseVSHostingProcess>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
     <DebugType>pdbonly</DebugType>
@@ -73,6 +74,7 @@
   <ItemGroup>
     <Compile Include="CompressionType.cs" />
     <Compile Include="Compression\StreamUtils.cs" />
+    <Compile Include="ClusterConfiguration.cs" />
     <Compile Include="ConsumerImpl\PositionProviders.cs" />
     <Compile Include="FletcherHashedMessagePartitioner.cs" />
     <Compile Include="IMessagePartitioner.cs" />
@@ -129,6 +131,7 @@
     <Compile Include="Utils\RxSyncContextFromScheduler.cs" />
     <Compile Include="Utils\EnumerableEx.cs" />
     <Compile Include="Utils\CountObservable.cs" />
+    <Compile Include="Utils\SocketKeepAlive.cs" />
     <Compile Include="Utils\TaskEx.cs" />
     <Compile Include="Utils\WatchdogScheduler.cs" />
     <Compile Include="WorkingThreadHungException.cs" />

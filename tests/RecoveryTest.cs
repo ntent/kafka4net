@@ -115,6 +115,29 @@ namespace tests
             VagrantBrokerUtil.RestartBrokers();
         }
 
+
+        // "test"... there is no validation, but with kafka 0.10, after 10 minutes of idle, the connections are closed
+        // this was used to debug that change to (hope) that adding Tcp KeepAlive settings would help. They did not.
+        //[Test]
+        public async Task IdleConnectionTest()
+        {
+            var producer = new Producer(new ClusterConfiguration(_seed2Addresses, (uint)TimeSpan.FromSeconds(20).TotalMilliseconds), new ProducerConfiguration("idle-test"));
+
+            await producer.ConnectAsync();
+
+            // have to produce some data to get Tcp connections established.
+            const int producedCount = 10;
+            var lala = Encoding.UTF8.GetBytes("la-la-la");
+            await Observable.Interval(TimeSpan.FromSeconds(1)).
+                Take(producedCount).
+                Do(_ => producer.Send(new Message { Value = lala })).
+                ToTask();
+
+            await Task.Delay(TimeSpan.FromMinutes(15));
+            await producer.CloseAsync(TimeSpan.MaxValue);
+
+        }
+
         // If failed to connect, messages are errored
 
         // if topic does not exists, it is created when producer connects
@@ -1730,7 +1753,7 @@ namespace tests
         }
 
         [Test]
-        [Timeout(10*1000)]
+        [Timeout(100*1000)]
         public void InvalidDnsShouldThrowException()
         {
             Assert.ThrowsAsync<BrokerException>(async () =>

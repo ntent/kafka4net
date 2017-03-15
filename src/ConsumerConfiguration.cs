@@ -93,7 +93,8 @@ namespace kafka4net
             int highWatermark = 2000,
             bool useFlowControl = false,
             IStopPositionProvider stopPosition = null,
-            IScheduler scheduler = null)
+            IScheduler scheduler = null,
+            uint? socketKeepAliveMs = null)
         {
             LowWatermark = lowWatermark;
             HighWatermark = highWatermark;
@@ -109,6 +110,7 @@ namespace kafka4net
                 throw new InvalidOperationException("highWatermark must be greater than lowWatermark");
 
             SeedBrokers = seedBrokers;
+            SocketKeepAliveMs = socketKeepAliveMs;
             StartPosition = startPosition;
             Topic = topic;
             MaxWaitTimeMs = maxWaitTimeMs;
@@ -118,7 +120,9 @@ namespace kafka4net
             OutgoingScheduler = scheduler ?? Scheduler.Default/*(ts => new Thread(ts) { IsBackground = true, Name = "Consumer outgoing scheduler" })*/;
         }
 
+
         public string SeedBrokers { get; private set; }
+        public uint? SocketKeepAliveMs { get; private set; }
         public IStartPositionProvider StartPosition { get; private set; }
         public IStopPositionProvider StopPosition { get; private set; }
         public string Topic { get; private set; }

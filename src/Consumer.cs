@@ -53,7 +53,7 @@ namespace kafka4net
         public Consumer(ConsumerConfiguration consumerConfig)
         {
             Configuration = consumerConfig;
-            _cluster = new Cluster(consumerConfig.SeedBrokers);
+            _cluster = new Cluster(new ClusterConfiguration(consumerConfig.SeedBrokers,consumerConfig.SocketKeepAliveMs));
             _cluster.OnThreadHang += e => OnMessageArrivedInput.OnError(e);
 
 

@@ -1,10 +1,12 @@
 ﻿using System;
 using System.Linq;
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using kafka4net.Protocols;
 using kafka4net.Tracing;
+using kafka4net.Utils;
 
 namespace kafka4net
 {
@@ -14,6 +16,7 @@ namespace kafka4net
 
         private readonly string _host;
         private readonly int _port;
+        private readonly uint? _socketKeepAliveMs;
         private readonly Action<Exception> _onError;
         private TcpClient _client;
         private readonly SemaphoreSlim _connectionLock = new SemaphoreSlim(1, 1);
@@ -23,10 +26,11 @@ namespace kafka4net
 
         internal ResponseCorrelation Correlation;
 
-        internal Connection(string host, int port, Action<Exception> onError = null)
+        internal Connection(string host, int port, uint? socketKeepAliveMs = null, Action<Exception> onError = null)
         {
             _host = host;
             _port = port;
+            _socketKeepAliveMs = socketKeepAliveMs;
             _onError = onError;
         }
 
@@ -78,6 +82,11 @@ namespace kafka4net
                 if (_client == null)
                 {
                     _client = new TcpClient();
+
+                    if (_socketKeepAliveMs != null)
+                        _client.Client.SetKeepAliveValues(true, _socketKeepAliveMs.Value, _socketKeepAliveMs.Value);
+                        //SetTcpKeepAlive(_client.Client, _socketKeepAliveMs.Value, _socketKeepAliveMs.Value);
+
                     EtwTrace.Log.ConnectionConnecting(_host, _port);
                     await _client.ConnectAsync(_host, _port);
                     EtwTrace.Log.ConnectionConnected(_host, _port);

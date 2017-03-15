@@ -74,6 +74,17 @@ namespace kafka4net
         /// <summary>
         /// 
         /// </summary>
+        /// <param name="clusterConfiguration"></param>
+        /// <param name="producerConfiguration"></param>
+        public Producer(ClusterConfiguration clusterConfiguration, ProducerConfiguration producerConfiguration)
+            : this(new Cluster(clusterConfiguration), producerConfiguration)
+        {
+            _internalCluster = true;
+        }
+
+        /// <summary>
+        /// 
+        /// </summary>
         /// <param name="seedBrokers">Comma separated list of seed brokers. Port numbers are optional.
         /// <example>192.168.56.10,192.168.56.20:8081,broker3.local.net:8181</example>
         /// </param>

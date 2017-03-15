@@ -26,7 +26,7 @@ namespace kafka4net
     /// </summary>
     public class Cluster
     {
-        private readonly string _seedBrokers;
+        private readonly ClusterConfiguration _configuration;
 
         internal enum ClusterState
         {
@@ -103,17 +103,26 @@ namespace kafka4net
         }
 
         /// <summary>
+        /// Constructor taking a ClusterConfiguration instance instead of string seedBrokers
+        /// </summary>
+        /// <param name="configuration"></param>
+        public Cluster(ClusterConfiguration configuration) : this()
+        {
+            _configuration = configuration;
+            _protocol = new Protocol(this);
+            _state = ClusterState.Disconnected;
+
+        }
+
+        /// <summary>
         /// ConnectAsync and fetch list of brokers and metadata.
         /// </summary>
         /// <param name="seedBrokers">Comma separated list of seed brokers. Port numbers are optional.
         /// <example>192.168.56.10,192.168.56.20:8081,broker3.local.net:8181</example>
         /// </param>
-        public Cluster(string seedBrokers) : this()
+        public Cluster(string seedBrokers) : this(new ClusterConfiguration(seedBrokers))
         {
-            _seedBrokers = seedBrokers;
-            _protocol = new Protocol(this);
-            _state = ClusterState.Disconnected;
-        }
+        } 
 
         private void HandleTransportError(Exception e, BrokerMeta broker)
         {
@@ -157,7 +166,7 @@ namespace kafka4net
 
                 _log.Debug("Connecting");
 
-                var initBrokers = Connection.ParseAddress(_seedBrokers).
+                var initBrokers = Connection.ParseAddress(_configuration.SeedBrokers).
                     Select(seed => new BrokerMeta 
                     {
                         Host = seed.Item1,
@@ -690,7 +699,7 @@ namespace kafka4net
             // remove old seeds which have been resolved
             _metadata.Brokers = _metadata.Brokers.Except(resolvedSeedBrokers.Select(b => b.seed)).ToArray();
 
-            newBrokers.ForEach(b => b.Conn = new Connection(b.Host, b.Port, e => HandleTransportError(e, b)));
+            newBrokers.ForEach(b => b.Conn = new Connection(b.Host, b.Port, _configuration.SocketKeepAliveMs, e => HandleTransportError(e, b)));
             _metadata.Brokers = _metadata.Brokers.Concat(newBrokers).ToArray();
 
             // Close old seed connection and make sure nobody can use it anymore
