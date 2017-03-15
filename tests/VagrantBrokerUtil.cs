@@ -99,11 +99,18 @@ namespace tests
 
         public static void StartBroker(string broker)
         {
+            var brokerIp = BrokerIpToName.Single(b => b.Value == broker).Key;
+            if (IsBrokerResponding(brokerIp))
+            {
+                _log.Info("Broker already running: '{0}'", broker);
+                return;
+            }
+
             _log.Info("Starting broker: '{0}'", broker);
             Vagrant("ssh -c 'sudo service kafka start' " + broker);
 
             // await for tcp to become accessible, because process start does not mean that server has done initializing and start listening
-            while(!IsBrokerResponding(BrokerIpToName.Single(b => b.Value == broker).Key))
+            while(!IsBrokerResponding(brokerIp))
                 Thread.Sleep(200);
 
             _log.Info("Started broker: '{0}'", broker);
@@ -144,13 +151,17 @@ namespace tests
                 output.Append(args.Data);
                 _log.Info(args.Data);
             } ;
-            p.ErrorDataReceived += (sender, args) => _log.Info(args.Data);
+            p.ErrorDataReceived += (sender, args) =>
+            {
+                output.Append(args.Data);
+                _log.Info(args.Data);
+            };
             p.BeginOutputReadLine();
             p.BeginErrorReadLine();
             p.WaitForExit();
 
             if(p.ExitCode != 0)
-                throw new Exception("Vagrant failed with exit code " + p.ExitCode);
+                throw new Exception($"Vagrant failed with exit code {p.ExitCode}. Output: {output}");
 
             return output.ToString();
         }
