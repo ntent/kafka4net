@@ -42,7 +42,7 @@ namespace kafka4net.Protocols
                 {
                     _log.Info("Server closed connection");
                     _etw.CorrelationServerClosedConnection();
-                    throw new Exception("Server closed connection");
+                    throw new IOException("Server closed connection. 0 bytes read.");
                 }
 
                 pos += read;
