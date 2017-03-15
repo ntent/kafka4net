@@ -114,8 +114,7 @@ namespace kafka4net
             // Increment counter of messages sent for processing
                 onMessage = onMessage.Do(msg =>
                 {
-                    var count = Interlocked.Increment(ref _outstandingMessageProcessingCount);
-                    _flowControlInput.OnNext(count);
+                    IncrementOutstandingMessages(1);
                 });
             }
 
@@ -169,8 +168,29 @@ namespace kafka4net
             if(!Configuration.UseFlowControl)
                 throw new InvalidOperationException("UseFlowControl is OFF, Ack is not allowed");
 
-            var count = Interlocked.Add(ref _outstandingMessageProcessingCount, - messageCount);
-            _flowControlInput.OnNext(count);
+            IncrementOutstandingMessages(-messageCount);
+        }
+
+        private int flowControlMutex;
+
+        private void IncrementOutstandingMessages(int incrementBy)
+        {
+            var count = Interlocked.Add(ref _outstandingMessageProcessingCount, incrementBy);
+            var currentThreadId = Thread.CurrentThread.ManagedThreadId;
+
+            while (Interlocked.CompareExchange(ref flowControlMutex, currentThreadId, 0) != currentThreadId)
+            {
+                // sit here and wait until the previous OnNext is finished
+            }
+
+            try
+            {
+                _flowControlInput.OnNext(count);
+            }
+            finally
+            {
+                Interlocked.Exchange(ref flowControlMutex, 0);
+            }
         }
 
         /// <summary>
