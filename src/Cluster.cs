@@ -157,12 +157,13 @@ namespace kafka4net
 
                 _log.Debug("Connecting");
 
+                var nodeId = -1;
                 var initBrokers = Connection.ParseAddress(_seedBrokers).
                     Select(seed => new BrokerMeta 
                     {
                         Host = seed.Item1,
                         Port = seed.Item2,
-                        NodeId = -99
+                        NodeId = nodeId--
                     }).ToArray();
                 EtwTrace.Log.ClusterStarting(_id);
 
@@ -595,7 +596,7 @@ namespace kafka4net
                         else if (ode != null)
                             _log.Warn(e, "Connection Disposed while trying to fetch topic '{0}' metadata, will retry.", topic);
                         else
-                            _log.Error(e, "Error while trying to fetch topic '{0}' metadata, will retry.", topic);                        
+                            _log.Error(e, "Error while trying to fetch topic '{0}' metadata, will retry.", topic);
 
                     }
                 }
@@ -674,14 +675,14 @@ namespace kafka4net
 
             // add new brokers
             var newBrokers = topicMeta.Brokers.Except(_metadata.Brokers, BrokerMeta.NodeIdComparer).ToArray();
-            
-            // Brokers which were created from seed have NodeId == -99.
+
+            // Brokers which were created from seed have NodeId <0.
             // Once we learn their true Id, update the NodeId
             var resolvedSeedBrokers = (
                 from seed in _metadata.Brokers
-                where seed.NodeId == -99
+                where seed.NodeId < 0
                 from resolved in topicMeta.Brokers
-                where resolved.NodeId != -99 &&
+                where resolved.NodeId >= 0 &&
                     seed.Port == resolved.Port &&
                     string.Compare(resolved.Host, seed.Host, true, CultureInfo.InvariantCulture) == 0
                 select new { seed, resolved }
@@ -704,7 +705,7 @@ namespace kafka4net
 
             // broadcast any new brokers
             newBrokers.ForEach(b => EtwTrace.Log.MetadataNewBroker(_id, b.Host, b.Port, b.NodeId));
-            newBrokers.Where(b => b.NodeId != -99).ForEach(b => _newBrokerSubject.OnNext(b));
+            newBrokers.Where(b => b.NodeId >= 0).ForEach(b => _newBrokerSubject.OnNext(b));
 
             // broadcast the current partition state for all partitions.
             topicMeta.Topics.
